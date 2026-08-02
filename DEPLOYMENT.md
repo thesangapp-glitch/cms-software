@@ -31,27 +31,32 @@ their own preview URL.
 
 ---
 
-## 2. Point `sangapp.in` at Cloudflare
+## 2. Connect the domain (www.sangapp.in)
 
-The domain is registered at **Wix**, but DNS is easiest to manage on Cloudflare. Two options:
+The domain is registered at **Wix**. Wix keeps domains registered with it on Wix's own
+nameservers, so we keep DNS at Wix and point **www.sangapp.in** at Pages with a CNAME. The site's
+canonical URL is `https://www.sangapp.in`.
 
-### Option A — Move DNS to Cloudflare (recommended)
-1. Cloudflare Dashboard → **Add a site** → enter `sangapp.in` → pick the **Free** plan.
-2. Cloudflare scans existing records and gives you **two nameservers** (e.g. `xxx.ns.cloudflare.com`).
-3. In **Wix**: Domains → `sangapp.in` → **Advanced / Nameservers** → *Connect to another host* /
-   *Use custom nameservers* → replace Wix's nameservers with the two from Cloudflare → save.
-4. Nameserver changes take anywhere from a few minutes to ~24 h to propagate. Cloudflare emails you
-   when the domain is **Active**.
-5. Then go to **Workers & Pages → sang-website → Custom domains → Set up a custom domain** and add
-   both `sangapp.in` and `www.sangapp.in`. Cloudflare creates the DNS records and TLS certificate
-   automatically.
+**A. In Cloudflare Pages** (already done): Workers & Pages → `sang-website` → **Custom domains** →
+added `www.sangapp.in` via the **"My DNS provider"** method. Pages is waiting for this DNS record:
 
-### Option B — Keep DNS at Wix (only if you can't change nameservers)
-1. In Pages → **Custom domains**, add `sangapp.in`. Cloudflare shows a target like
-   `sang-website.pages.dev`.
-2. In Wix DNS, add a **CNAME** for `www` → `sang-website.pages.dev`, and use Wix's
-   forwarding / ALIAS for the root `@` to the same target.
-   *(Root CNAME/ALIAS support at Wix is limited — Option A is cleaner and gives real HTTPS + CDN.)*
+| Type | Name | Value / Target |
+|---|---|---|
+| CNAME | `www` | `sang-website.pages.dev` |
+
+**B. In Wix** — Account → **Domains** → `sangapp.in` → **⋯ → Manage DNS records** → under
+**CNAME (Aliases)**, edit the existing `www` record and change its value from `cdn1.wixdns.net`
+to **`sang-website.pages.dev`** → **Save**.
+
+**C. Back in Cloudflare Pages** → Custom domains → **Check DNS records**. Once it verifies (minutes
+to a few hours), `https://www.sangapp.in` goes live with an automatic TLS certificate.
+
+**D. Redirect the bare apex** `sangapp.in` → `www.sangapp.in`: in Wix, Domains → `sangapp.in` set up
+domain forwarding/redirect to `https://www.sangapp.in` (or point the apex at your preferred redirect).
+Optional but recommended so visitors typing `sangapp.in` land on the site.
+
+> A pending Cloudflare zone for `sangapp.in` may exist from setup; it's harmless (Wix stays
+> authoritative). You can remove it from the Cloudflare dashboard if you like.
 
 ---
 
@@ -62,10 +67,10 @@ The domain is registered at **Wix**, but DNS is easiest to manage on Cloudflare.
 npm run dev            # preview at http://localhost:5173
 git add -A
 git commit -m "Update hero copy"
-git push               # → Cloudflare auto-builds & deploys to sangapp.in
+git push               # → Cloudflare auto-builds & deploys to www.sangapp.in
 ```
 
-- **`main`** → production (`sangapp.in`).
+- **`main`** → production (`www.sangapp.in`).
 - **any other branch / PR** → automatic **preview deployment** with its own URL.
 
 ---
@@ -84,5 +89,5 @@ npx wrangler pages deploy dist --project-name sang-website
 ## Post-launch checklist
 - [ ] Confirm `https://sangapp.in` and `https://www.sangapp.in` both load with valid HTTPS.
 - [ ] In Cloudflare Pages → set a redirect so `www` → root (or root → `www`), pick one canonical.
-- [ ] Submit `https://sangapp.in/sitemap.xml` in Google Search Console.
+- [ ] Submit `https://www.sangapp.in/sitemap.xml` in Google Search Console.
 - [ ] Update the App Store link in `src/site.js` once the iOS listing is live.
