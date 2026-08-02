@@ -1,0 +1,6 @@
+# Cloudflare Pages configuration for the Sang website.
+# Lets the Pages Git integration (and `wrangler pages deploy`) know where the
+# built site lives. Build command is `npm run build` (set in the Pages project).
+name = "sang-website"
+pages_build_output_dir = "dist"
+compatibility_date = "2024-10-01"
