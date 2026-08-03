@@ -4,11 +4,14 @@ import Footer from './components/Footer.jsx'
 import Home from './pages/Home.jsx'
 import Privacy from './pages/Privacy.jsx'
 import ScrollToTop from './components/ScrollToTop.jsx'
+import CookieConsent from './components/CookieConsent.jsx'
+import Analytics from './components/Analytics.jsx'
 
 export default function App() {
   return (
     <>
       <ScrollToTop />
+      <Analytics />
       <Navbar />
       <main>
         <Routes>
@@ -17,6 +20,7 @@ export default function App() {
         </Routes>
       </main>
       <Footer />
+      <CookieConsent />
     </>
   )
 }
