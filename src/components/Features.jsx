@@ -1,8 +1,10 @@
+import Reveal from './Reveal.jsx'
+
 const FEATURES = [
   {
     icon: 'qr',
     title: 'Instant QR & NFC sharing',
-    text: 'Share your card in seconds with a QR code scan or NFC tap. No app required for the person receiving it.',
+    text: 'Share your card in seconds with a QR scan or NFC tap. Anyone can save a vCard with no app — connect in full when you both use Sang.',
   },
   {
     icon: 'card',
@@ -62,12 +64,12 @@ export default function Features() {
         </div>
 
         <div className="grid grid--3">
-          {FEATURES.map((f) => (
-            <article key={f.title} className="feature">
+          {FEATURES.map((f, i) => (
+            <Reveal key={f.title} as="article" delay={i * 70} className="feature tilt3d">
               <div className="feature__icon"><Icon name={f.icon} /></div>
               <h3>{f.title}</h3>
               <p>{f.text}</p>
-            </article>
+            </Reveal>
           ))}
         </div>
       </div>

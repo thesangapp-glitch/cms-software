@@ -11,7 +11,7 @@ const FAQS = [
   },
   {
     q: 'Does the person receiving my card need the app?',
-    a: 'No. Anyone can receive your Sang card with just a QR scan, NFC tap, or link — no app required. Your contact details save straight to their phone as a vCard.',
+    a: 'To save a basic contact, no — anyone can scan your QR, tap NFC, or open your link and save your details straight to their phone as a vCard. For the full experience — receiving your complete profile and forming a two-way connection so you both stay in sync as details change — both people use the Sang app.',
   },
   {
     q: 'How does NFC tap sharing work?',

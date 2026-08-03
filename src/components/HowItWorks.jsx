@@ -1,3 +1,5 @@
+import Reveal from './Reveal.jsx'
+
 const STEPS = [
   {
     n: '01',
@@ -12,7 +14,7 @@ const STEPS = [
   {
     n: '03',
     title: 'Save the connection',
-    text: 'Your details save straight to their phone as a vCard. Capture leads and auto-tag contacts by the event you met at.',
+    text: 'Your details save to their phone as a vCard instantly. When you both use the Sang app, it becomes a full two-way connection — capture leads and auto-tag contacts by the event you met at.',
   },
   {
     n: '04',
@@ -32,12 +34,12 @@ export default function HowItWorks() {
         </div>
 
         <div className="steps">
-          {STEPS.map((s) => (
-            <div key={s.n} className="step">
+          {STEPS.map((s, i) => (
+            <Reveal key={s.n} delay={i * 90} className="step tilt3d">
               <div className="step__n">{s.n}</div>
               <h3>{s.title}</h3>
               <p>{s.text}</p>
-            </div>
+            </Reveal>
           ))}
         </div>
       </div>

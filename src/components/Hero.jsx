@@ -1,14 +1,20 @@
 import StoreButtons from './StoreButtons.jsx'
 import PhoneMockup from './PhoneMockup.jsx'
 import { HashLink } from './HashLink.jsx'
+import NetworkCanvas from './NetworkCanvas.jsx'
+import { useTilt } from '../useTilt.js'
 
 export default function Hero() {
+  const tiltRef = useTilt({ max: 10, scale: 1.03 })
+
   return (
     <section className="hero">
+      <NetworkCanvas className="hero__network" />
       <div className="hero__glow" aria-hidden="true" />
+      <div className="hero__grid" aria-hidden="true" />
       <div className="container hero__inner">
         <div className="hero__copy">
-          <span className="pill">✦ Free digital business card maker</span>
+          <span className="pill pill--glow">✦ Free digital business card maker</span>
           <h1>
             Share who you are in <span className="grad-text">one tap.</span>
           </h1>
@@ -21,8 +27,8 @@ export default function Hero() {
           <StoreButtons />
 
           <div className="hero__meta">
-            <div><b>No app</b> needed to receive</div>
-            <div><b>One-tap</b> save to contacts</div>
+            <div><b>No app</b> to save a vCard</div>
+            <div><b>Sang app</b> for full connections</div>
             <div><b>Privacy</b>-first sharing</div>
           </div>
 
@@ -32,7 +38,11 @@ export default function Hero() {
         </div>
 
         <div className="hero__visual">
-          <PhoneMockup />
+          <div ref={tiltRef} className="hero__tilt">
+            <div className="hero__orb hero__orb--1" aria-hidden="true" />
+            <div className="hero__orb hero__orb--2" aria-hidden="true" />
+            <PhoneMockup />
+          </div>
         </div>
       </div>
     </section>
