@@ -1,0 +1,84 @@
+# Internal planning and handoff docs
+implementation-plan/
+SANG_FULL_PRODUCT_STATUS_2026-08-06.md
+
+# Dependencies
+node_modules/
+web/node_modules/
+functions/node_modules/
+
+# Build output
+dist/
+web/dist/
+functions/lib/
+
+# Firebase local/deploy cache
+.firebase/
+firebase-debug.log
+firebase-debug.*.log
+firestore-debug.log
+ui-debug.log
+database-debug.log
+pubsub-debug.log
+firebase-export-*/
+firestore_export/
+emulator-data/
+.runtimeconfig.json
+
+# Secrets, credentials, and private keys
+*.pem
+*.p12
+*.key
+*.crt
+*.cert
+*service-account*.json
+*serviceAccount*.json
+*firebase-adminsdk*.json
+*credentials*.json
+*credential*.json
+secret*.json
+secrets*.json
+private*.json
+
+# Local environment files
+.env
+.env.*
+web/.env
+web/.env.*
+functions/.env
+functions/.env.*
+
+# QA screenshots and temporary artifacts
+qa-*.png
+screenshots/
+artifacts/
+tmp/
+temp/
+*.tmp
+*.log
+*.bak
+*.backup
+*.zip
+*.tar
+*.gz
+
+# Test, coverage, and browser automation output
+coverage/
+.nyc_output/
+test-results/
+playwright-report/
+cypress/screenshots/
+cypress/videos/
+
+# Tool caches
+.cache/
+.vite/
+.turbo/
+.parcel-cache/
+.eslintcache
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

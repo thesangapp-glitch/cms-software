@@ -1,0 +1,148 @@
+// Sang Event CRM rules partial.
+// Merge this block inside sang/firestore.rules -> service cloud.firestore -> match /databases/{database}/documents.
+// Do not deploy Firestore rules from sang_event_crm directly.
+//
+// Also merge this nested block inside the existing `match /users/{uid}` rule before
+// its final `match /{document=**}` deny:
+//
+// match /eventAccess/{programId} {
+//   allow read: if request.auth != null && request.auth.uid == uid;
+//   allow write: if false;
+// }
+
+function peActiveMemberPath(orgId) {
+  return /databases/$(database)/documents/peTeamMembers/$(orgId + '_' + request.auth.uid);
+}
+
+function peIsActiveMember(orgId) {
+  return request.auth != null
+    && exists(peActiveMemberPath(orgId))
+    && get(peActiveMemberPath(orgId)).data.status == 'active';
+}
+
+function peRolePermissions(orgId) {
+  let member = get(peActiveMemberPath(orgId)).data;
+  return get(/databases/$(database)/documents/peOrganizations/$(orgId)/roles/$(member.roleId)).data.permissions;
+}
+
+function peHasPermission(orgId, permission) {
+  return peIsActiveMember(orgId)
+    && (permission in peRolePermissions(orgId) || '*' in peRolePermissions(orgId));
+}
+
+match /peUsers/{uid} {
+  allow read, update: if request.auth != null && request.auth.uid == uid;
+  allow create: if request.auth != null && request.auth.uid == uid;
+  allow delete: if false;
+}
+
+match /peOrganizations/{orgId} {
+  allow read: if peIsActiveMember(orgId);
+  allow create: if request.auth != null && request.resource.data.ownerUid == request.auth.uid;
+  allow update: if peHasPermission(orgId, 'team.write');
+  allow delete: if false;
+
+  match /roles/{roleId} {
+    allow read: if peIsActiveMember(orgId);
+    allow create, update, delete: if peHasPermission(orgId, 'roles.write');
+  }
+}
+
+match /peTeamMembers/{teamMemberId} {
+  allow read: if peIsActiveMember(resource.data.orgId)
+    || (request.auth != null && resource.data.uid == request.auth.uid);
+  allow create, update: if peHasPermission(request.resource.data.orgId, 'team.write');
+  allow delete: if false;
+}
+
+match /pePrograms/{programId} {
+  allow read: if peIsActiveMember(resource.data.orgId);
+  allow create: if peHasPermission(request.resource.data.orgId, 'program.write');
+  allow update: if peHasPermission(resource.data.orgId, 'program.write');
+  allow delete: if false;
+}
+
+match /peEvents/{eventId} {
+  allow read: if peIsActiveMember(resource.data.orgId);
+  allow create: if peHasPermission(request.resource.data.orgId, 'event.write');
+  allow update: if peHasPermission(resource.data.orgId, 'event.write');
+  allow delete: if false;
+}
+
+match /peProgramContent/{programId} {
+  allow read: if peIsActiveMember(resource.data.orgId);
+  allow create, update: if peHasPermission(request.resource.data.orgId, 'program.write')
+    || peHasPermission(resource.data.orgId, 'program.write');
+  allow delete: if false;
+}
+
+match /peProgramContentSections/{sectionId} {
+  allow read: if peIsActiveMember(resource.data.orgId);
+  allow create, update: if peHasPermission(request.resource.data.orgId, 'program.write')
+    || peHasPermission(resource.data.orgId, 'program.write');
+  allow delete: if false;
+}
+
+match /peProgramPeople/{programPersonId} {
+  allow read: if peIsActiveMember(resource.data.orgId);
+  allow create: if peHasPermission(request.resource.data.orgId, 'people.import');
+  allow update: if peHasPermission(resource.data.orgId, 'people.import')
+    || peHasPermission(resource.data.orgId, 'passes.issue');
+  allow delete: if false;
+
+  match /events/{eventId} {
+    allow read: if peIsActiveMember(resource.data.orgId);
+    allow create, update: if peHasPermission(request.resource.data.orgId, 'people.import')
+      || peHasPermission(resource.data.orgId, 'people.import');
+    allow delete: if false;
+  }
+}
+
+match /peTeams/{teamId} {
+  allow read: if peIsActiveMember(resource.data.orgId);
+  allow create, update: if peHasPermission(request.resource.data.orgId, 'people.import')
+    || peHasPermission(resource.data.orgId, 'people.import');
+  allow delete: if false;
+}
+
+match /pePasses/{passId} {
+  allow read: if peIsActiveMember(resource.data.orgId);
+  allow write: if false;
+}
+
+match /peCheckIns/{checkInId} {
+  allow read: if peIsActiveMember(resource.data.orgId);
+  allow write: if false;
+}
+
+match /peScannerSessions/{scannerSessionId} {
+  allow read: if request.auth != null && resource.data.scannerUid == request.auth.uid;
+  allow write: if false;
+}
+
+match /peAnalyticsSummaries/{summaryId} {
+  allow read: if peIsActiveMember(resource.data.orgId);
+  allow write: if false;
+}
+
+match /peAnalyticsBuckets/{bucketId} {
+  allow read: if peIsActiveMember(resource.data.orgId);
+  allow write: if false;
+}
+
+match /peAuditLogs/{logId} {
+  allow read: if peHasPermission(resource.data.orgId, 'analytics.read');
+  allow write: if false;
+}
+
+match /peImports/{importId} {
+  allow read: if peIsActiveMember(resource.data.orgId);
+  allow create: if peHasPermission(request.resource.data.orgId, 'people.import');
+  allow update: if false;
+  allow delete: if false;
+}
+
+match /peExports/{exportId} {
+  allow read: if peIsActiveMember(resource.data.orgId);
+  allow write: if false;
+}
