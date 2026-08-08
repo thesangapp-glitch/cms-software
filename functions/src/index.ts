@@ -71,6 +71,31 @@ function tokenHash(token: string) {
   return createHash('sha256').update(token).digest('hex')
 }
 
+async function assertProgram(input: { orgId: string; programId: string }) {
+  const programRef = db.collection('pePrograms').doc(input.programId)
+  const programSnapshot = await programRef.get()
+  if (!programSnapshot.exists) {
+    throw new HttpsError('not-found', 'Program not found.')
+  }
+  if (programSnapshot.data()?.orgId !== input.orgId) {
+    throw new HttpsError('permission-denied', 'Program does not belong to this organization.')
+  }
+  return { programRef, program: programSnapshot.data() || {} }
+}
+
+async function assertEvent(input: { orgId: string; programId: string; eventId: string }) {
+  const eventRef = db.collection('peEvents').doc(input.eventId)
+  const eventSnapshot = await eventRef.get()
+  if (!eventSnapshot.exists) {
+    throw new HttpsError('not-found', 'Event not found.')
+  }
+  const event = eventSnapshot.data()
+  if (event?.orgId !== input.orgId || event?.programId !== input.programId) {
+    throw new HttpsError('permission-denied', 'Event does not belong to this program.')
+  }
+  return { eventRef, event: event || {} }
+}
+
 async function assertPermission(uid: string, orgId: string, requiredPermission: string) {
   const memberSnapshot = await db
     .collection('peTeamMembers')
@@ -117,6 +142,7 @@ export const createOrganization = onCall(callableOptions, async (request) => {
       orgName: z.string().min(2),
       industry: z.string().optional().default(''),
       website: z.string().optional().default(''),
+      logoUrl: z.string().optional().default(''),
       email: z.string().email(),
     })
     .parse(request.data)
@@ -128,6 +154,7 @@ export const createOrganization = onCall(callableOptions, async (request) => {
     name: input.orgName.trim(),
     industry: input.industry.trim(),
     website: input.website.trim(),
+    logoUrl: input.logoUrl.trim(),
     ownerUid: uid,
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
@@ -167,6 +194,49 @@ export const createOrganization = onCall(callableOptions, async (request) => {
   await batch.commit()
   await writeAudit({ orgId: orgRef.id, actorUid: uid, action: 'organization.create', entityPath: orgRef.path })
   return { orgId: orgRef.id }
+})
+
+export const updateOrganization = onCall(callableOptions, async (request) => {
+  const uid = requireUid(request)
+  const input = z
+    .object({
+      orgId: z.string().min(1),
+      name: z.string().min(2),
+      industry: z.string().optional().default(''),
+      website: z.string().optional().default(''),
+      logoUrl: z.string().optional().default(''),
+    })
+    .parse(request.data)
+
+  await assertPermission(uid, input.orgId, permissions.teamWrite)
+  const orgRef = db.collection('peOrganizations').doc(input.orgId)
+  await orgRef.set(
+    {
+      name: input.name.trim(),
+      industry: input.industry.trim(),
+      website: input.website.trim(),
+      logoUrl: input.logoUrl.trim(),
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  )
+  await writeAudit({ orgId: input.orgId, actorUid: uid, action: 'organization.update', entityPath: orgRef.path })
+  return { orgId: input.orgId }
+})
+
+export const setActiveOrganization = onCall(callableOptions, async (request) => {
+  const uid = requireUid(request)
+  const input = z.object({ orgId: z.string().min(1) }).parse(request.data)
+  await assertPermission(uid, input.orgId, 'program.read')
+  await db.collection('peUsers').doc(uid).set(
+    {
+      activeOrgId: input.orgId,
+      organizationIds: FieldValue.arrayUnion(input.orgId),
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  )
+  return { orgId: input.orgId }
 })
 
 export const createRole = onCall(callableOptions, async (request) => {
@@ -302,10 +372,12 @@ export const createProgram = onCall(callableOptions, async (request) => {
       orgId: z.string().min(1),
       name: z.string().min(2),
       mode: z.enum(['standalone', 'multiEvent']),
+      programType: z.string().optional().default('college_fest'),
       startDate: z.string().min(1),
       endDate: z.string().min(1),
       venueName: z.string().optional().default(''),
       city: z.string().optional().default(''),
+      logoUrl: z.string().optional().default(''),
       bannerUrl: z.string().optional().default(''),
       posterUrl: z.string().optional().default(''),
       latitude: z.number().optional(),
@@ -313,6 +385,10 @@ export const createProgram = onCall(callableOptions, async (request) => {
       address: z.string().optional().default(''),
       timezone: z.string().optional().default('Asia/Kolkata'),
       description: z.string().optional().default(''),
+      entryScope: z.enum(['program', 'event', 'both']).optional().default('program'),
+      competitive: z.boolean().optional().default(false),
+      resultsEnabled: z.boolean().optional().default(false),
+      joinQrEnabled: z.boolean().optional().default(true),
     })
     .parse(request.data)
 
@@ -341,6 +417,71 @@ export const createProgram = onCall(callableOptions, async (request) => {
   return { programId: programRef.id }
 })
 
+export const updateProgram = onCall(callableOptions, async (request) => {
+  const uid = requireUid(request)
+  const input = z
+    .object({
+      orgId: z.string().min(1),
+      programId: z.string().min(1),
+      name: z.string().min(2),
+      mode: z.enum(['standalone', 'multiEvent']),
+      programType: z.string().optional().default('college_fest'),
+      startDate: z.string().min(1),
+      endDate: z.string().min(1),
+      venueName: z.string().optional().default(''),
+      city: z.string().optional().default(''),
+      logoUrl: z.string().optional().default(''),
+      bannerUrl: z.string().optional().default(''),
+      posterUrl: z.string().optional().default(''),
+      latitude: z.number().optional(),
+      longitude: z.number().optional(),
+      address: z.string().optional().default(''),
+      timezone: z.string().optional().default('Asia/Kolkata'),
+      description: z.string().optional().default(''),
+      entryScope: z.enum(['program', 'event', 'both']).optional().default('program'),
+      competitive: z.boolean().optional().default(false),
+      resultsEnabled: z.boolean().optional().default(false),
+      joinQrEnabled: z.boolean().optional().default(true),
+      status: z.enum(['draft', 'live', 'archived']).optional().default('draft'),
+    })
+    .parse(request.data)
+
+  await assertPermission(uid, input.orgId, permissions.programWrite)
+  const { programRef } = await assertProgram(input)
+  await programRef.set(
+    {
+      ...input,
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  )
+  await writeAudit({ orgId: input.orgId, actorUid: uid, action: 'program.update', entityPath: programRef.path })
+  return { programId: input.programId }
+})
+
+export const deleteProgram = onCall(callableOptions, async (request) => {
+  const uid = requireUid(request)
+  const input = z
+    .object({
+      orgId: z.string().min(1),
+      programId: z.string().min(1),
+    })
+    .parse(request.data)
+
+  await assertPermission(uid, input.orgId, permissions.programWrite)
+  const { programRef } = await assertProgram(input)
+  await programRef.set(
+    {
+      status: 'archived',
+      archivedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  )
+  await writeAudit({ orgId: input.orgId, actorUid: uid, action: 'program.archive', entityPath: programRef.path })
+  return { programId: input.programId }
+})
+
 export const createEvent = onCall(callableOptions, async (request) => {
   const uid = requireUid(request)
   const input = z
@@ -348,18 +489,27 @@ export const createEvent = onCall(callableOptions, async (request) => {
       orgId: z.string().min(1),
       programId: z.string().min(1),
       name: z.string().min(2),
+      eventType: z.string().optional().default('session'),
       startDateTime: z.string().optional().default(''),
       endDateTime: z.string().optional().default(''),
+      multiDate: z.boolean().optional().default(false),
       venueName: z.string().optional().default(''),
       locationNote: z.string().optional().default(''),
       posterUrl: z.string().optional().default(''),
       latitude: z.number().optional(),
       longitude: z.number().optional(),
       address: z.string().optional().default(''),
+      entryScope: z.enum(['program', 'event', 'both']).optional().default('event'),
+      competitive: z.boolean().optional().default(false),
+      resultsEnabled: z.boolean().optional().default(false),
+      scheduleItemCount: z.number().optional().default(0),
+      nextScheduleTitle: z.string().optional().default(''),
+      nextScheduleAt: z.string().optional().default(''),
     })
     .parse(request.data)
 
   await assertPermission(uid, input.orgId, permissions.eventWrite)
+  await assertProgram(input)
   const eventRef = db.collection('peEvents').doc()
   await eventRef.set({
     ...input,
@@ -379,28 +529,28 @@ export const updateEvent = onCall(callableOptions, async (request) => {
       eventId: z.string().min(1),
       programId: z.string().min(1),
       name: z.string().min(2),
+      eventType: z.string().optional().default('session'),
       startDateTime: z.string().optional().default(''),
       endDateTime: z.string().optional().default(''),
+      multiDate: z.boolean().optional().default(false),
       venueName: z.string().optional().default(''),
       locationNote: z.string().optional().default(''),
       posterUrl: z.string().optional().default(''),
       latitude: z.number().optional(),
       longitude: z.number().optional(),
       address: z.string().optional().default(''),
+      entryScope: z.enum(['program', 'event', 'both']).optional().default('event'),
+      competitive: z.boolean().optional().default(false),
+      resultsEnabled: z.boolean().optional().default(false),
+      scheduleItemCount: z.number().optional().default(0),
+      nextScheduleTitle: z.string().optional().default(''),
+      nextScheduleAt: z.string().optional().default(''),
       status: z.enum(['draft', 'live', 'completed']).optional().default('draft'),
     })
     .parse(request.data)
 
   await assertPermission(uid, input.orgId, permissions.eventWrite)
-  const eventRef = db.collection('peEvents').doc(input.eventId)
-  const eventSnapshot = await eventRef.get()
-  if (!eventSnapshot.exists) {
-    throw new HttpsError('not-found', 'Event not found.')
-  }
-  const existing = eventSnapshot.data()
-  if (existing?.orgId !== input.orgId || existing?.programId !== input.programId) {
-    throw new HttpsError('permission-denied', 'Event does not belong to this program.')
-  }
+  const { eventRef } = await assertEvent(input)
 
   await eventRef.set(
     {
@@ -435,6 +585,159 @@ export const deleteEvent = onCall(callableOptions, async (request) => {
   await eventRef.delete()
   await writeAudit({ orgId: input.orgId, actorUid: uid, action: 'event.delete', entityPath: eventRef.path })
   return { eventId: input.eventId }
+})
+
+export const createScheduleItem = onCall(callableOptions, async (request) => {
+  const uid = requireUid(request)
+  const input = z
+    .object({
+      orgId: z.string().min(1),
+      programId: z.string().min(1),
+      eventId: z.string().optional().default(''),
+      title: z.string().min(2),
+      type: z.enum(['session', 'round', 'break', 'checkin', 'performance', 'result', 'ceremony', 'custom']).optional().default('session'),
+      description: z.string().optional().default(''),
+      startsAt: z.string().min(1),
+      endsAt: z.string().optional().default(''),
+      timezone: z.string().optional().default('Asia/Kolkata'),
+      venueName: z.string().optional().default(''),
+      roomName: z.string().optional().default(''),
+      latitude: z.number().optional(),
+      longitude: z.number().optional(),
+      visibility: z.enum(['public', 'staffOnly', 'participantsOnly']).optional().default('public'),
+      status: z.enum(['draft', 'scheduled', 'delayed', 'cancelled', 'completed']).optional().default('scheduled'),
+      sortOrder: z.number().optional().default(0),
+    })
+    .parse(request.data)
+
+  await assertPermission(uid, input.orgId, permissions.eventWrite)
+  await assertProgram(input)
+  if (input.eventId) {
+    await assertEvent({ orgId: input.orgId, programId: input.programId, eventId: input.eventId })
+  }
+
+  const scheduleRef = db.collection('peEventScheduleItems').doc()
+  const batch = db.batch()
+  batch.set(scheduleRef, {
+    ...input,
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  })
+  if (input.eventId) {
+    batch.set(
+      db.collection('peEvents').doc(input.eventId),
+      {
+        scheduleItemCount: FieldValue.increment(1),
+        nextScheduleTitle: input.title.trim(),
+        nextScheduleAt: input.startsAt,
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    )
+  }
+  await batch.commit()
+  await writeAudit({ orgId: input.orgId, actorUid: uid, action: 'schedule.create', entityPath: scheduleRef.path })
+  return { scheduleItemId: scheduleRef.id }
+})
+
+export const updateScheduleItem = onCall(callableOptions, async (request) => {
+  const uid = requireUid(request)
+  const input = z
+    .object({
+      orgId: z.string().min(1),
+      scheduleItemId: z.string().min(1),
+      programId: z.string().min(1),
+      eventId: z.string().optional().default(''),
+      title: z.string().min(2),
+      type: z.enum(['session', 'round', 'break', 'checkin', 'performance', 'result', 'ceremony', 'custom']).optional().default('session'),
+      description: z.string().optional().default(''),
+      startsAt: z.string().min(1),
+      endsAt: z.string().optional().default(''),
+      timezone: z.string().optional().default('Asia/Kolkata'),
+      venueName: z.string().optional().default(''),
+      roomName: z.string().optional().default(''),
+      latitude: z.number().optional(),
+      longitude: z.number().optional(),
+      visibility: z.enum(['public', 'staffOnly', 'participantsOnly']).optional().default('public'),
+      status: z.enum(['draft', 'scheduled', 'delayed', 'cancelled', 'completed']).optional().default('scheduled'),
+      sortOrder: z.number().optional().default(0),
+    })
+    .parse(request.data)
+
+  await assertPermission(uid, input.orgId, permissions.eventWrite)
+  const scheduleRef = db.collection('peEventScheduleItems').doc(input.scheduleItemId)
+  const scheduleSnapshot = await scheduleRef.get()
+  if (!scheduleSnapshot.exists) {
+    throw new HttpsError('not-found', 'Schedule item not found.')
+  }
+  if (scheduleSnapshot.data()?.orgId !== input.orgId || scheduleSnapshot.data()?.programId !== input.programId) {
+    throw new HttpsError('permission-denied', 'Schedule item does not belong to this program.')
+  }
+  await scheduleRef.set(
+    {
+      ...input,
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  )
+  await writeAudit({ orgId: input.orgId, actorUid: uid, action: 'schedule.update', entityPath: scheduleRef.path })
+  return { scheduleItemId: input.scheduleItemId }
+})
+
+export const deleteScheduleItem = onCall(callableOptions, async (request) => {
+  const uid = requireUid(request)
+  const input = z
+    .object({
+      orgId: z.string().min(1),
+      scheduleItemId: z.string().min(1),
+    })
+    .parse(request.data)
+
+  await assertPermission(uid, input.orgId, permissions.eventWrite)
+  const scheduleRef = db.collection('peEventScheduleItems').doc(input.scheduleItemId)
+  const scheduleSnapshot = await scheduleRef.get()
+  if (!scheduleSnapshot.exists) {
+    return { scheduleItemId: input.scheduleItemId }
+  }
+  if (scheduleSnapshot.data()?.orgId !== input.orgId) {
+    throw new HttpsError('permission-denied', 'Schedule item does not belong to this organization.')
+  }
+  await scheduleRef.delete()
+  await writeAudit({ orgId: input.orgId, actorUid: uid, action: 'schedule.delete', entityPath: scheduleRef.path })
+  return { scheduleItemId: input.scheduleItemId }
+})
+
+export const createProgramJoinLink = onCall(callableOptions, async (request) => {
+  const uid = requireUid(request)
+  const input = z
+    .object({
+      orgId: z.string().min(1),
+      programId: z.string().min(1),
+      mode: z.enum(['direct_join', 'request_approval', 'invite_only']).optional().default('request_approval'),
+      allowedCategory: z.enum(['attendee', 'participant', 'speaker', 'staff', 'custom']).optional().default('attendee'),
+      allowedEventIds: z.array(z.string()).optional().default([]),
+      maxUses: z.number().int().positive().optional().default(5000),
+      expiresAt: z.string().optional().default(''),
+      campaignName: z.string().optional().default('Main program QR'),
+    })
+    .parse(request.data)
+
+  await assertPermission(uid, input.orgId, permissions.programWrite)
+  await assertProgram(input)
+  const token = makeToken()
+  const joinRef = db.collection('peProgramJoinLinks').doc()
+  await joinRef.set({
+    ...input,
+    tokenHash: tokenHash(token),
+    usedCount: 0,
+    status: 'active',
+    qrPayload: `SANGPROGRAM1:${token}`,
+    createdBy: uid,
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  })
+  await writeAudit({ orgId: input.orgId, actorUid: uid, action: 'programJoinLink.create', entityPath: joinRef.path })
+  return { joinLinkId: joinRef.id, qrPayload: `SANGPROGRAM1:${token}` }
 })
 
 export const createProgramPersonAndPass = onCall(callableOptions, async (request) => {

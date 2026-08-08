@@ -3,13 +3,17 @@ import {
   Activity,
   BadgeCheck,
   BarChart3,
+  Building2,
   CalendarDays,
   Check,
   ChevronRight,
+  Clock,
   ClipboardList,
+  Copy,
   Download,
   Eye,
   LayoutDashboard,
+  Link2,
   Loader2,
   Lock,
   LogOut,
@@ -17,9 +21,12 @@ import {
   Pencil,
   Plus,
   QrCode,
+  Save,
   ScanLine,
+  Settings,
   ShieldCheck,
   Sparkles,
+  Ticket,
   Trash2,
   Upload,
   Users,
@@ -55,10 +62,48 @@ import {
 import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage'
 import { auth, db, functions, storage } from './lib/firebase'
 
-type RouteKey = 'dashboard' | 'events' | 'programs' | 'roles' | 'team' | 'people' | 'checkin' | 'analytics'
+type RouteKey = 'dashboard' | 'events' | 'programs' | 'settings' | 'roles' | 'team' | 'people' | 'checkin' | 'analytics'
 type PersonKind = 'attendee' | 'participant' | 'speaker' | 'staff'
 type ProgramMode = 'standalone' | 'multiEvent'
 type TeamScope = 'organization' | 'program' | 'event'
+type EntryScope = 'program' | 'event' | 'both'
+type JoinMode = 'direct_join' | 'request_approval' | 'invite_only'
+type ScheduleType = 'session' | 'round' | 'break' | 'checkin' | 'performance' | 'result' | 'ceremony' | 'custom'
+type ScheduleStatus = 'draft' | 'scheduled' | 'delayed' | 'cancelled' | 'completed'
+type ScheduleVisibility = 'public' | 'staffOnly' | 'participantsOnly'
+
+const programTypeOptions = [
+  { value: 'college_fest', label: 'College fest' },
+  { value: 'conference', label: 'Conference' },
+  { value: 'corporate_event', label: 'Corporate event' },
+  { value: 'competition', label: 'Competition' },
+  { value: 'workshop_series', label: 'Workshop series' },
+  { value: 'exhibition', label: 'Exhibition' },
+  { value: 'community_event', label: 'Community event' },
+  { value: 'custom', label: 'Custom' },
+]
+
+const orgCategoryOptions = [
+  { value: 'College fest', label: 'College fest' },
+  { value: 'Conference', label: 'Conference' },
+  { value: 'Corporate event', label: 'Corporate event' },
+  { value: 'Event management agency', label: 'Event management agency' },
+  { value: 'College / university', label: 'College / university' },
+  { value: 'Startup event', label: 'Startup event' },
+  { value: 'Community event', label: 'Community event' },
+]
+
+const eventTypeOptions = [
+  { value: 'session', label: 'Session / talk' },
+  { value: 'workshop', label: 'Workshop' },
+  { value: 'competition', label: 'Competition' },
+  { value: 'presentation', label: 'Presentation' },
+  { value: 'poster_session', label: 'Poster session' },
+  { value: 'performance', label: 'Performance' },
+  { value: 'exhibition', label: 'Exhibition / booth' },
+  { value: 'gate_zone', label: 'Gate / entry zone' },
+  { value: 'custom', label: 'Custom' },
+]
 
 type PeUser = {
   uid: string
@@ -73,6 +118,7 @@ type Organization = {
   name: string
   industry?: string
   website?: string
+  logoUrl?: string
   ownerUid: string
 }
 
@@ -102,11 +148,13 @@ type Program = {
   orgId: string
   name: string
   mode: ProgramMode
+  programType?: string
   status: 'draft' | 'live' | 'archived'
   startDate: string
   endDate: string
   venueName: string
   city: string
+  logoUrl?: string
   bannerUrl?: string
   posterUrl?: string
   latitude?: number
@@ -114,6 +162,10 @@ type Program = {
   address?: string
   timezone: string
   description?: string
+  entryScope?: EntryScope
+  competitive?: boolean
+  resultsEnabled?: boolean
+  joinQrEnabled?: boolean
 }
 
 type ProgramEvent = {
@@ -121,15 +173,57 @@ type ProgramEvent = {
   orgId: string
   programId: string
   name: string
+  eventType?: string
   startDateTime: string
   endDateTime: string
+  multiDate?: boolean
   venueName: string
   locationNote?: string
   posterUrl?: string
   latitude?: number
   longitude?: number
   address?: string
+  entryScope?: EntryScope
+  competitive?: boolean
+  resultsEnabled?: boolean
+  scheduleItemCount?: number
+  nextScheduleTitle?: string
+  nextScheduleAt?: string
   status: 'draft' | 'live' | 'completed'
+}
+
+type ScheduleItem = {
+  id: string
+  orgId: string
+  programId: string
+  eventId?: string
+  title: string
+  type: ScheduleType
+  description?: string
+  startsAt: string
+  endsAt?: string
+  timezone: string
+  venueName?: string
+  roomName?: string
+  latitude?: number
+  longitude?: number
+  visibility: ScheduleVisibility
+  status: ScheduleStatus
+  sortOrder?: number
+}
+
+type ProgramJoinLink = {
+  id: string
+  orgId: string
+  programId: string
+  mode: JoinMode
+  allowedCategory: PersonKind | 'custom'
+  maxUses: number
+  usedCount: number
+  status: 'active' | 'revoked' | 'expired'
+  qrPayload?: string
+  campaignName?: string
+  expiresAt?: string
 }
 
 type ProgramPerson = {
@@ -184,6 +278,7 @@ const routeLabels: Record<RouteKey, string> = {
   dashboard: 'Dashboard',
   events: 'Events',
   programs: 'Programs',
+  settings: 'Settings',
   roles: 'Roles',
   team: 'Team',
   people: 'People',
@@ -195,6 +290,7 @@ const navItems = [
   { key: 'dashboard' as const, icon: LayoutDashboard },
   { key: 'events' as const, icon: CalendarDays },
   { key: 'programs' as const, icon: CalendarDays },
+  { key: 'settings' as const, icon: Settings },
   { key: 'roles' as const, icon: ShieldCheck },
   { key: 'team' as const, icon: Users },
   { key: 'people' as const, icon: ClipboardList },
@@ -318,24 +414,32 @@ function useAuthProfile() {
   return { firebaseUser, profile, setProfile, loading }
 }
 
-const createOrganizationCallable = httpsCallable<{ displayName: string; orgName: string; industry: string; website: string; email: string }, { orgId: string }>(functions, 'createOrganization')
+const createOrganizationCallable = httpsCallable<{ displayName: string; orgName: string; industry: string; website: string; logoUrl: string; email: string }, { orgId: string }>(functions, 'createOrganization')
+const updateOrganizationCallable = httpsCallable<{ orgId: string; name: string; industry: string; website: string; logoUrl: string }, { orgId: string }>(functions, 'updateOrganization')
+const setActiveOrganizationCallable = httpsCallable<{ orgId: string }, { orgId: string }>(functions, 'setActiveOrganization')
 const claimTeamAccessCallable = httpsCallable<void, { claimedOrgIds: string[] }>(functions, 'claimTeamAccess')
 const createRoleCallable = httpsCallable<{ orgId: string; roleId: string; name: string; description: string; permissions: string[] }, { roleId: string }>(functions, 'createRole')
 const inviteTeamMemberCallable = httpsCallable<{ orgId: string; email: string; displayName: string; roleId: string; scope: TeamScope; programId?: string; eventId?: string }, { teamMemberId: string }>(functions, 'inviteTeamMember')
 const createProgramCallable = httpsCallable<Omit<Program, 'id' | 'status'>, { programId: string }>(functions, 'createProgram')
+const updateProgramCallable = httpsCallable<Omit<Program, 'id'> & { programId: string }, { programId: string }>(functions, 'updateProgram')
+const deleteProgramCallable = httpsCallable<{ orgId: string; programId: string }, { programId: string }>(functions, 'deleteProgram')
 const createEventCallable = httpsCallable<Omit<ProgramEvent, 'id' | 'status'>, { eventId: string }>(functions, 'createEvent')
 const updateEventCallable = httpsCallable<Partial<Omit<ProgramEvent, 'id'>> & { eventId: string }, { eventId: string }>(functions, 'updateEvent')
 const deleteEventCallable = httpsCallable<{ orgId: string; eventId: string }, { eventId: string }>(functions, 'deleteEvent')
+const createScheduleItemCallable = httpsCallable<Omit<ScheduleItem, 'id'>, { scheduleItemId: string }>(functions, 'createScheduleItem')
+const deleteScheduleItemCallable = httpsCallable<{ orgId: string; scheduleItemId: string }, { scheduleItemId: string }>(functions, 'deleteScheduleItem')
+const createProgramJoinLinkCallable = httpsCallable<{ orgId: string; programId: string; mode: JoinMode; allowedCategory: PersonKind | 'custom'; allowedEventIds: string[]; maxUses: number; expiresAt: string; campaignName: string }, { joinLinkId: string; qrPayload: string }>(functions, 'createProgramJoinLink')
 const createProgramPersonAndPassCallable = httpsCallable<Omit<ProgramPerson, 'id' | 'passId' | 'passStatus' | 'sangUid'> & { eventIds?: string[] }, { programPersonId: string; passId: string; qrPayload: string }>(functions, 'createProgramPersonAndPass')
 const createScannerSession = httpsCallable<{ orgId: string; programId: string; eventId?: string; gateName?: string }, { scannerSessionId: string; scannerToken: string }>(functions, 'createScannerSession')
 const scanPassToken = httpsCallable<{ scannerSessionId: string; scannerToken: string; payload: string; deviceScanId: string }, { result: string; passId: string; programPersonId: string }>(functions, 'scanPassToken')
 
-async function createOrganizationWithOwner(user: User, input: { displayName: string; orgName: string; industry: string; website: string }) {
+async function createOrganizationWithOwner(user: User, input: { displayName: string; orgName: string; industry: string; website: string; logoUrl: string }) {
   const response = await createOrganizationCallable({
     displayName: input.displayName.trim(),
     orgName: input.orgName.trim(),
     industry: input.industry.trim(),
     website: input.website.trim(),
+    logoUrl: input.logoUrl.trim(),
     email: user.email || '',
   })
   await updateProfile(user, { displayName: input.displayName.trim() })
@@ -539,10 +643,11 @@ function AuthPage() {
 }
 
 function OnboardingPage({ user, onComplete }: { user: User; onComplete: (profile: PeUser) => void }) {
-  const [displayName, setDisplayName] = useState(user.displayName || '')
+  const [displayName, setDisplayName] = useState(user.displayName || user.email?.split('@')[0] || '')
   const [orgName, setOrgName] = useState('')
   const [industry, setIndustry] = useState('College fest')
   const [website, setWebsite] = useState('')
+  const [logoUrl, setLogoUrl] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
@@ -552,7 +657,7 @@ function OnboardingPage({ user, onComplete }: { user: User; onComplete: (profile
     setError('')
 
     try {
-      const profile = await createOrganizationWithOwner(user, { displayName, orgName, industry, website })
+      const profile = await createOrganizationWithOwner(user, { displayName, orgName, industry, website, logoUrl })
       onComplete(profile)
     } catch (setupError) {
       setError(setupError instanceof Error ? setupError.message : 'Could not complete setup')
@@ -566,13 +671,15 @@ function OnboardingPage({ user, onComplete }: { user: User; onComplete: (profile
       <form className="onboarding-card" onSubmit={submit}>
         <span className="eyebrow">First setup</span>
         <h1>Create your organization workspace</h1>
-        <p>Ye top-level account hai. Iske andar programs, roles, team access, attendees, passes aur analytics manage honge.</p>
+        <p>Your organization is the top-level workspace. Programs, roles, team access, attendees, passes, check-ins, and analytics live inside it.</p>
 
         <div className="form-grid two">
-          <label>
-            Your name
-            <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} required />
-          </label>
+          {!user.displayName && (
+            <label>
+              Owner name
+              <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} required />
+            </label>
+          )}
           <label>
             Organization name
             <input placeholder="Your organization or event company" value={orgName} onChange={(event) => setOrgName(event.target.value)} required />
@@ -580,11 +687,7 @@ function OnboardingPage({ user, onComplete }: { user: User; onComplete: (profile
           <label>
             Event category
             <select value={industry} onChange={(event) => setIndustry(event.target.value)}>
-              <option>College fest</option>
-              <option>Conference</option>
-              <option>Corporate event</option>
-              <option>Startup event</option>
-              <option>Community event</option>
+              {orgCategoryOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
             </select>
           </label>
           <label>
@@ -592,6 +695,7 @@ function OnboardingPage({ user, onComplete }: { user: User; onComplete: (profile
             <input placeholder="https://..." value={website} onChange={(event) => setWebsite(event.target.value)} />
           </label>
         </div>
+        <ImageUploader folder="organization-logos" label="Organization logo" onChange={setLogoUrl} uid={user.uid} value={logoUrl} />
 
         {error && <p className="form-error">{error}</p>}
 
@@ -804,21 +908,75 @@ function ProgramChooserPage({
   )
 }
 
+function OrganizationChooserPage({
+  profile,
+  onChoose,
+}: {
+  profile: PeUser
+  onChoose: (orgId: string) => void
+}) {
+  const [organizations, setOrganizations] = useState<Organization[]>([])
+
+  useEffect(() => {
+    let mounted = true
+    async function loadOrganizations() {
+      const snapshots = await Promise.all(profile.organizationIds.map((orgId) => getDoc(doc(db, 'peOrganizations', orgId))))
+      if (!mounted) return
+      setOrganizations(snapshots.filter((snapshot) => snapshot.exists()).map((snapshot) => ({ id: snapshot.id, ...snapshot.data() }) as Organization))
+    }
+    loadOrganizations()
+    return () => {
+      mounted = false
+    }
+  }, [profile.organizationIds])
+
+  return (
+    <main className="main-surface chooser-surface">
+      <section className="program-chooser">
+        <div className="chooser-head">
+          <div>
+            <span className="eyebrow">Choose organization</span>
+            <h1>Select the workspace to open</h1>
+            <p>Your CRM dashboard opens inside one organization first, then inside one program.</p>
+          </div>
+        </div>
+        <div className="program-choice-grid">
+          {organizations.map((organization) => (
+            <button className="program-choice-card org-choice-card" key={organization.id} onClick={() => onChoose(organization.id)} type="button">
+              {organization.logoUrl ? <img alt="" src={organization.logoUrl} /> : <div className="program-choice-fallback"><Building2 size={24} /></div>}
+              <strong>{organization.name}</strong>
+              <p>{organization.industry || 'Event organization'}</p>
+              <small><Link2 size={13} /> {organization.website || organization.id}</small>
+              <div>
+                <span>Open workspace</span>
+                <ChevronRight size={18} />
+              </div>
+            </button>
+          ))}
+        </div>
+      </section>
+    </main>
+  )
+}
+
 function ProgramWorkspaceDashboard({
   program,
   events,
   people,
   checkIns,
+  joinLinks,
   setRoute,
 }: {
   program: Program
   events: ProgramEvent[]
   people: ProgramPerson[]
   checkIns: CheckIn[]
+  joinLinks: ProgramJoinLink[]
   setRoute: (route: RouteKey) => void
 }) {
   const issuedPasses = people.filter((person) => person.passStatus === 'issued' || person.passStatus === 'checkedIn').length
   const checkedIn = people.filter((person) => person.passStatus === 'checkedIn').length
+  const activeJoinLink = joinLinks.find((link) => link.programId === program.id && link.status === 'active')
 
   return (
     <section className="page-stack">
@@ -844,6 +1002,37 @@ function ProgramWorkspaceDashboard({
         <Stat icon={BadgeCheck} label="Passes issued" value={formatCount(issuedPasses)} detail="For selected program" />
         <Stat icon={Users} label="People" value={formatCount(people.length)} detail="Attendees, participants, staff" />
         <Stat icon={ScanLine} label="Checked in" value={formatCount(checkedIn || checkIns.length)} detail="Live gate signal" />
+      </div>
+
+      <div className="quick-action-grid">
+        <button className="quick-action" onClick={() => setRoute('settings')} type="button">
+          <Settings size={20} />
+          <span>
+            <strong>Program profile</strong>
+            <small>Logo, banner, dates, type, entry rules</small>
+          </span>
+        </button>
+        <button className="quick-action" onClick={() => setRoute('people')} type="button">
+          <Users size={20} />
+          <span>
+            <strong>People and passes</strong>
+            <small>Upload attendees, participants, staff</small>
+          </span>
+        </button>
+        <button className="quick-action" onClick={() => setRoute('checkin')} type="button">
+          <ScanLine size={20} />
+          <span>
+            <strong>Entry gates</strong>
+            <small>{program.entryScope || 'program'} level pass validation</small>
+          </span>
+        </button>
+        <button className="quick-action" onClick={() => setRoute('settings')} type="button">
+          <QrCode size={20} />
+          <span>
+            <strong>Program QR</strong>
+            <small>{activeJoinLink ? 'Ready for Sang Scan-to-Join' : 'Generate join/request QR'}</small>
+          </span>
+        </button>
       </div>
 
       <div className="split-grid">
@@ -971,15 +1160,21 @@ function DashboardPage({
 function ProgramsPage({ orgId, uid, programs, events }: { orgId: string; uid: string; programs: Program[]; events: ProgramEvent[] }) {
   const [name, setName] = useState('')
   const [mode, setMode] = useState<ProgramMode>('multiEvent')
+  const [programType, setProgramType] = useState('college_fest')
   const [startDate, setStartDate] = useState(nowDateInput())
   const [endDate, setEndDate] = useState(nowDateInput())
   const [venueName, setVenueName] = useState('')
   const [city, setCity] = useState('')
+  const [logoUrl, setLogoUrl] = useState('')
   const [bannerUrl, setBannerUrl] = useState('')
   const [posterUrl, setPosterUrl] = useState('')
   const [latitude, setLatitude] = useState<number | undefined>()
   const [longitude, setLongitude] = useState<number | undefined>()
   const [description, setDescription] = useState('')
+  const [entryScope, setEntryScope] = useState<EntryScope>('program')
+  const [competitive, setCompetitive] = useState(false)
+  const [resultsEnabled, setResultsEnabled] = useState(false)
+  const [joinQrEnabled, setJoinQrEnabled] = useState(true)
   const [busy, setBusy] = useState(false)
 
   async function createProgram(event: FormEvent) {
@@ -989,10 +1184,12 @@ function ProgramsPage({ orgId, uid, programs, events }: { orgId: string; uid: st
       orgId,
       name: name.trim(),
       mode,
+      programType,
       startDate,
       endDate,
       venueName: venueName.trim(),
       city: city.trim(),
+      logoUrl: logoUrl.trim(),
       bannerUrl: bannerUrl.trim(),
       posterUrl: posterUrl.trim(),
       latitude,
@@ -1000,15 +1197,25 @@ function ProgramsPage({ orgId, uid, programs, events }: { orgId: string; uid: st
       address: venueName.trim(),
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       description: description.trim(),
+      entryScope,
+      competitive,
+      resultsEnabled: competitive ? resultsEnabled : false,
+      joinQrEnabled,
     })
     setName('')
+    setProgramType('college_fest')
     setVenueName('')
     setCity('')
+    setLogoUrl('')
     setBannerUrl('')
     setPosterUrl('')
     setLatitude(undefined)
     setLongitude(undefined)
     setDescription('')
+    setEntryScope('program')
+    setCompetitive(false)
+    setResultsEnabled(false)
+    setJoinQrEnabled(true)
     setBusy(false)
   }
 
@@ -1033,6 +1240,12 @@ function ProgramsPage({ orgId, uid, programs, events }: { orgId: string; uid: st
             <option value="standalone">Standalone program/event</option>
           </select>
         </label>
+        <label>
+          Program type
+          <select value={programType} onChange={(event) => setProgramType(event.target.value)}>
+            {programTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </label>
         <div className="form-grid two">
           <label>
             Start date
@@ -1054,8 +1267,36 @@ function ProgramsPage({ orgId, uid, programs, events }: { orgId: string; uid: st
           </label>
         </div>
         <div className="form-grid two">
+          <ImageUploader folder="program-logos" label="Program logo" onChange={setLogoUrl} uid={uid} value={logoUrl} />
           <ImageUploader folder="program-banners" label="Program banner" onChange={setBannerUrl} uid={uid} value={bannerUrl} />
+        </div>
+        <div className="form-grid two">
           <ImageUploader folder="program-posters" label="Program poster" onChange={setPosterUrl} uid={uid} value={posterUrl} />
+          <div className="assignment-box">
+            <span>Entry and result rules</span>
+            <label>
+              Entry pass works at
+              <select value={entryScope} onChange={(event) => setEntryScope(event.target.value as EntryScope)}>
+                <option value="program">Program gate only</option>
+                <option value="event">Event gates only</option>
+                <option value="both">Program and event gates</option>
+              </select>
+            </label>
+            <label className="check-row">
+              <input checked={joinQrEnabled} onChange={(event) => setJoinQrEnabled(event.target.checked)} type="checkbox" />
+              <span>Allow Sang users to scan a program QR to join/request access</span>
+            </label>
+            <label className="check-row">
+              <input checked={competitive} onChange={(event) => { setCompetitive(event.target.checked); if (!event.target.checked) setResultsEnabled(false) }} type="checkbox" />
+              <span>This program has competition/results</span>
+            </label>
+            {competitive && (
+              <label className="check-row">
+                <input checked={resultsEnabled} onChange={(event) => setResultsEnabled(event.target.checked)} type="checkbox" />
+                <span>Results will be published from CRM</span>
+              </label>
+            )}
+          </div>
         </div>
         <MapPicker
           label="Primary location"
@@ -1099,13 +1340,18 @@ function ProgramsPage({ orgId, uid, programs, events }: { orgId: string; uid: st
 
 function ProgramBlock({ orgId, uid, program, events }: { orgId: string; uid: string; program: Program; events: ProgramEvent[] }) {
   const [eventName, setEventName] = useState('')
+  const [eventType, setEventType] = useState('session')
   const [startDateTime, setStartDateTime] = useState('')
   const [endDateTime, setEndDateTime] = useState('')
+  const [multiDate, setMultiDate] = useState(false)
   const [venueName, setVenueName] = useState(program.venueName || '')
   const [locationNote, setLocationNote] = useState('')
   const [posterUrl, setPosterUrl] = useState('')
   const [latitude, setLatitude] = useState<number | undefined>(program.latitude)
   const [longitude, setLongitude] = useState<number | undefined>(program.longitude)
+  const [entryScope, setEntryScope] = useState<EntryScope>(program.entryScope === 'both' ? 'both' : 'event')
+  const [competitive, setCompetitive] = useState(Boolean(program.competitive))
+  const [resultsEnabled, setResultsEnabled] = useState(Boolean(program.resultsEnabled))
   const [busy, setBusy] = useState(false)
 
   async function createEvent(event: FormEvent) {
@@ -1115,20 +1361,30 @@ function ProgramBlock({ orgId, uid, program, events }: { orgId: string; uid: str
       orgId,
       programId: program.id,
       name: eventName.trim(),
+      eventType,
       startDateTime,
       endDateTime,
+      multiDate,
       venueName: venueName.trim(),
       locationNote: locationNote.trim(),
       posterUrl: posterUrl.trim(),
       latitude,
       longitude,
       address: venueName.trim(),
+      entryScope,
+      competitive,
+      resultsEnabled: program.competitive && competitive ? resultsEnabled : false,
     })
     setEventName('')
+    setEventType('session')
     setStartDateTime('')
     setEndDateTime('')
+    setMultiDate(false)
     setLocationNote('')
     setPosterUrl('')
+    setEntryScope(program.entryScope === 'both' ? 'both' : 'event')
+    setCompetitive(Boolean(program.competitive))
+    setResultsEnabled(Boolean(program.resultsEnabled))
     setBusy(false)
   }
 
@@ -1163,6 +1419,12 @@ function ProgramBlock({ orgId, uid, program, events }: { orgId: string; uid: str
             <input placeholder="Opening keynote" value={eventName} onChange={(event) => setEventName(event.target.value)} required />
           </label>
           <label>
+            Event type
+            <select value={eventType} onChange={(event) => setEventType(event.target.value)}>
+              {eventTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </label>
+          <label>
             Location note
             <input placeholder="Hall A, first floor, gate 2" value={locationNote} onChange={(event) => setLocationNote(event.target.value)} />
           </label>
@@ -1174,6 +1436,35 @@ function ProgramBlock({ orgId, uid, program, events }: { orgId: string; uid: str
             Ends
             <input aria-label="End date time" type="datetime-local" value={endDateTime} onChange={(event) => setEndDateTime(event.target.value)} />
           </label>
+        </div>
+        <div className="assignment-box">
+          <span>Event rules</span>
+          <div className="form-grid two">
+            <label>
+              Entry pass works at
+              <select value={entryScope} onChange={(event) => setEntryScope(event.target.value as EntryScope)}>
+                <option value="program">Program gate only</option>
+                <option value="event">This event gate only</option>
+                <option value="both">Program and this event</option>
+              </select>
+            </label>
+            <label className="check-row">
+              <input checked={multiDate} onChange={(event) => setMultiDate(event.target.checked)} type="checkbox" />
+              <span>This event happens across multiple dates/times</span>
+            </label>
+          </div>
+          {program.competitive && (
+            <div className="form-grid two">
+              <label className="check-row">
+                <input checked={competitive} onChange={(event) => { setCompetitive(event.target.checked); if (!event.target.checked) setResultsEnabled(false) }} type="checkbox" />
+                <span>This event has judging/competition flow</span>
+              </label>
+              <label className="check-row">
+                <input checked={resultsEnabled} disabled={!competitive} onChange={(event) => setResultsEnabled(event.target.checked)} type="checkbox" />
+                <span>Results will be published for this event</span>
+              </label>
+            </div>
+          )}
         </div>
         <ImageUploader folder="event-posters" label="Event poster" onChange={setPosterUrl} uid={uid} value={posterUrl} />
         <MapPicker
@@ -1206,17 +1497,22 @@ function ProgramBlock({ orgId, uid, program, events }: { orgId: string; uid: str
   )
 }
 
-function EventsPage({ orgId, uid, program, events }: { orgId: string; uid: string; program: Program; events: ProgramEvent[] }) {
+function EventsPage({ orgId, uid, program, events, scheduleItems }: { orgId: string; uid: string; program: Program; events: ProgramEvent[]; scheduleItems: ScheduleItem[] }) {
   const [selectedEventId, setSelectedEventId] = useState(events[0]?.id || '')
   const selectedEvent = events.find((event) => event.id === selectedEventId) || null
   const [eventName, setEventName] = useState('')
+  const [eventType, setEventType] = useState('session')
   const [startDateTime, setStartDateTime] = useState('')
   const [endDateTime, setEndDateTime] = useState('')
+  const [multiDate, setMultiDate] = useState(false)
   const [venueName, setVenueName] = useState(program.venueName || '')
   const [locationNote, setLocationNote] = useState('')
   const [posterUrl, setPosterUrl] = useState('')
   const [latitude, setLatitude] = useState<number | undefined>(program.latitude)
   const [longitude, setLongitude] = useState<number | undefined>(program.longitude)
+  const [entryScope, setEntryScope] = useState<EntryScope>(program.entryScope === 'both' ? 'both' : 'event')
+  const [competitive, setCompetitive] = useState(Boolean(program.competitive))
+  const [resultsEnabled, setResultsEnabled] = useState(Boolean(program.resultsEnabled))
   const [busy, setBusy] = useState(false)
   const [editing, setEditing] = useState(false)
   const [error, setError] = useState('')
@@ -1234,14 +1530,19 @@ function EventsPage({ orgId, uid, program, events }: { orgId: string; uid: strin
   useEffect(() => {
     if (!selectedEvent) return
     setEventName(selectedEvent.name)
+    setEventType(selectedEvent.eventType || 'session')
     setStartDateTime(selectedEvent.startDateTime || '')
     setEndDateTime(selectedEvent.endDateTime || '')
+    setMultiDate(Boolean(selectedEvent.multiDate))
     setVenueName(selectedEvent.venueName || program.venueName || '')
     setLocationNote(selectedEvent.locationNote || '')
     setPosterUrl(selectedEvent.posterUrl || '')
     setLatitude(selectedEvent.latitude ?? program.latitude)
     setLongitude(selectedEvent.longitude ?? program.longitude)
-  }, [program.latitude, program.longitude, program.venueName, selectedEvent])
+    setEntryScope(selectedEvent.entryScope || (program.entryScope === 'both' ? 'both' : 'event'))
+    setCompetitive(Boolean(selectedEvent.competitive ?? program.competitive))
+    setResultsEnabled(Boolean(selectedEvent.resultsEnabled))
+  }, [program.competitive, program.entryScope, program.latitude, program.longitude, program.venueName, selectedEvent])
 
   async function createEvent(event: FormEvent) {
     event.preventDefault()
@@ -1252,14 +1553,19 @@ function EventsPage({ orgId, uid, program, events }: { orgId: string; uid: strin
         orgId,
         programId: program.id,
         name: eventName.trim(),
+        eventType,
         startDateTime,
         endDateTime,
+        multiDate,
         venueName: venueName.trim(),
         locationNote: locationNote.trim(),
         posterUrl: posterUrl.trim(),
         latitude,
         longitude,
         address: venueName.trim(),
+        entryScope,
+        competitive,
+        resultsEnabled: program.competitive && competitive ? resultsEnabled : false,
       })
       setSelectedEventId(response.data.eventId)
       setEditing(false)
@@ -1281,14 +1587,20 @@ function EventsPage({ orgId, uid, program, events }: { orgId: string; uid: strin
         eventId: selectedEvent.id,
         programId: program.id,
         name: eventName.trim(),
+        eventType,
         startDateTime,
         endDateTime,
+        multiDate,
         venueName: venueName.trim(),
         locationNote: locationNote.trim(),
         posterUrl: posterUrl.trim(),
         latitude,
         longitude,
         address: venueName.trim(),
+        entryScope,
+        competitive,
+        resultsEnabled: program.competitive && competitive ? resultsEnabled : false,
+        scheduleItemCount: scheduleItems.filter((item) => item.eventId === selectedEvent.id).length,
         status: selectedEvent.status,
       })
       setEditing(false)
@@ -1320,13 +1632,18 @@ function EventsPage({ orgId, uid, program, events }: { orgId: string; uid: strin
     setSelectedEventId('')
     setEditing(true)
     setEventName('')
+    setEventType('session')
     setStartDateTime('')
     setEndDateTime('')
+    setMultiDate(false)
     setVenueName(program.venueName || '')
     setLocationNote('')
     setPosterUrl('')
     setLatitude(program.latitude)
     setLongitude(program.longitude)
+    setEntryScope(program.entryScope === 'both' ? 'both' : 'event')
+    setCompetitive(Boolean(program.competitive))
+    setResultsEnabled(Boolean(program.resultsEnabled))
   }
 
   const formTitle = selectedEvent ? 'Edit event' : 'Create event'
@@ -1402,6 +1719,8 @@ function EventsPage({ orgId, uid, program, events }: { orgId: string; uid: strin
                     <p>{selectedEvent.locationNote || 'No location note added yet.'}</p>
                     <span><CalendarDays size={14} /> {selectedEvent.startDateTime || 'Start pending'} to {selectedEvent.endDateTime || 'End pending'}</span>
                     <span><MapPin size={14} /> {selectedEvent.venueName || program.venueName || 'Venue pending'}</span>
+                    <span><Ticket size={14} /> Entry: {selectedEvent.entryScope || 'event'} gate</span>
+                    <span><BadgeCheck size={14} /> Results: {selectedEvent.resultsEnabled ? 'enabled' : 'not enabled'}</span>
                     {selectedEvent.latitude && selectedEvent.longitude && <small>{selectedEvent.latitude.toFixed(5)}, {selectedEvent.longitude.toFixed(5)}</small>}
                   </div>
                 </div>
@@ -1411,6 +1730,12 @@ function EventsPage({ orgId, uid, program, events }: { orgId: string; uid: strin
                     <label>
                       Event name
                       <input placeholder="Opening keynote" value={eventName} onChange={(event) => setEventName(event.target.value)} required />
+                    </label>
+                    <label>
+                      Event type
+                      <select value={eventType} onChange={(event) => setEventType(event.target.value)}>
+                        {eventTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                      </select>
                     </label>
                     <label>
                       Location note
@@ -1424,6 +1749,35 @@ function EventsPage({ orgId, uid, program, events }: { orgId: string; uid: strin
                       Ends
                       <input aria-label="End date time" type="datetime-local" value={endDateTime} onChange={(event) => setEndDateTime(event.target.value)} />
                     </label>
+                  </div>
+                  <div className="assignment-box">
+                    <span>Entry, dates, and results</span>
+                    <div className="form-grid two">
+                      <label>
+                        Entry pass works at
+                        <select value={entryScope} onChange={(event) => setEntryScope(event.target.value as EntryScope)}>
+                          <option value="program">Program gate only</option>
+                          <option value="event">This event gate only</option>
+                          <option value="both">Program and this event</option>
+                        </select>
+                      </label>
+                      <label className="check-row">
+                        <input checked={multiDate} onChange={(event) => setMultiDate(event.target.checked)} type="checkbox" />
+                        <span>This event has multiple dates/times. Add exact blocks in Schedule below.</span>
+                      </label>
+                    </div>
+                    {program.competitive && (
+                      <div className="form-grid two">
+                        <label className="check-row">
+                          <input checked={competitive} onChange={(event) => { setCompetitive(event.target.checked); if (!event.target.checked) setResultsEnabled(false) }} type="checkbox" />
+                          <span>This event has judging/competition flow</span>
+                        </label>
+                        <label className="check-row">
+                          <input checked={resultsEnabled} disabled={!competitive} onChange={(event) => setResultsEnabled(event.target.checked)} type="checkbox" />
+                          <span>Results will be published for this event</span>
+                        </label>
+                      </div>
+                    )}
                   </div>
                   <ImageUploader folder="event-posters" label="Event poster" onChange={setPosterUrl} uid={uid} value={posterUrl} />
                   <MapPicker
@@ -1447,10 +1801,552 @@ function EventsPage({ orgId, uid, program, events }: { orgId: string; uid: strin
                   </div>
                 </>
               )}
+              {selectedEvent && !editing && (
+                <ScheduleManager
+                  event={selectedEvent}
+                  orgId={orgId}
+                  program={program}
+                  scheduleItems={scheduleItems.filter((item) => item.eventId === selectedEvent.id)}
+                />
+              )}
             </form>
           )}
         </section>
       )}
+    </section>
+  )
+}
+
+function ScheduleManager({ orgId, program, event, scheduleItems }: { orgId: string; program: Program; event: ProgramEvent; scheduleItems: ScheduleItem[] }) {
+  const [title, setTitle] = useState('')
+  const [type, setType] = useState<ScheduleType>('session')
+  const [startsAt, setStartsAt] = useState('')
+  const [endsAt, setEndsAt] = useState('')
+  const [venueName, setVenueName] = useState(event.venueName || program.venueName || '')
+  const [roomName, setRoomName] = useState('')
+  const [visibility, setVisibility] = useState<ScheduleVisibility>('public')
+  const [status, setStatus] = useState<ScheduleStatus>('scheduled')
+  const [description, setDescription] = useState('')
+  const [busy, setBusy] = useState(false)
+  const sortedItems = [...scheduleItems].sort((a, b) => (a.startsAt || '').localeCompare(b.startsAt || ''))
+
+  async function addScheduleItem(eventSubmit: FormEvent) {
+    eventSubmit.preventDefault()
+    setBusy(true)
+    try {
+      await createScheduleItemCallable({
+        orgId,
+        programId: program.id,
+        eventId: event.id,
+        title: title.trim(),
+        type,
+        description: description.trim(),
+        startsAt,
+        endsAt,
+        timezone: program.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
+        venueName: venueName.trim(),
+        roomName: roomName.trim(),
+        visibility,
+        status,
+        sortOrder: sortedItems.length + 1,
+      })
+      setTitle('')
+      setStartsAt('')
+      setEndsAt('')
+      setRoomName('')
+      setDescription('')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function removeScheduleItem(item: ScheduleItem) {
+    const confirmed = window.confirm(`Delete schedule item "${item.title}"?`)
+    if (!confirmed) return
+    await deleteScheduleItemCallable({ orgId, scheduleItemId: item.id })
+  }
+
+  return (
+    <section className="schedule-manager">
+      <div className="panel-heading">
+        <div>
+          <span className="eyebrow">Schedule</span>
+          <h2>Time blocks for this event</h2>
+        </div>
+        <Clock size={20} />
+      </div>
+
+      <form className="schedule-form" onSubmit={addScheduleItem}>
+        <div className="form-grid two">
+          <label>
+            Schedule title
+            <input placeholder="Round 1, Poster Session, Tea Break" value={title} onChange={(eventChange) => setTitle(eventChange.target.value)} required />
+          </label>
+          <label>
+            Type
+            <select value={type} onChange={(eventChange) => setType(eventChange.target.value as ScheduleType)}>
+              <option value="session">Session</option>
+              <option value="round">Competition round</option>
+              <option value="break">Break</option>
+              <option value="checkin">Check-in window</option>
+              <option value="performance">Performance</option>
+              <option value="result">Result announcement</option>
+              <option value="ceremony">Ceremony</option>
+              <option value="custom">Custom</option>
+            </select>
+          </label>
+          <label>
+            Starts
+            <input type="datetime-local" value={startsAt} onChange={(eventChange) => setStartsAt(eventChange.target.value)} required />
+          </label>
+          <label>
+            Ends
+            <input type="datetime-local" value={endsAt} onChange={(eventChange) => setEndsAt(eventChange.target.value)} />
+          </label>
+          <label>
+            Venue
+            <input value={venueName} onChange={(eventChange) => setVenueName(eventChange.target.value)} />
+          </label>
+          <label>
+            Room / stage / booth zone
+            <input placeholder="Hall A, Stage 2, Poster Zone B" value={roomName} onChange={(eventChange) => setRoomName(eventChange.target.value)} />
+          </label>
+          <label>
+            Visibility
+            <select value={visibility} onChange={(eventChange) => setVisibility(eventChange.target.value as ScheduleVisibility)}>
+              <option value="public">Public</option>
+              <option value="staffOnly">Staff only</option>
+              <option value="participantsOnly">Participants only</option>
+            </select>
+          </label>
+          <label>
+            Status
+            <select value={status} onChange={(eventChange) => setStatus(eventChange.target.value as ScheduleStatus)}>
+              <option value="draft">Draft</option>
+              <option value="scheduled">Scheduled</option>
+              <option value="delayed">Delayed</option>
+              <option value="cancelled">Cancelled</option>
+              <option value="completed">Completed</option>
+            </select>
+          </label>
+        </div>
+        <label>
+          Notes
+          <textarea value={description} onChange={(eventChange) => setDescription(eventChange.target.value)} />
+        </label>
+        <button className="primary-button" disabled={busy} type="submit">
+          {busy ? <Loader2 className="spin" size={17} /> : <Plus size={17} />}
+          Add schedule item
+        </button>
+      </form>
+
+      {sortedItems.length === 0 ? (
+        <EmptyState title="No schedule yet" body="Add every date/time block here: check-in, rounds, sessions, breaks, performances, judging, or result announcements." />
+      ) : (
+        <div className="schedule-list">
+          {sortedItems.map((item) => (
+            <article className="schedule-item" key={item.id}>
+              <div>
+                <span className={`status ${item.status}`}>{item.status}</span>
+                <strong>{item.title}</strong>
+                <p>{item.startsAt} {item.endsAt ? `to ${item.endsAt}` : ''}</p>
+                <small>{item.venueName || event.venueName || program.venueName || 'Venue pending'} {item.roomName ? `- ${item.roomName}` : ''}</small>
+              </div>
+              <button className="icon-button" onClick={() => removeScheduleItem(item)} title="Delete schedule item" type="button">
+                <Trash2 size={16} />
+              </button>
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  )
+}
+
+function SettingsPage({
+  orgId,
+  uid,
+  organization,
+  program,
+  programs,
+  joinLinks,
+  onProgramSelect,
+}: {
+  orgId: string
+  uid: string
+  organization: Organization | null
+  program: Program | null
+  programs: Program[]
+  joinLinks: ProgramJoinLink[]
+  onProgramSelect: (programId: string) => void
+}) {
+  const [orgName, setOrgName] = useState(organization?.name || '')
+  const [industry, setIndustry] = useState(organization?.industry || 'College fest')
+  const [website, setWebsite] = useState(organization?.website || '')
+  const [logoUrl, setLogoUrl] = useState(organization?.logoUrl || '')
+  const [orgBusy, setOrgBusy] = useState(false)
+
+  useEffect(() => {
+    setOrgName(organization?.name || '')
+    setIndustry(organization?.industry || 'College fest')
+    setWebsite(organization?.website || '')
+    setLogoUrl(organization?.logoUrl || '')
+  }, [organization])
+
+  async function saveOrganization(event: FormEvent) {
+    event.preventDefault()
+    setOrgBusy(true)
+    try {
+      await updateOrganizationCallable({ orgId, name: orgName.trim(), industry, website: website.trim(), logoUrl: logoUrl.trim() })
+    } finally {
+      setOrgBusy(false)
+    }
+  }
+
+  return (
+    <section className="page-stack">
+      <section className="settings-hero">
+        <div>
+          <span className="eyebrow">Workspace profile</span>
+          <h1>Organization and program settings</h1>
+          <p>Manage public identity, program artwork, entry rules, result settings, and Sang Scan-to-Join QR from one place.</p>
+        </div>
+      </section>
+
+      <div className="page-grid settings-grid">
+        <form className="panel form-panel" onSubmit={saveOrganization}>
+          <div className="panel-heading">
+            <div>
+              <span className="eyebrow">Organization</span>
+              <h2>Profile details</h2>
+            </div>
+            <Building2 size={20} />
+          </div>
+          <ImageUploader folder="organization-logos" label="Organization logo" onChange={setLogoUrl} uid={uid} value={logoUrl} />
+          <label>
+            Organization name
+            <input value={orgName} onChange={(event) => setOrgName(event.target.value)} required />
+          </label>
+          <label>
+            Organization category
+            <select value={industry} onChange={(event) => setIndustry(event.target.value)}>
+              {orgCategoryOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </label>
+          <label>
+            Website
+            <input placeholder="https://..." value={website} onChange={(event) => setWebsite(event.target.value)} />
+          </label>
+          <button className="primary-button" disabled={orgBusy} type="submit">
+            {orgBusy ? <Loader2 className="spin" size={17} /> : <Save size={17} />}
+            Save organization
+          </button>
+        </form>
+
+        <section className="panel">
+          <div className="panel-heading">
+            <div>
+              <span className="eyebrow">Program</span>
+              <h2>Program profile and rules</h2>
+            </div>
+            <Settings size={20} />
+          </div>
+          {programs.length > 1 && (
+            <label className="settings-program-select">
+              Program workspace
+              <select value={program?.id || ''} onChange={(event) => onProgramSelect(event.target.value)}>
+                <option value="">Select program</option>
+                {programs.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+              </select>
+            </label>
+          )}
+          {program ? (
+            <ProgramSettingsForm joinLinks={joinLinks.filter((link) => link.programId === program.id)} orgId={orgId} program={program} uid={uid} />
+          ) : (
+            <EmptyState title="Choose a program" body="Create or select a program before editing program artwork, entry rules, result settings, and join QR." />
+          )}
+        </section>
+      </div>
+    </section>
+  )
+}
+
+function ProgramSettingsForm({ orgId, uid, program, joinLinks }: { orgId: string; uid: string; program: Program; joinLinks: ProgramJoinLink[] }) {
+  const [name, setName] = useState(program.name)
+  const [mode, setMode] = useState<ProgramMode>(program.mode)
+  const [programType, setProgramType] = useState(program.programType || 'college_fest')
+  const [status, setStatus] = useState<Program['status']>(program.status)
+  const [startDate, setStartDate] = useState(program.startDate)
+  const [endDate, setEndDate] = useState(program.endDate)
+  const [venueName, setVenueName] = useState(program.venueName || '')
+  const [city, setCity] = useState(program.city || '')
+  const [logoUrl, setLogoUrl] = useState(program.logoUrl || '')
+  const [bannerUrl, setBannerUrl] = useState(program.bannerUrl || '')
+  const [posterUrl, setPosterUrl] = useState(program.posterUrl || '')
+  const [latitude, setLatitude] = useState<number | undefined>(program.latitude)
+  const [longitude, setLongitude] = useState<number | undefined>(program.longitude)
+  const [description, setDescription] = useState(program.description || '')
+  const [entryScope, setEntryScope] = useState<EntryScope>(program.entryScope || 'program')
+  const [competitive, setCompetitive] = useState(Boolean(program.competitive))
+  const [resultsEnabled, setResultsEnabled] = useState(Boolean(program.resultsEnabled))
+  const [joinQrEnabled, setJoinQrEnabled] = useState(program.joinQrEnabled !== false)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    setName(program.name)
+    setMode(program.mode)
+    setProgramType(program.programType || 'college_fest')
+    setStatus(program.status)
+    setStartDate(program.startDate)
+    setEndDate(program.endDate)
+    setVenueName(program.venueName || '')
+    setCity(program.city || '')
+    setLogoUrl(program.logoUrl || '')
+    setBannerUrl(program.bannerUrl || '')
+    setPosterUrl(program.posterUrl || '')
+    setLatitude(program.latitude)
+    setLongitude(program.longitude)
+    setDescription(program.description || '')
+    setEntryScope(program.entryScope || 'program')
+    setCompetitive(Boolean(program.competitive))
+    setResultsEnabled(Boolean(program.resultsEnabled))
+    setJoinQrEnabled(program.joinQrEnabled !== false)
+  }, [program])
+
+  async function saveProgram(event: FormEvent) {
+    event.preventDefault()
+    setBusy(true)
+    try {
+      await updateProgramCallable({
+        orgId,
+        programId: program.id,
+        name: name.trim(),
+        mode,
+        programType,
+        status,
+        startDate,
+        endDate,
+        venueName: venueName.trim(),
+        city: city.trim(),
+        logoUrl: logoUrl.trim(),
+        bannerUrl: bannerUrl.trim(),
+        posterUrl: posterUrl.trim(),
+        latitude,
+        longitude,
+        address: venueName.trim(),
+        timezone: program.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
+        description: description.trim(),
+        entryScope,
+        competitive,
+        resultsEnabled: competitive ? resultsEnabled : false,
+        joinQrEnabled,
+      })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function archiveProgram() {
+    const confirmed = window.confirm(`Archive "${program.name}"? People, passes, and check-in history will remain in Firestore.`)
+    if (!confirmed) return
+    await deleteProgramCallable({ orgId, programId: program.id })
+  }
+
+  return (
+    <div className="program-settings-stack">
+      <form className="settings-form" onSubmit={saveProgram}>
+        <div className="form-grid two">
+          <label>
+            Program name
+            <input value={name} onChange={(event) => setName(event.target.value)} required />
+          </label>
+          <label>
+            Program type
+            <select value={programType} onChange={(event) => setProgramType(event.target.value)}>
+              {programTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </label>
+          <label>
+            Mode
+            <select value={mode} onChange={(event) => setMode(event.target.value as ProgramMode)}>
+              <option value="multiEvent">Multi-event program</option>
+              <option value="standalone">Standalone program/event</option>
+            </select>
+          </label>
+          <label>
+            Status
+            <select value={status} onChange={(event) => setStatus(event.target.value as Program['status'])}>
+              <option value="draft">Draft</option>
+              <option value="live">Live</option>
+              <option value="archived">Archived</option>
+            </select>
+          </label>
+          <label>
+            Start date
+            <input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} required />
+          </label>
+          <label>
+            End date
+            <input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} required />
+          </label>
+          <label>
+            City
+            <input value={city} onChange={(event) => setCity(event.target.value)} />
+          </label>
+          <label>
+            Entry pass works at
+            <select value={entryScope} onChange={(event) => setEntryScope(event.target.value as EntryScope)}>
+              <option value="program">Program gate only</option>
+              <option value="event">Event gates only</option>
+              <option value="both">Program and event gates</option>
+            </select>
+          </label>
+        </div>
+
+        <div className="form-grid three">
+          <ImageUploader folder="program-logos" label="Program logo" onChange={setLogoUrl} uid={uid} value={logoUrl} />
+          <ImageUploader folder="program-banners" label="Program banner" onChange={setBannerUrl} uid={uid} value={bannerUrl} />
+          <ImageUploader folder="program-posters" label="Program poster" onChange={setPosterUrl} uid={uid} value={posterUrl} />
+        </div>
+
+        <MapPicker
+          label="Primary venue"
+          lat={latitude}
+          lng={longitude}
+          onPick={(point) => { setLatitude(point.latitude); setLongitude(point.longitude) }}
+          onVenueChange={setVenueName}
+          venue={venueName}
+        />
+
+        <div className="assignment-box">
+          <span>Competition and access</span>
+          <div className="form-grid two">
+            <label className="check-row">
+              <input checked={joinQrEnabled} onChange={(event) => setJoinQrEnabled(event.target.checked)} type="checkbox" />
+              <span>Program QR can be generated for Sang Scan-to-Join</span>
+            </label>
+            <label className="check-row">
+              <input checked={competitive} onChange={(event) => { setCompetitive(event.target.checked); if (!event.target.checked) setResultsEnabled(false) }} type="checkbox" />
+              <span>This program has competition/results</span>
+            </label>
+            {competitive && (
+              <label className="check-row">
+                <input checked={resultsEnabled} onChange={(event) => setResultsEnabled(event.target.checked)} type="checkbox" />
+                <span>Results will be published from CRM</span>
+              </label>
+            )}
+          </div>
+        </div>
+
+        <label>
+          Description
+          <textarea value={description} onChange={(event) => setDescription(event.target.value)} />
+        </label>
+
+        <div className="action-row">
+          <button className="danger-button" onClick={archiveProgram} type="button">
+            <Trash2 size={16} />
+            Archive program
+          </button>
+          <button className="primary-button" disabled={busy} type="submit">
+            {busy ? <Loader2 className="spin" size={17} /> : <Save size={17} />}
+            Save program
+          </button>
+        </div>
+      </form>
+
+      <ProgramJoinQrPanel joinLinks={joinLinks} orgId={orgId} program={program} />
+    </div>
+  )
+}
+
+function ProgramJoinQrPanel({ orgId, program, joinLinks }: { orgId: string; program: Program; joinLinks: ProgramJoinLink[] }) {
+  const [mode, setMode] = useState<JoinMode>('request_approval')
+  const [allowedCategory, setAllowedCategory] = useState<PersonKind | 'custom'>('attendee')
+  const [maxUses, setMaxUses] = useState(5000)
+  const [campaignName, setCampaignName] = useState('Main program QR')
+  const [qrPayload, setQrPayload] = useState(joinLinks.find((link) => link.qrPayload)?.qrPayload || '')
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    setQrPayload(joinLinks.find((link) => link.qrPayload)?.qrPayload || '')
+  }, [joinLinks])
+
+  async function generateQr() {
+    setBusy(true)
+    try {
+      const response = await createProgramJoinLinkCallable({
+        orgId,
+        programId: program.id,
+        mode,
+        allowedCategory,
+        allowedEventIds: [],
+        maxUses,
+        expiresAt: '',
+        campaignName: campaignName.trim() || 'Main program QR',
+      })
+      setQrPayload(response.data.qrPayload)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function copyPayload() {
+    if (!qrPayload) return
+    await navigator.clipboard?.writeText(qrPayload)
+  }
+
+  return (
+    <section className="join-qr-panel">
+      <div>
+        <span className="eyebrow">Sang app adoption</span>
+        <h2>Program Scan-to-Join QR</h2>
+        <p>Use this on posters, entry desks, emails, or venue standees. Sang users scan it to join/request access to this program.</p>
+      </div>
+      <div className="join-qr-grid">
+        <div className="assignment-box">
+          <span>QR controls</span>
+          <label>
+            Join mode
+            <select value={mode} onChange={(event) => setMode(event.target.value as JoinMode)}>
+              <option value="direct_join">Direct join</option>
+              <option value="request_approval">Request approval</option>
+              <option value="invite_only">Invite only</option>
+            </select>
+          </label>
+          <label>
+            Default category
+            <select value={allowedCategory} onChange={(event) => setAllowedCategory(event.target.value as PersonKind | 'custom')}>
+              <option value="attendee">Attendee</option>
+              <option value="participant">Participant</option>
+              <option value="speaker">Speaker</option>
+              <option value="staff">Staff</option>
+              <option value="custom">Custom</option>
+            </select>
+          </label>
+          <label>
+            Max uses
+            <input min={1} type="number" value={maxUses} onChange={(event) => setMaxUses(Number(event.target.value) || 1)} />
+          </label>
+          <label>
+            Campaign name
+            <input value={campaignName} onChange={(event) => setCampaignName(event.target.value)} />
+          </label>
+          <button className="primary-button" disabled={busy || program.joinQrEnabled === false} onClick={generateQr} type="button">
+            {busy ? <Loader2 className="spin" size={17} /> : <QrCode size={17} />}
+            Generate QR
+          </button>
+        </div>
+        <div className="qr-display">
+          {qrPayload ? <PassPreview payload={qrPayload} /> : <QrCode size={48} />}
+          <strong>{qrPayload ? 'QR ready' : 'No QR generated yet'}</strong>
+          <p>{qrPayload || 'Generate a secure Sang program join token.'}</p>
+          <button className="secondary-button" disabled={!qrPayload} onClick={copyPayload} type="button">
+            <Copy size={16} />
+            Copy payload
+          </button>
+        </div>
+      </div>
     </section>
   )
 }
@@ -1985,10 +2881,13 @@ function AnalyticsPage({ programs, people, checkIns }: { programs: Program[]; pe
 function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; profile: PeUser; setProfile: (profile: PeUser) => void }) {
   const [route, setRouteState] = useState<RouteKey>(readHashRoute)
   const [selectedProgramId, setSelectedProgramId] = useState(() => window.localStorage.getItem('sang-crm-selected-program') || '')
+  const [needsOrgChoice, setNeedsOrgChoice] = useState(() => profile.organizationIds.length > 1 && window.localStorage.getItem('sang-crm-org-choice-confirmed') !== profile.activeOrgId)
   const orgId = profile.activeOrgId || ''
   const orgQuery = useMemo(() => (orgId ? doc(db, 'peOrganizations', orgId) : null), [orgId])
   const programsQuery = useMemo(() => (orgId ? query(collection(db, 'pePrograms'), where('orgId', '==', orgId)) : null), [orgId])
   const eventsQuery = useMemo(() => (orgId ? query(collection(db, 'peEvents'), where('orgId', '==', orgId)) : null), [orgId])
+  const scheduleItemsQuery = useMemo(() => (orgId ? query(collection(db, 'peEventScheduleItems'), where('orgId', '==', orgId)) : null), [orgId])
+  const joinLinksQuery = useMemo(() => (orgId ? query(collection(db, 'peProgramJoinLinks'), where('orgId', '==', orgId)) : null), [orgId])
   const peopleQuery = useMemo(() => (orgId ? query(collection(db, 'peProgramPeople'), where('orgId', '==', orgId)) : null), [orgId])
   const passesQuery = useMemo(() => (orgId ? query(collection(db, 'pePasses'), where('orgId', '==', orgId)) : null), [orgId])
   const checkInsQuery = useMemo(() => (orgId ? query(collection(db, 'peCheckIns'), where('orgId', '==', orgId)) : null), [orgId])
@@ -1996,6 +2895,8 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
   const rolesQuery = useMemo(() => (orgId ? collection(db, 'peOrganizations', orgId, 'roles') : null), [orgId])
   const programs = useCollection<Program>(programsQuery)
   const events = useCollection<ProgramEvent>(eventsQuery)
+  const scheduleItems = useCollection<ScheduleItem>(scheduleItemsQuery)
+  const joinLinks = useCollection<ProgramJoinLink>(joinLinksQuery)
   const people = useCollection<ProgramPerson>(peopleQuery)
   const passes = useCollection<PassRecord>(passesQuery)
   const checkIns = useCollection<CheckIn>(checkInsQuery)
@@ -2026,6 +2927,8 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
   const shouldChooseProgram = !selectedProgram && sortedPrograms.length > 1 && route !== 'programs'
   const activeProgram = selectedProgram || (sortedPrograms.length === 1 ? sortedPrograms[0] : null)
   const activeEvents = activeProgram ? events.rows.filter((event) => event.programId === activeProgram.id) : []
+  const activeScheduleItems = activeProgram ? scheduleItems.rows.filter((item) => item.programId === activeProgram.id) : []
+  const activeJoinLinks = activeProgram ? joinLinks.rows.filter((link) => link.programId === activeProgram.id) : []
   const activePeople = activeProgram ? people.rows.filter((person) => person.programId === activeProgram.id) : []
   const activePasses = activeProgram ? passes.rows.filter((pass) => pass.programId === activeProgram.id) : []
   const activeCheckIns = activeProgram ? checkIns.rows.filter((checkIn) => checkIn.programId === activeProgram.id) : []
@@ -2043,14 +2946,37 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
     }
   }, [orgId, selectedProgramId, sortedPrograms])
 
+  async function chooseOrganization(nextOrgId: string) {
+    await setActiveOrganizationCallable({ orgId: nextOrgId })
+    window.localStorage.setItem('sang-crm-org-choice-confirmed', nextOrgId)
+    window.localStorage.removeItem('sang-crm-selected-program')
+    setSelectedProgramId('')
+    setProfile({ ...profile, activeOrgId: nextOrgId, organizationIds: Array.from(new Set([...profile.organizationIds, nextOrgId])) })
+    setNeedsOrgChoice(false)
+  }
+
+  if (!orgId && profile.organizationIds.length > 0) {
+    return <OrganizationChooserPage onChoose={chooseOrganization} profile={profile} />
+  }
+
   if (!orgId) {
     return <OnboardingPage user={firebaseUser} onComplete={setProfile} />
+  }
+
+  if (needsOrgChoice) {
+    return <OrganizationChooserPage onChoose={chooseOrganization} profile={profile} />
   }
 
   function chooseProgram(programId: string) {
     setSelectedProgramId(programId)
     window.localStorage.setItem('sang-crm-selected-program', programId)
     setRoute('dashboard')
+  }
+
+  function chooseProgramInSettings(programId: string) {
+    setSelectedProgramId(programId)
+    window.localStorage.setItem('sang-crm-selected-program', programId)
+    setRoute('settings')
   }
 
   function switchProgram() {
@@ -2064,12 +2990,13 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
 
   return (
     <Shell onSwitchProgram={switchProgram} organization={organization} route={route} selectedProgram={activeProgram} setRoute={setRoute} user={firebaseUser}>
-      {programs.error || roles.error || people.error ? <p className="form-error">{programs.error || roles.error || people.error}</p> : null}
-      {route === 'dashboard' && activeProgram && <ProgramWorkspaceDashboard checkIns={activeCheckIns} events={activeEvents} people={activePeople} program={activeProgram} setRoute={setRoute} />}
+      {programs.error || roles.error || people.error || scheduleItems.error ? <p className="form-error">{programs.error || roles.error || people.error || scheduleItems.error}</p> : null}
+      {route === 'dashboard' && activeProgram && <ProgramWorkspaceDashboard checkIns={activeCheckIns} events={activeEvents} joinLinks={activeJoinLinks} people={activePeople} program={activeProgram} setRoute={setRoute} />}
       {route === 'dashboard' && !activeProgram && <DashboardPage checkIns={checkIns.rows} people={people.rows} programs={sortedPrograms} setRoute={setRoute} />}
-      {route === 'events' && activeProgram && <EventsPage events={activeEvents} orgId={orgId} program={activeProgram} uid={firebaseUser.uid} />}
+      {route === 'events' && activeProgram && <EventsPage events={activeEvents} orgId={orgId} program={activeProgram} scheduleItems={activeScheduleItems} uid={firebaseUser.uid} />}
       {route === 'events' && !activeProgram && <ProgramsPage events={events.rows} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} />}
       {route === 'programs' && <ProgramsPage events={events.rows} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} />}
+      {route === 'settings' && <SettingsPage joinLinks={joinLinks.rows} onProgramSelect={chooseProgramInSettings} orgId={orgId} organization={organization} program={activeProgram} programs={sortedPrograms} uid={firebaseUser.uid} />}
       {route === 'roles' && <RolesPage orgId={orgId} roles={roles.rows} />}
       {route === 'team' && <TeamPage events={events.rows} members={members.rows} orgId={orgId} programs={sortedPrograms} roles={roles.rows} />}
       {route === 'people' && <PeoplePage events={activeProgram ? activeEvents : events.rows} orgId={orgId} passes={activeProgram ? activePasses : passes.rows} people={activeProgram ? activePeople : people.rows} programs={activeProgram ? [activeProgram] : sortedPrograms} />}
