@@ -54,6 +54,7 @@ import {
 } from 'firebase/firestore'
 import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage'
 import { auth, db, functions, storage } from './lib/firebase'
+import { LandingPage } from './landing/LandingPage'
 
 type RouteKey = 'dashboard' | 'events' | 'programs' | 'roles' | 'team' | 'people' | 'checkin' | 'analytics'
 type PersonKind = 'attendee' | 'participant' | 'speaker' | 'staff'
@@ -238,6 +239,19 @@ function toRows<T extends { id: string }>(snapshotDocs: DocumentData[]) {
   return snapshotDocs.map((snapshotDoc) => ({ id: snapshotDoc.id, ...snapshotDoc.data() }) as T)
 }
 
+// Errors Firestore emits while auth is transitioning (sign-out / sign-in) or the
+// client is tearing down. These are transient, not real failures, so we don't
+// surface them in the UI.
+function isTransientListenerError(error: { code?: string; message?: string }): boolean {
+  const code = error?.code ?? ''
+  const message = error?.message ?? ''
+  return (
+    code === 'cancelled' ||
+    code === 'permission-denied' ||
+    /database connection is closing|client has already been terminated|the client has been terminated/i.test(message)
+  )
+}
+
 function useCollection<T extends { id: string }>(dataQuery: Query | null) {
   const [rows, setRows] = useState<T[]>([])
   const [loading, setLoading] = useState(Boolean(dataQuery))
@@ -247,21 +261,32 @@ function useCollection<T extends { id: string }>(dataQuery: Query | null) {
     if (!dataQuery) {
       setRows([])
       setLoading(false)
+      setError('')
       return
     }
 
+    let active = true
     setLoading(true)
-    return onSnapshot(
+    setError('')
+    const unsubscribe = onSnapshot(
       dataQuery,
       (snapshot) => {
+        if (!active) return
         setRows(toRows<T>(snapshot.docs))
         setLoading(false)
       },
       (snapshotError) => {
-        setError(snapshotError.message)
+        if (!active) return
         setLoading(false)
+        if (isTransientListenerError(snapshotError)) return
+        setError(snapshotError.message)
       },
     )
+
+    return () => {
+      active = false
+      unsubscribe()
+    }
   }, [dataQuery])
 
   return { rows, loading, error }
@@ -273,14 +298,16 @@ function useAuthProfile() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    let mounted = true
     let finished = false
     const fallbackTimer = window.setTimeout(() => {
-      if (!finished) {
+      if (!finished && mounted) {
         setLoading(false)
       }
     }, 7000)
 
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      if (!mounted) return
       setFirebaseUser(currentUser)
       if (!currentUser) {
         setProfile(null)
@@ -301,15 +328,21 @@ function useAuthProfile() {
 
       try {
         const userSnapshot = await getDoc(doc(db, 'peUsers', currentUser.uid))
-        setProfile(userSnapshot.exists() ? (userSnapshot.data() as PeUser) : null)
+        if (mounted) {
+          setProfile(userSnapshot.exists() ? (userSnapshot.data() as PeUser) : null)
+        }
+      } catch (profileError) {
+        // Transient read failures during an auth transition shouldn't crash the app.
+        console.warn('Could not load user profile:', profileError)
       } finally {
         finished = true
         window.clearTimeout(fallbackTimer)
-        setLoading(false)
+        if (mounted) setLoading(false)
       }
     })
 
     return () => {
+      mounted = false
       window.clearTimeout(fallbackTimer)
       unsubscribe()
     }
@@ -425,7 +458,42 @@ function Shell({
   )
 }
 
-function AuthPage() {
+function authErrorCode(error: unknown): string {
+  return typeof error === 'object' && error !== null && 'code' in error
+    ? String((error as { code: unknown }).code)
+    : ''
+}
+
+function friendlyAuthMessage(error: unknown, fallback: string): string {
+  switch (authErrorCode(error)) {
+    case 'auth/email-already-in-use':
+      return 'An account with this email already exists. Sign in below, or use “Continue with Google” if you signed up with Google.'
+    case 'auth/invalid-email':
+      return 'Please enter a valid email address.'
+    case 'auth/weak-password':
+      return 'Password should be at least 6 characters.'
+    case 'auth/missing-password':
+      return 'Please enter your password.'
+    case 'auth/wrong-password':
+    case 'auth/invalid-credential':
+      return 'Incorrect email or password.'
+    case 'auth/user-not-found':
+      return 'No account found with this email. Create one instead.'
+    case 'auth/user-disabled':
+      return 'This account has been disabled. Contact support.'
+    case 'auth/too-many-requests':
+      return 'Too many attempts. Please wait a moment and try again.'
+    case 'auth/network-request-failed':
+      return 'Network error. Check your connection and try again.'
+    case 'auth/popup-closed-by-user':
+    case 'auth/cancelled-popup-request':
+      return 'Sign-in was cancelled.'
+    default:
+      return error instanceof Error ? error.message : fallback
+  }
+}
+
+function AuthPage({ onBack }: { onBack?: () => void }) {
   const [mode, setMode] = useState<'signin' | 'signup'>('signin')
   const [displayName, setDisplayName] = useState('')
   const [email, setEmail] = useState('')
@@ -448,7 +516,11 @@ function AuthPage() {
         await signInWithEmailAndPassword(auth, email.trim(), password)
       }
     } catch (authError) {
-      setError(authError instanceof Error ? authError.message : 'Authentication failed')
+      // Account already exists: move the user to sign-in so they can continue with their password.
+      if (mode === 'signup' && authErrorCode(authError) === 'auth/email-already-in-use') {
+        setMode('signin')
+      }
+      setError(friendlyAuthMessage(authError, 'Authentication failed'))
     } finally {
       setLoading(false)
     }
@@ -463,7 +535,7 @@ function AuthPage() {
       provider.setCustomParameters({ prompt: 'select_account' })
       await signInWithPopup(auth, provider)
     } catch (authError) {
-      setError(authError instanceof Error ? authError.message : 'Google sign-in failed')
+      setError(friendlyAuthMessage(authError, 'Google sign-in failed'))
     } finally {
       setLoading(false)
     }
@@ -495,6 +567,12 @@ function AuthPage() {
         </div>
 
         <form className="auth-card" onSubmit={submit}>
+          {onBack && (
+            <button className="auth-back" onClick={onBack} type="button">
+              <ChevronRight size={15} style={{ transform: 'rotate(180deg)' }} />
+              Back to site
+            </button>
+          )}
           <div className="segmented">
             <button className={mode === 'signin' ? 'selected' : ''} onClick={() => setMode('signin')} type="button">
               Sign in
@@ -2081,6 +2159,24 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
 
 function App() {
   const { firebaseUser, profile, setProfile, loading } = useAuthProfile()
+  const [showAuth, setShowAuth] = useState(() => window.location.hash === '#/signin')
+
+  useEffect(() => {
+    const sync = () => setShowAuth(window.location.hash === '#/signin')
+    window.addEventListener('hashchange', sync)
+    return () => window.removeEventListener('hashchange', sync)
+  }, [])
+
+  function goToSignIn() {
+    window.location.hash = '/signin'
+    setShowAuth(true)
+    window.scrollTo({ top: 0 })
+  }
+
+  function goToLanding() {
+    if (window.location.hash) window.location.hash = ''
+    setShowAuth(false)
+  }
 
   if (loading) {
     return (
@@ -2092,7 +2188,9 @@ function App() {
   }
 
   if (!firebaseUser) {
-    return <AuthPage />
+    return showAuth
+      ? <AuthPage onBack={goToLanding} />
+      : <LandingPage onSignIn={goToSignIn} />
   }
 
   if (!profile) {
