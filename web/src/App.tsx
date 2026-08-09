@@ -343,7 +343,6 @@ function isTransientListenerError(error: { code?: string; message?: string }): b
   const message = error?.message ?? ''
   return (
     code === 'cancelled' ||
-    code === 'permission-denied' ||
     /database connection is closing|client has already been terminated|the client has been terminated/i.test(message)
   )
 }

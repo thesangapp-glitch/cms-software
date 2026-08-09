@@ -59,7 +59,7 @@ function SangPhone() {
         <div style={{ fontSize: 12, color: 'var(--eos-faint)', letterSpacing: '0.1em', textTransform: 'uppercase' }}>My Events</div>
         <div className="eos-pass">
           <div className="eos-pass-row">
-            <span className="eos-pass-title">THOMSO 2027</span>
+            <span className="eos-pass-title">Flagship Program</span>
             <span className="eos-badge vip">VIP</span>
           </div>
           <div style={{ fontSize: 12, color: 'var(--eos-muted)' }}>12 September · Gate 01</div>
@@ -83,7 +83,7 @@ function ScannerPhone() {
           <div className="eos-scan-name">Raghav Sharma</div>
           <span className="eos-badge mint">SANG Verified</span>
           <div className="eos-scan-meta">VIP · Committee Member</div>
-          <div className="eos-scan-meta">THOMSO 2027</div>
+          <div className="eos-scan-meta">Flagship Program</div>
           <div className="eos-scan-status">Entry Allowed</div>
         </div>
         <div className="eos-scan blocked" style={{ minHeight: 96, flex: 'none' }}>
