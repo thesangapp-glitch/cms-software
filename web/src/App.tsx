@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import {
   Activity,
   BadgeCheck,
@@ -23,13 +23,16 @@ import {
   QrCode,
   Save,
   ScanLine,
+  Search,
   Settings,
   ShieldCheck,
   Sparkles,
   Ticket,
   Trash2,
   Upload,
+  UserRound,
   Users,
+  X,
 } from 'lucide-react'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
@@ -72,6 +75,15 @@ type JoinMode = 'direct_join' | 'request_approval' | 'invite_only'
 type ScheduleType = 'session' | 'round' | 'break' | 'checkin' | 'performance' | 'result' | 'ceremony' | 'custom'
 type ScheduleStatus = 'draft' | 'scheduled' | 'delayed' | 'cancelled' | 'completed'
 type ScheduleVisibility = 'public' | 'staffOnly' | 'participantsOnly'
+
+type EventProfile = {
+  id: string
+  name: string
+  role: string
+  organization?: string
+  bio?: string
+  photoUrl?: string
+}
 
 const programTypeOptions = [
   { value: 'college_fest', label: 'College fest' },
@@ -190,6 +202,7 @@ type ProgramEvent = {
   scheduleItemCount?: number
   nextScheduleTitle?: string
   nextScheduleAt?: string
+  profiles?: EventProfile[]
   status: 'draft' | 'live' | 'completed'
 }
 
@@ -808,6 +821,59 @@ function EmptyState({ title, body }: { title: string; body: string }) {
   )
 }
 
+function makeLocalId() {
+  return typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+function Modal({
+  title,
+  eyebrow,
+  open,
+  onClose,
+  children,
+  wide = false,
+}: {
+  title: string
+  eyebrow?: string
+  open: boolean
+  onClose: () => void
+  children: ReactNode
+  wide?: boolean
+}) {
+  useEffect(() => {
+    if (!open) return
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => {
+      document.body.style.overflow = previousOverflow
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [onClose, open])
+
+  if (!open) return null
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section aria-modal="true" className={wide ? 'modal-card wide' : 'modal-card'} role="dialog">
+        <div className="modal-head">
+          <div>
+            {eyebrow && <span className="eyebrow">{eyebrow}</span>}
+            <h2>{title}</h2>
+          </div>
+          <button className="icon-button" onClick={onClose} title="Close" type="button">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="modal-body">{children}</div>
+      </section>
+    </div>
+  )
+}
+
 function ImageUploader({
   label,
   value,
@@ -852,8 +918,29 @@ function ImageUploader({
         <input accept="image/*" disabled={uploading} onChange={(event) => chooseFile(event.target.files?.[0])} type="file" />
       </label>
       {error && <p className="form-error">{error}</p>}
+      {value && (
+        <button className="secondary-button subtle-button" onClick={() => onChange('')} type="button">
+          <X size={15} />
+          Remove {label.toLowerCase()}
+        </button>
+      )}
     </div>
   )
+}
+
+type LocationSuggestion = {
+  place_id: number
+  display_name: string
+  lat: string
+  lon: string
+  type?: string
+  address?: {
+    city?: string
+    town?: string
+    village?: string
+    state?: string
+    country?: string
+  }
 }
 
 function MapPicker({
@@ -874,6 +961,9 @@ function MapPicker({
   const containerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<L.Map | null>(null)
   const markerRef = useRef<L.Marker | null>(null)
+  const [searching, setSearching] = useState(false)
+  const [suggestions, setSuggestions] = useState<LocationSuggestion[]>([])
+  const [searchError, setSearchError] = useState('')
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return
@@ -905,6 +995,57 @@ function MapPicker({
   }, [lat, lng, onPick])
 
   useEffect(() => {
+    const queryText = venue.trim()
+    setSearchError('')
+    if (queryText.length < 3) {
+      setSuggestions([])
+      setSearching(false)
+      return
+    }
+
+    const controller = new AbortController()
+    const timer = window.setTimeout(async () => {
+      setSearching(true)
+      try {
+        const params = new URLSearchParams({
+          q: queryText,
+          format: 'jsonv2',
+          addressdetails: '1',
+          limit: '6',
+        })
+        const response = await fetch(`https://nominatim.openstreetmap.org/search?${params.toString()}`, {
+          signal: controller.signal,
+        })
+        if (!response.ok) throw new Error('Location search failed.')
+        const data = (await response.json()) as LocationSuggestion[]
+        setSuggestions(data)
+      } catch (locationError) {
+        if ((locationError as { name?: string }).name !== 'AbortError') {
+          setSearchError('Could not search locations right now.')
+        }
+      } finally {
+        if (!controller.signal.aborted) setSearching(false)
+      }
+    }, 450)
+
+    return () => {
+      controller.abort()
+      window.clearTimeout(timer)
+    }
+  }, [venue])
+
+  function chooseSuggestion(suggestion: LocationSuggestion) {
+    const latitude = Number(suggestion.lat)
+    const longitude = Number(suggestion.lon)
+    onVenueChange(suggestion.display_name)
+    onPick({ latitude, longitude })
+    setSuggestions([])
+    const next: L.LatLngExpression = [latitude, longitude]
+    markerRef.current?.setLatLng(next)
+    mapRef.current?.setView(next, 15)
+  }
+
+  useEffect(() => {
     if (!mapRef.current || !markerRef.current || lat === undefined || lng === undefined) return
     const next: L.LatLngExpression = [lat, lng]
     markerRef.current.setLatLng(next)
@@ -913,16 +1054,138 @@ function MapPicker({
 
   return (
     <div className="map-picker">
-      <label>
-        {label}
-        <input placeholder="Search/enter venue name" value={venue} onChange={(event) => onVenueChange(event.target.value)} />
-      </label>
+      <div className="location-search">
+        <label>
+          {label}
+          <span className="location-input-wrap">
+            <Search size={16} />
+            <input placeholder="Search venue, city, hotel, campus, hall..." value={venue} onChange={(event) => onVenueChange(event.target.value)} />
+          </span>
+        </label>
+        {(suggestions.length > 0 || searching || searchError) && (
+          <div className="location-results">
+            {searching && <span className="location-result muted"><Loader2 className="spin" size={15} /> Searching...</span>}
+            {searchError && <span className="location-result muted">{searchError}</span>}
+            {suggestions.map((suggestion) => (
+              <button className="location-result" key={suggestion.place_id} onClick={() => chooseSuggestion(suggestion)} type="button">
+                <MapPin size={15} />
+                <span>
+                  <strong>{suggestion.display_name.split(',')[0]}</strong>
+                  <small>{suggestion.display_name}</small>
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
       <div className="map-canvas" ref={containerRef} />
       <div className="coordinate-row">
         <span>Lat {lat?.toFixed(5) || '-'}</span>
         <span>Lng {lng?.toFixed(5) || '-'}</span>
       </div>
     </div>
+  )
+}
+
+function EventProfilesEditor({
+  uid,
+  profiles,
+  onChange,
+}: {
+  uid: string
+  profiles: EventProfile[]
+  onChange: (profiles: EventProfile[]) => void
+}) {
+  const [name, setName] = useState('')
+  const [role, setRole] = useState('Speaker')
+  const [organization, setOrganization] = useState('')
+  const [bio, setBio] = useState('')
+  const [photoUrl, setPhotoUrl] = useState('')
+
+  function addProfile() {
+    if (!name.trim()) return
+    onChange([
+      ...profiles,
+      {
+        id: makeLocalId(),
+        name: name.trim(),
+        role: role.trim() || 'Profile',
+        organization: organization.trim(),
+        bio: bio.trim(),
+        photoUrl: photoUrl.trim(),
+      },
+    ])
+    setName('')
+    setRole('Speaker')
+    setOrganization('')
+    setBio('')
+    setPhotoUrl('')
+  }
+
+  function removeProfile(profileId: string) {
+    onChange(profiles.filter((profile) => profile.id !== profileId))
+  }
+
+  return (
+    <section className="profile-editor">
+      <div className="section-mini-head">
+        <div>
+          <span className="eyebrow">Profiles</span>
+          <h3>Speakers, guests, judges, mentors</h3>
+        </div>
+        <span>{profiles.length} added</span>
+      </div>
+      <div className="profile-input-grid">
+        <div className="form-grid two">
+          <label>
+            Name
+            <input placeholder="Speaker or judge name" value={name} onChange={(event) => setName(event.target.value)} />
+          </label>
+          <label>
+            Profile type
+            <select value={role} onChange={(event) => setRole(event.target.value)}>
+              <option>Speaker</option>
+              <option>Chief guest</option>
+              <option>Judge</option>
+              <option>Mentor</option>
+              <option>Performer</option>
+              <option>Organizer</option>
+              <option>Custom profile</option>
+            </select>
+          </label>
+          <label>
+            Organization / title
+            <input placeholder="Company, college, designation" value={organization} onChange={(event) => setOrganization(event.target.value)} />
+          </label>
+          <ImageUploader folder="event-profiles" label="Profile photo" onChange={setPhotoUrl} uid={uid} value={photoUrl} />
+        </div>
+        <label>
+          Short bio
+          <textarea placeholder="Optional short introduction" value={bio} onChange={(event) => setBio(event.target.value)} />
+        </label>
+        <button className="secondary-button" disabled={!name.trim()} onClick={addProfile} type="button">
+          <UserRound size={16} />
+          Add profile
+        </button>
+      </div>
+
+      {profiles.length > 0 && (
+        <div className="profile-list">
+          {profiles.map((profile) => (
+            <article className="profile-chip-card" key={profile.id}>
+              {profile.photoUrl ? <img alt="" src={profile.photoUrl} /> : <div><UserRound size={18} /></div>}
+              <span>
+                <strong>{profile.name}</strong>
+                <small>{profile.role}{profile.organization ? ` - ${profile.organization}` : ''}</small>
+              </span>
+              <button className="icon-button" onClick={() => removeProfile(profile.id)} title="Remove profile" type="button">
+                <X size={15} />
+              </button>
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
   )
 }
 
@@ -1086,7 +1349,7 @@ function ProgramWorkspaceDashboard({
           <Settings size={20} />
           <span>
             <strong>Program profile</strong>
-            <small>Logo, banner, dates, type, entry rules</small>
+            <small>Logo, banner, dates, type, QR access</small>
           </span>
         </button>
         <button className="quick-action" onClick={() => setRoute('people')} type="button">
@@ -1100,7 +1363,7 @@ function ProgramWorkspaceDashboard({
           <ScanLine size={20} />
           <span>
             <strong>Entry gates</strong>
-            <small>{program.entryScope || 'program'} level pass validation</small>
+            <small>One program pass, event access checked at scan</small>
           </span>
         </button>
         <button className="quick-action" onClick={() => setRoute('settings')} type="button">
@@ -1234,7 +1497,19 @@ function DashboardPage({
   )
 }
 
-function ProgramsPage({ orgId, uid, programs, events }: { orgId: string; uid: string; programs: Program[]; events: ProgramEvent[] }) {
+function ProgramsPage({
+  orgId,
+  uid,
+  programs,
+  events,
+  onChoose,
+}: {
+  orgId: string
+  uid: string
+  programs: Program[]
+  events: ProgramEvent[]
+  onChoose?: (programId: string) => void
+}) {
   const [name, setName] = useState('')
   const [mode, setMode] = useState<ProgramMode>('multiEvent')
   const [programType, setProgramType] = useState('college_fest')
@@ -1248,229 +1523,202 @@ function ProgramsPage({ orgId, uid, programs, events }: { orgId: string; uid: st
   const [latitude, setLatitude] = useState<number | undefined>()
   const [longitude, setLongitude] = useState<number | undefined>()
   const [description, setDescription] = useState('')
-  const [entryScope, setEntryScope] = useState<EntryScope>('program')
   const [competitive, setCompetitive] = useState(false)
   const [resultsEnabled, setResultsEnabled] = useState(false)
   const [joinQrEnabled, setJoinQrEnabled] = useState(true)
+  const [createOpen, setCreateOpen] = useState(programs.length === 0)
   const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
 
   async function createProgram(event: FormEvent) {
     event.preventDefault()
+    setError('')
     setBusy(true)
-    await createProgramCallable({
-      orgId,
-      name: name.trim(),
-      mode,
-      programType,
-      startDate,
-      endDate,
-      venueName: venueName.trim(),
-      city: city.trim(),
-      logoUrl: logoUrl.trim(),
-      bannerUrl: bannerUrl.trim(),
-      posterUrl: posterUrl.trim(),
-      latitude,
-      longitude,
-      address: venueName.trim(),
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      description: description.trim(),
-      entryScope,
-      competitive,
-      resultsEnabled: competitive ? resultsEnabled : false,
-      joinQrEnabled,
-    })
-    setName('')
-    setProgramType('college_fest')
-    setVenueName('')
-    setCity('')
-    setLogoUrl('')
-    setBannerUrl('')
-    setPosterUrl('')
-    setLatitude(undefined)
-    setLongitude(undefined)
-    setDescription('')
-    setEntryScope('program')
-    setCompetitive(false)
-    setResultsEnabled(false)
-    setJoinQrEnabled(true)
-    setBusy(false)
+    try {
+      const response = await createProgramCallable({
+        orgId,
+        name: name.trim(),
+        mode,
+        programType,
+        startDate,
+        endDate,
+        venueName: venueName.trim(),
+        city: city.trim(),
+        logoUrl: logoUrl.trim(),
+        bannerUrl: bannerUrl.trim(),
+        posterUrl: posterUrl.trim(),
+        latitude,
+        longitude,
+        address: venueName.trim(),
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        description: description.trim(),
+        entryScope: 'program',
+        competitive,
+        resultsEnabled: competitive ? resultsEnabled : false,
+        joinQrEnabled,
+      })
+      setName('')
+      setMode('multiEvent')
+      setProgramType('college_fest')
+      setStartDate(nowDateInput())
+      setEndDate(nowDateInput())
+      setVenueName('')
+      setCity('')
+      setLogoUrl('')
+      setBannerUrl('')
+      setPosterUrl('')
+      setLatitude(undefined)
+      setLongitude(undefined)
+      setDescription('')
+      setCompetitive(false)
+      setResultsEnabled(false)
+      setJoinQrEnabled(true)
+      setCreateOpen(false)
+      onChoose?.(response.data.programId)
+    } catch (programError) {
+      setError(programError instanceof Error ? programError.message : 'Unable to create program.')
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
-    <section className="page-grid">
-      <form className="panel form-panel" onSubmit={createProgram}>
-        <div className="panel-heading">
-          <div>
-            <span className="eyebrow">Program</span>
-            <h2>Create program</h2>
-          </div>
-          <Plus size={20} />
+    <section className="page-stack">
+      <section className="events-command command-premium">
+        <div>
+          <span className="eyebrow">Programs</span>
+          <h1>Program command center</h1>
+          <p>Create conferences, college festivals, corporate events, competitions, or standalone programs. Each program owns its people, passes, events, schedule, QR, and analytics.</p>
         </div>
-        <label>
-          Program name
-          <input placeholder="Annual Tech Summit 2026" value={name} onChange={(event) => setName(event.target.value)} required />
-        </label>
-        <label>
-          Mode
-          <select value={mode} onChange={(event) => setMode(event.target.value as ProgramMode)}>
-            <option value="multiEvent">Multi-event program</option>
-            <option value="standalone">Standalone program/event</option>
-          </select>
-        </label>
-        <label>
-          Program type
-          <select value={programType} onChange={(event) => setProgramType(event.target.value)}>
-            {programTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-          </select>
-        </label>
-        <div className="form-grid two">
-          <label>
-            Start date
-            <input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} required />
-          </label>
-          <label>
-            End date
-            <input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} required />
-          </label>
-        </div>
-        <div className="form-grid two">
-          <label>
-            Primary venue
-            <input placeholder="Convention Centre, Delhi" value={venueName} onChange={(event) => setVenueName(event.target.value)} />
-          </label>
-          <label>
-            City
-            <input placeholder="Delhi" value={city} onChange={(event) => setCity(event.target.value)} />
-          </label>
-        </div>
-        <div className="form-grid two">
-          <ImageUploader folder="program-logos" label="Program logo" onChange={setLogoUrl} uid={uid} value={logoUrl} />
-          <ImageUploader folder="program-banners" label="Program banner" onChange={setBannerUrl} uid={uid} value={bannerUrl} />
-        </div>
-        <div className="form-grid two">
-          <ImageUploader folder="program-posters" label="Program poster" onChange={setPosterUrl} uid={uid} value={posterUrl} />
-          <div className="assignment-box">
-            <span>Entry and result rules</span>
-            <label>
-              Entry pass works at
-              <select value={entryScope} onChange={(event) => setEntryScope(event.target.value as EntryScope)}>
-                <option value="program">Program gate only</option>
-                <option value="event">Event gates only</option>
-                <option value="both">Program and event gates</option>
-              </select>
-            </label>
-            <label className="check-row">
-              <input checked={joinQrEnabled} onChange={(event) => setJoinQrEnabled(event.target.checked)} type="checkbox" />
-              <span>Allow Sang users to scan a program QR to join/request access</span>
-            </label>
-            <label className="check-row">
-              <input checked={competitive} onChange={(event) => { setCompetitive(event.target.checked); if (!event.target.checked) setResultsEnabled(false) }} type="checkbox" />
-              <span>This program has competition/results</span>
-            </label>
-            {competitive && (
-              <label className="check-row">
-                <input checked={resultsEnabled} onChange={(event) => setResultsEnabled(event.target.checked)} type="checkbox" />
-                <span>Results will be published from CRM</span>
-              </label>
-            )}
-          </div>
-        </div>
-        <MapPicker
-          label="Primary location"
-          lat={latitude}
-          lng={longitude}
-          onPick={(point) => { setLatitude(point.latitude); setLongitude(point.longitude) }}
-          onVenueChange={setVenueName}
-          venue={venueName}
-        />
-        <label>
-          Description
-          <textarea value={description} onChange={(event) => setDescription(event.target.value)} />
-        </label>
-        <button className="primary-button" disabled={busy} type="submit">
-          {busy ? <Loader2 className="spin" size={17} /> : <Plus size={17} />}
+        <button className="primary-button" onClick={() => setCreateOpen(true)} type="button">
+          <Plus size={17} />
           Create program
         </button>
-      </form>
-
-      <section className="panel">
-        <div className="panel-heading">
-          <div>
-            <span className="eyebrow">Workspace</span>
-            <h2>Programs and events</h2>
-          </div>
-          <CalendarDays size={20} />
-        </div>
-        {programs.length === 0 ? (
-          <EmptyState title="No programs yet" body="Create a program for a conference, fest, corporate event, competition, or any standalone event." />
-        ) : (
-          <div className="program-list">
-            {programs.map((program) => (
-              <ProgramBlock events={events.filter((programEvent) => programEvent.programId === program.id)} key={program.id} orgId={orgId} program={program} uid={uid} />
-            ))}
-          </div>
-        )}
       </section>
+
+      {programs.length === 0 ? (
+        <section className="panel premium-empty-panel">
+          <EmptyState title="No programs yet" body="Create the first program, upload artwork, set dates and venue, then add events and people from the workspace." />
+          <button className="primary-button" onClick={() => setCreateOpen(true)} type="button">
+            <Plus size={17} />
+            Add first program
+          </button>
+        </section>
+      ) : (
+        <div className="program-card-grid">
+          {programs.map((program) => (
+            <ProgramBlock
+              events={events.filter((programEvent) => programEvent.programId === program.id)}
+              key={program.id}
+              onOpen={onChoose}
+              program={program}
+            />
+          ))}
+        </div>
+      )}
+
+      <Modal eyebrow="Program setup" onClose={() => setCreateOpen(false)} open={createOpen} title="Create program" wide>
+        <form className="modal-form" onSubmit={createProgram}>
+          <div className="form-grid two">
+            <label>
+              Program name
+              <input placeholder="Annual Tech Summit 2026" value={name} onChange={(event) => setName(event.target.value)} required />
+            </label>
+            <label>
+              Program type
+              <select value={programType} onChange={(event) => setProgramType(event.target.value)}>
+                {programTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </select>
+            </label>
+            <label>
+              Mode
+              <select value={mode} onChange={(event) => setMode(event.target.value as ProgramMode)}>
+                <option value="multiEvent">Multi-event program</option>
+                <option value="standalone">Standalone program/event</option>
+              </select>
+            </label>
+            <label>
+              City
+              <input placeholder="Delhi" value={city} onChange={(event) => setCity(event.target.value)} />
+            </label>
+            <label>
+              Start date
+              <input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} required />
+            </label>
+            <label>
+              End date
+              <input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} required />
+            </label>
+          </div>
+
+          <div className="form-grid three">
+            <ImageUploader folder="program-logos" label="Program logo" onChange={setLogoUrl} uid={uid} value={logoUrl} />
+            <ImageUploader folder="program-banners" label="Program banner" onChange={setBannerUrl} uid={uid} value={bannerUrl} />
+            <ImageUploader folder="program-posters" label="Program poster" onChange={setPosterUrl} uid={uid} value={posterUrl} />
+          </div>
+
+          <MapPicker
+            label="Primary venue"
+            lat={latitude}
+            lng={longitude}
+            onPick={(point) => { setLatitude(point.latitude); setLongitude(point.longitude) }}
+            onVenueChange={setVenueName}
+            venue={venueName}
+          />
+
+          <div className="assignment-box">
+            <span>Access and results</span>
+            <div className="form-grid two">
+              <label className="check-row">
+                <input checked={joinQrEnabled} onChange={(event) => setJoinQrEnabled(event.target.checked)} type="checkbox" />
+                <span>Enable one secure program QR/pass for Sang entry and join flow</span>
+              </label>
+              <label className="check-row">
+                <input checked={competitive} onChange={(event) => { setCompetitive(event.target.checked); if (!event.target.checked) setResultsEnabled(false) }} type="checkbox" />
+                <span>This program has competition/results</span>
+              </label>
+              {competitive && (
+                <label className="check-row">
+                  <input checked={resultsEnabled} onChange={(event) => setResultsEnabled(event.target.checked)} type="checkbox" />
+                  <span>Results will be published from CRM</span>
+                </label>
+              )}
+            </div>
+          </div>
+
+          <label>
+            Description
+            <textarea placeholder="Short organizer-facing summary for this program" value={description} onChange={(event) => setDescription(event.target.value)} />
+          </label>
+
+          {error && <p className="form-error">{error}</p>}
+
+          <div className="action-row">
+            <button className="secondary-button" onClick={() => setCreateOpen(false)} type="button">
+              Cancel
+            </button>
+            <button className="primary-button" disabled={busy} type="submit">
+              {busy ? <Loader2 className="spin" size={17} /> : <Plus size={17} />}
+              Create program
+            </button>
+          </div>
+        </form>
+      </Modal>
     </section>
   )
 }
 
-function ProgramBlock({ orgId, uid, program, events }: { orgId: string; uid: string; program: Program; events: ProgramEvent[] }) {
-  const [eventName, setEventName] = useState('')
-  const [eventType, setEventType] = useState('session')
-  const [startDateTime, setStartDateTime] = useState('')
-  const [endDateTime, setEndDateTime] = useState('')
-  const [multiDate, setMultiDate] = useState(false)
-  const [venueName, setVenueName] = useState(program.venueName || '')
-  const [locationNote, setLocationNote] = useState('')
-  const [posterUrl, setPosterUrl] = useState('')
-  const [latitude, setLatitude] = useState<number | undefined>(program.latitude)
-  const [longitude, setLongitude] = useState<number | undefined>(program.longitude)
-  const [entryScope, setEntryScope] = useState<EntryScope>(program.entryScope === 'both' ? 'both' : 'event')
-  const [competitive, setCompetitive] = useState(Boolean(program.competitive))
-  const [resultsEnabled, setResultsEnabled] = useState(Boolean(program.resultsEnabled))
-  const [busy, setBusy] = useState(false)
-
-  async function createEvent(event: FormEvent) {
-    event.preventDefault()
-    setBusy(true)
-    await createEventCallable({
-      orgId,
-      programId: program.id,
-      name: eventName.trim(),
-      eventType,
-      startDateTime,
-      endDateTime,
-      multiDate,
-      venueName: venueName.trim(),
-      locationNote: locationNote.trim(),
-      posterUrl: posterUrl.trim(),
-      latitude,
-      longitude,
-      address: venueName.trim(),
-      entryScope,
-      competitive,
-      resultsEnabled: program.competitive && competitive ? resultsEnabled : false,
-    })
-    setEventName('')
-    setEventType('session')
-    setStartDateTime('')
-    setEndDateTime('')
-    setMultiDate(false)
-    setLocationNote('')
-    setPosterUrl('')
-    setEntryScope(program.entryScope === 'both' ? 'both' : 'event')
-    setCompetitive(Boolean(program.competitive))
-    setResultsEnabled(Boolean(program.resultsEnabled))
-    setBusy(false)
-  }
+function ProgramBlock({ program, events, onOpen }: { program: Program; events: ProgramEvent[]; onOpen?: (programId: string) => void }) {
+  const programTypeLabel = programTypeOptions.find((option) => option.value === program.programType)?.label || 'Program'
+  const heroImage = program.bannerUrl || program.posterUrl || program.logoUrl
+  const visibleEvents = events.slice(0, 3)
 
   return (
-    <article className="program-block">
+    <article className="program-card-premium">
       <div className="program-hero">
-        {program.bannerUrl || program.posterUrl ? <img alt="" src={program.bannerUrl || program.posterUrl} /> : <div className="program-art-fallback"><CalendarDays size={26} /></div>}
+        {heroImage ? <img alt="" src={heroImage} /> : <div className="program-art-fallback"><CalendarDays size={26} /></div>}
         <div>
-          <span className="eyebrow">{program.mode === 'standalone' ? 'Standalone event' : 'Program'}</span>
+          <span className="eyebrow">{program.mode === 'standalone' ? 'Standalone event' : programTypeLabel}</span>
           <strong>{program.name}</strong>
           <p>{program.description || 'No description added yet.'}</p>
           <span><MapPin size={14} /> {program.venueName || 'Venue pending'} {program.city ? `· ${program.city}` : ''}</span>
@@ -1479,84 +1727,9 @@ function ProgramBlock({ orgId, uid, program, events }: { orgId: string; uid: str
         <span className={`status ${program.status}`}>{program.mode === 'standalone' ? 'standalone' : `${events.length} events`}</span>
       </div>
 
-      <form className="event-compose" onSubmit={createEvent}>
-        <div className="event-compose-head">
-          <div>
-            <span className="eyebrow">Add event</span>
-            <h2>Session, competition, workshop, talk, or gate zone</h2>
-          </div>
-          <button className="primary-button" disabled={busy} type="submit">
-            {busy ? <Loader2 className="spin" size={17} /> : <Plus size={17} />}
-            Add event
-          </button>
-        </div>
-        <div className="form-grid two">
-          <label>
-            Event name
-            <input placeholder="Opening keynote" value={eventName} onChange={(event) => setEventName(event.target.value)} required />
-          </label>
-          <label>
-            Event type
-            <select value={eventType} onChange={(event) => setEventType(event.target.value)}>
-              {eventTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </select>
-          </label>
-          <label>
-            Location note
-            <input placeholder="Hall A, first floor, gate 2" value={locationNote} onChange={(event) => setLocationNote(event.target.value)} />
-          </label>
-          <label>
-            Starts
-            <input aria-label="Start date time" type="datetime-local" value={startDateTime} onChange={(event) => setStartDateTime(event.target.value)} />
-          </label>
-          <label>
-            Ends
-            <input aria-label="End date time" type="datetime-local" value={endDateTime} onChange={(event) => setEndDateTime(event.target.value)} />
-          </label>
-        </div>
-        <div className="assignment-box">
-          <span>Event rules</span>
-          <div className="form-grid two">
-            <label>
-              Entry pass works at
-              <select value={entryScope} onChange={(event) => setEntryScope(event.target.value as EntryScope)}>
-                <option value="program">Program gate only</option>
-                <option value="event">This event gate only</option>
-                <option value="both">Program and this event</option>
-              </select>
-            </label>
-            <label className="check-row">
-              <input checked={multiDate} onChange={(event) => setMultiDate(event.target.checked)} type="checkbox" />
-              <span>This event happens across multiple dates/times</span>
-            </label>
-          </div>
-          {program.competitive && (
-            <div className="form-grid two">
-              <label className="check-row">
-                <input checked={competitive} onChange={(event) => { setCompetitive(event.target.checked); if (!event.target.checked) setResultsEnabled(false) }} type="checkbox" />
-                <span>This event has judging/competition flow</span>
-              </label>
-              <label className="check-row">
-                <input checked={resultsEnabled} disabled={!competitive} onChange={(event) => setResultsEnabled(event.target.checked)} type="checkbox" />
-                <span>Results will be published for this event</span>
-              </label>
-            </div>
-          )}
-        </div>
-        <ImageUploader folder="event-posters" label="Event poster" onChange={setPosterUrl} uid={uid} value={posterUrl} />
-        <MapPicker
-          label="Event location"
-          lat={latitude}
-          lng={longitude}
-          onPick={(point) => { setLatitude(point.latitude); setLongitude(point.longitude) }}
-          onVenueChange={setVenueName}
-          venue={venueName}
-        />
-      </form>
-
       {events.length > 0 && (
         <div className="event-card-grid">
-          {events.map((programEvent) => (
+          {visibleEvents.map((programEvent) => (
             <div className="event-card" key={programEvent.id}>
               {programEvent.posterUrl ? <img alt="" src={programEvent.posterUrl} /> : <div className="event-card-fallback"><CalendarDays size={20} /></div>}
               <div>
@@ -1568,8 +1741,18 @@ function ProgramBlock({ orgId, uid, program, events }: { orgId: string; uid: str
               <span className={`status ${programEvent.status}`}>{programEvent.status}</span>
             </div>
           ))}
+          {events.length > visibleEvents.length && <div className="event-card more-card">+{events.length - visibleEvents.length} more events</div>}
         </div>
       )}
+      <div className="program-card-footer">
+        <span><QrCode size={14} /> One program QR/pass</span>
+        {onOpen && (
+          <button className="secondary-button" onClick={() => onOpen(program.id)} type="button">
+            Open workspace
+            <ChevronRight size={16} />
+          </button>
+        )}
+      </div>
     </article>
   )
 }
@@ -1588,6 +1771,7 @@ function EventsPage({ orgId, uid, program, events, scheduleItems }: { orgId: str
   const [latitude, setLatitude] = useState<number | undefined>(program.latitude)
   const [longitude, setLongitude] = useState<number | undefined>(program.longitude)
   const [entryScope, setEntryScope] = useState<EntryScope>(program.entryScope === 'both' ? 'both' : 'event')
+  const [profiles, setProfiles] = useState<EventProfile[]>([])
   const [competitive, setCompetitive] = useState(Boolean(program.competitive))
   const [resultsEnabled, setResultsEnabled] = useState(Boolean(program.resultsEnabled))
   const [busy, setBusy] = useState(false)
@@ -1617,6 +1801,7 @@ function EventsPage({ orgId, uid, program, events, scheduleItems }: { orgId: str
     setLatitude(selectedEvent.latitude ?? program.latitude)
     setLongitude(selectedEvent.longitude ?? program.longitude)
     setEntryScope(selectedEvent.entryScope || (program.entryScope === 'both' ? 'both' : 'event'))
+    setProfiles(selectedEvent.profiles || [])
     setCompetitive(Boolean(selectedEvent.competitive ?? program.competitive))
     setResultsEnabled(Boolean(selectedEvent.resultsEnabled))
   }, [program.competitive, program.entryScope, program.latitude, program.longitude, program.venueName, selectedEvent])
@@ -1641,6 +1826,7 @@ function EventsPage({ orgId, uid, program, events, scheduleItems }: { orgId: str
         longitude,
         address: venueName.trim(),
         entryScope,
+        profiles,
         competitive,
         resultsEnabled: program.competitive && competitive ? resultsEnabled : false,
       })
@@ -1675,6 +1861,7 @@ function EventsPage({ orgId, uid, program, events, scheduleItems }: { orgId: str
         longitude,
         address: venueName.trim(),
         entryScope,
+        profiles,
         competitive,
         resultsEnabled: program.competitive && competitive ? resultsEnabled : false,
         scheduleItemCount: scheduleItems.filter((item) => item.eventId === selectedEvent.id).length,
@@ -1719,6 +1906,7 @@ function EventsPage({ orgId, uid, program, events, scheduleItems }: { orgId: str
     setLatitude(program.latitude)
     setLongitude(program.longitude)
     setEntryScope(program.entryScope === 'both' ? 'both' : 'event')
+    setProfiles([])
     setCompetitive(Boolean(program.competitive))
     setResultsEnabled(Boolean(program.resultsEnabled))
   }
@@ -1788,6 +1976,7 @@ function EventsPage({ orgId, uid, program, events, scheduleItems }: { orgId: str
 
               {error && <p className="form-error">{error}</p>}
               {selectedEvent && !editing ? (
+                <>
                 <div className="event-read-view">
                   {selectedEvent.posterUrl ? <img alt="" src={selectedEvent.posterUrl} /> : <div className="event-card-fallback"><CalendarDays size={22} /></div>}
                   <div>
@@ -1796,11 +1985,25 @@ function EventsPage({ orgId, uid, program, events, scheduleItems }: { orgId: str
                     <p>{selectedEvent.locationNote || 'No location note added yet.'}</p>
                     <span><CalendarDays size={14} /> {selectedEvent.startDateTime || 'Start pending'} to {selectedEvent.endDateTime || 'End pending'}</span>
                     <span><MapPin size={14} /> {selectedEvent.venueName || program.venueName || 'Venue pending'}</span>
-                    <span><Ticket size={14} /> Entry: {selectedEvent.entryScope || 'event'} gate</span>
+                    <span><Ticket size={14} /> Uses the program pass; event access is checked during scan</span>
                     <span><BadgeCheck size={14} /> Results: {selectedEvent.resultsEnabled ? 'enabled' : 'not enabled'}</span>
                     {selectedEvent.latitude && selectedEvent.longitude && <small>{selectedEvent.latitude.toFixed(5)}, {selectedEvent.longitude.toFixed(5)}</small>}
                   </div>
                 </div>
+                {selectedEvent.profiles && selectedEvent.profiles.length > 0 && (
+                  <div className="profile-list read-profiles">
+                    {selectedEvent.profiles.map((profile) => (
+                      <article className="profile-chip-card" key={profile.id || profile.name}>
+                        {profile.photoUrl ? <img alt="" src={profile.photoUrl} /> : <div><UserRound size={18} /></div>}
+                        <span>
+                          <strong>{profile.name}</strong>
+                          <small>{profile.role}{profile.organization ? ` - ${profile.organization}` : ''}</small>
+                        </span>
+                      </article>
+                    ))}
+                  </div>
+                )}
+                </>
               ) : (
                 <>
                   <div className="form-grid two">
@@ -1828,16 +2031,12 @@ function EventsPage({ orgId, uid, program, events, scheduleItems }: { orgId: str
                     </label>
                   </div>
                   <div className="assignment-box">
-                    <span>Entry, dates, and results</span>
+                    <span>Access, dates, and results</span>
                     <div className="form-grid two">
-                      <label>
-                        Entry pass works at
-                        <select value={entryScope} onChange={(event) => setEntryScope(event.target.value as EntryScope)}>
-                          <option value="program">Program gate only</option>
-                          <option value="event">This event gate only</option>
-                          <option value="both">Program and this event</option>
-                        </select>
-                      </label>
+                      <div className="info-callout">
+                        <Ticket size={17} />
+                        <span>People scan the same program pass. Assign event access from People before opening an event gate.</span>
+                      </div>
                       <label className="check-row">
                         <input checked={multiDate} onChange={(event) => setMultiDate(event.target.checked)} type="checkbox" />
                         <span>This event has multiple dates/times. Add exact blocks in Schedule below.</span>
@@ -1865,6 +2064,7 @@ function EventsPage({ orgId, uid, program, events, scheduleItems }: { orgId: str
                     onVenueChange={setVenueName}
                     venue={venueName}
                   />
+                  <EventProfilesEditor onChange={setProfiles} profiles={profiles} uid={uid} />
                   <div className="action-row">
                     <button className="primary-button" disabled={busy} type="submit">
                       {busy ? <Loader2 className="spin" size={17} /> : <Check size={17} />}
@@ -2086,7 +2286,7 @@ function SettingsPage({
         <div>
           <span className="eyebrow">Workspace profile</span>
           <h1>Organization and program settings</h1>
-          <p>Manage public identity, program artwork, entry rules, result settings, and Sang Scan-to-Join QR from one place.</p>
+          <p>Manage public identity, program artwork, QR access, result settings, and Sang Scan-to-Join from one place.</p>
         </div>
       </section>
 
@@ -2140,7 +2340,7 @@ function SettingsPage({
           {program ? (
             <ProgramSettingsForm joinLinks={joinLinks.filter((link) => link.programId === program.id)} orgId={orgId} program={program} uid={uid} />
           ) : (
-            <EmptyState title="Choose a program" body="Create or select a program before editing program artwork, entry rules, result settings, and join QR." />
+            <EmptyState title="Choose a program" body="Create or select a program before editing program artwork, QR access, result settings, and join flow." />
           )}
         </section>
       </div>
@@ -2269,14 +2469,6 @@ function ProgramSettingsForm({ orgId, uid, program, joinLinks }: { orgId: string
           <label>
             City
             <input value={city} onChange={(event) => setCity(event.target.value)} />
-          </label>
-          <label>
-            Entry pass works at
-            <select value={entryScope} onChange={(event) => setEntryScope(event.target.value as EntryScope)}>
-              <option value="program">Program gate only</option>
-              <option value="event">Event gates only</option>
-              <option value="both">Program and event gates</option>
-            </select>
           </label>
         </div>
 
@@ -3071,8 +3263,8 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
       {route === 'dashboard' && activeProgram && <ProgramWorkspaceDashboard checkIns={activeCheckIns} events={activeEvents} joinLinks={activeJoinLinks} people={activePeople} program={activeProgram} setRoute={setRoute} />}
       {route === 'dashboard' && !activeProgram && <DashboardPage checkIns={checkIns.rows} people={people.rows} programs={sortedPrograms} setRoute={setRoute} />}
       {route === 'events' && activeProgram && <EventsPage events={activeEvents} orgId={orgId} program={activeProgram} scheduleItems={activeScheduleItems} uid={firebaseUser.uid} />}
-      {route === 'events' && !activeProgram && <ProgramsPage events={events.rows} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} />}
-      {route === 'programs' && <ProgramsPage events={events.rows} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} />}
+      {route === 'events' && !activeProgram && <ProgramsPage events={events.rows} onChoose={chooseProgram} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} />}
+      {route === 'programs' && <ProgramsPage events={events.rows} onChoose={chooseProgram} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} />}
       {route === 'settings' && <SettingsPage joinLinks={joinLinks.rows} onProgramSelect={chooseProgramInSettings} orgId={orgId} organization={organization} program={activeProgram} programs={sortedPrograms} uid={firebaseUser.uid} />}
       {route === 'roles' && <RolesPage orgId={orgId} roles={roles.rows} />}
       {route === 'team' && <TeamPage events={events.rows} members={members.rows} orgId={orgId} programs={sortedPrograms} roles={roles.rows} />}

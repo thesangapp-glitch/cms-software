@@ -51,6 +51,15 @@ const defaultRoles = [
   },
 ]
 
+const eventProfileSchema = z.object({
+  id: z.string().optional().default(''),
+  name: z.string().min(1),
+  role: z.string().optional().default('Profile'),
+  organization: z.string().optional().default(''),
+  bio: z.string().optional().default(''),
+  photoUrl: z.string().optional().default(''),
+})
+
 function requireUid(context: { auth?: { uid: string } }) {
   const uid = context.auth?.uid
   if (!uid) {
@@ -69,6 +78,14 @@ function makeToken() {
 
 function tokenHash(token: string) {
   return createHash('sha256').update(token).digest('hex')
+}
+
+function dateFromFirestore(value: unknown) {
+  if (value instanceof Date) return value
+  if (value && typeof (value as { toDate?: () => Date }).toDate === 'function') {
+    return (value as { toDate: () => Date }).toDate()
+  }
+  return null
 }
 
 async function assertProgram(input: { orgId: string; programId: string }) {
@@ -505,6 +522,7 @@ export const createEvent = onCall(callableOptions, async (request) => {
       scheduleItemCount: z.number().optional().default(0),
       nextScheduleTitle: z.string().optional().default(''),
       nextScheduleAt: z.string().optional().default(''),
+      profiles: z.array(eventProfileSchema).optional().default([]),
     })
     .parse(request.data)
 
@@ -545,6 +563,7 @@ export const updateEvent = onCall(callableOptions, async (request) => {
       scheduleItemCount: z.number().optional().default(0),
       nextScheduleTitle: z.string().optional().default(''),
       nextScheduleAt: z.string().optional().default(''),
+      profiles: z.array(eventProfileSchema).optional().default([]),
       status: z.enum(['draft', 'live', 'completed']).optional().default('draft'),
     })
     .parse(request.data)
@@ -724,6 +743,9 @@ export const createProgramJoinLink = onCall(callableOptions, async (request) => 
 
   await assertPermission(uid, input.orgId, permissions.programWrite)
   await assertProgram(input)
+  for (const eventId of input.allowedEventIds) {
+    await assertEvent({ orgId: input.orgId, programId: input.programId, eventId })
+  }
   const token = makeToken()
   const joinRef = db.collection('peProgramJoinLinks').doc()
   await joinRef.set({
@@ -758,6 +780,10 @@ export const createProgramPersonAndPass = onCall(callableOptions, async (request
 
   await assertPermission(uid, input.orgId, permissions.peopleImport)
   await assertPermission(uid, input.orgId, permissions.passesIssue)
+  await assertProgram(input)
+  for (const eventId of input.eventIds) {
+    await assertEvent({ orgId: input.orgId, programId: input.programId, eventId })
+  }
 
   const personRef = db.collection('peProgramPeople').doc()
   const passRef = db.collection('pePasses').doc()
@@ -865,6 +891,11 @@ export const createScannerSession = onCall(callableOptions, async (request) => {
     .parse(request.data)
 
   await assertPermission(uid, input.orgId, permissions.checkinScan)
+  await assertProgram(input)
+  if (input.eventId) {
+    await assertEvent({ orgId: input.orgId, programId: input.programId, eventId: input.eventId })
+  }
+
   const sessionRef = db.collection('peScannerSessions').doc()
   const sessionToken = makeToken()
   await sessionRef.set({
@@ -900,6 +931,10 @@ export const scanPassToken = onCall(callableOptions, async (request) => {
   if (session.sessionTokenHash !== tokenHash(input.scannerToken)) {
     throw new HttpsError('permission-denied', 'Invalid scanner token.')
   }
+  const expiresAt = dateFromFirestore(session.expiresAt)
+  if (expiresAt && expiresAt.getTime() < Date.now()) {
+    throw new HttpsError('permission-denied', 'Scanner session has expired.')
+  }
 
   const token = input.payload.replace('SANGPASS1:', '').trim()
   const passQuery = await db.collection('pePasses').where('tokenHash', '==', tokenHash(token)).limit(1).get()
@@ -912,8 +947,26 @@ export const scanPassToken = onCall(callableOptions, async (request) => {
   if (pass.orgId !== session.orgId || pass.programId !== session.programId) {
     throw new HttpsError('permission-denied', 'Pass is not valid for this scanner session.')
   }
+  if (session.eventId) {
+    const accessSnapshot = await db
+      .collection('peProgramPeople')
+      .doc(pass.programPersonId)
+      .collection('events')
+      .doc(session.eventId)
+      .get()
+    const access = accessSnapshot.data()
+    if (!accessSnapshot.exists || access?.orgId !== session.orgId || access?.programId !== session.programId) {
+      throw new HttpsError('permission-denied', 'This pass does not have access to this event.')
+    }
+    if (['blocked', 'cancelled', 'rejected', 'revoked'].includes(String(access?.status || ''))) {
+      throw new HttpsError('permission-denied', 'This event access is not active.')
+    }
+  }
 
-  const result = pass.status === 'checkedIn' ? 'duplicate' : 'approved'
+  const scanScope = session.eventId || 'program'
+  const dedupeRef = db.collection('peCheckInKeys').doc(`${passSnapshot.id}_${scanScope}`)
+  const dedupeSnapshot = await dedupeRef.get()
+  const result = dedupeSnapshot.exists ? 'duplicate' : 'approved'
   const checkInRef = input.deviceScanId
     ? db.collection('peCheckIns').doc(input.deviceScanId)
     : db.collection('peCheckIns').doc()
@@ -941,6 +994,15 @@ export const scanPassToken = onCall(callableOptions, async (request) => {
   })
 
   if (result === 'approved') {
+    batch.create(dedupeRef, {
+      orgId: pass.orgId,
+      programId: pass.programId,
+      eventId: session.eventId || '',
+      programPersonId: pass.programPersonId,
+      passId: passSnapshot.id,
+      scannerSessionId: input.scannerSessionId,
+      createdAt: FieldValue.serverTimestamp(),
+    })
     batch.update(passSnapshot.ref, {
       status: 'checkedIn',
       updatedAt: FieldValue.serverTimestamp(),
