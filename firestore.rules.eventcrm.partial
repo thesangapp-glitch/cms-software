@@ -83,6 +83,16 @@ match /peProgramContentSections/{sectionId} {
   allow delete: if false;
 }
 
+match /peEventScheduleItems/{scheduleItemId} {
+  allow read: if peIsActiveMember(resource.data.orgId);
+  allow write: if false;
+}
+
+match /peProgramJoinLinks/{joinLinkId} {
+  allow read: if peIsActiveMember(resource.data.orgId);
+  allow write: if false;
+}
+
 match /peProgramPeople/{programPersonId} {
   allow read: if peIsActiveMember(resource.data.orgId);
   allow create: if peHasPermission(request.resource.data.orgId, 'people.import');
