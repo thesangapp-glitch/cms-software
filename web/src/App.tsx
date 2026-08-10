@@ -6,6 +6,7 @@ import {
   Building2,
   CalendarDays,
   Check,
+  ChevronDown,
   ChevronRight,
   Clock,
   ClipboardList,
@@ -86,6 +87,14 @@ type EventAccess = {
   roleId: string
   roleName: string
   status: 'allowed' | 'registered' | 'blocked' | 'cancelled' | 'rejected' | 'revoked'
+}
+
+type VenueSuggestion = {
+  id: string
+  name: string
+  detail: string
+  latitude?: number
+  longitude?: number
 }
 
 type EventProfile = {
@@ -201,6 +210,58 @@ function resolveAudienceRole(value: string | undefined, audienceRoles: AudienceR
   const byName = audienceRoles.find((role) => role.name.toLowerCase() === normalized.toLowerCase())
   if (byName) return byName
   return { id: slugify(normalized), name: normalized }
+}
+
+function formatDateTime(value?: string) {
+  if (!value) return 'Time pending'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return new Intl.DateTimeFormat('en-IN', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(date)
+}
+
+function collectVenueSuggestions(program: Program, event: ProgramEvent, scheduleItems: ScheduleItem[]) {
+  const venues: VenueSuggestion[] = []
+  const addVenue = (input: { id: string; name?: string; detail: string; latitude?: number; longitude?: number }) => {
+    const name = input.name?.trim()
+    if (!name) return
+    const key = `${name.toLowerCase()}_${input.latitude ?? ''}_${input.longitude ?? ''}`
+    if (venues.some((venue) => `${venue.name.toLowerCase()}_${venue.latitude ?? ''}_${venue.longitude ?? ''}` === key)) return
+    venues.push({
+      id: input.id,
+      name,
+      detail: input.detail,
+      latitude: input.latitude,
+      longitude: input.longitude,
+    })
+  }
+
+  addVenue({
+    id: 'event-primary',
+    name: event.venueName,
+    detail: event.locationNote || 'Event venue',
+    latitude: event.latitude,
+    longitude: event.longitude,
+  })
+  addVenue({
+    id: 'program-primary',
+    name: program.venueName,
+    detail: program.city || 'Program primary venue',
+    latitude: program.latitude,
+    longitude: program.longitude,
+  })
+  scheduleItems.forEach((item) => {
+    addVenue({
+      id: item.id,
+      name: item.venueName,
+      detail: item.roomName || 'Used in schedule',
+      latitude: item.latitude,
+      longitude: item.longitude,
+    })
+  })
+  return venues
 }
 
 type PeUser = {
@@ -1320,6 +1381,80 @@ function MapPicker({
   )
 }
 
+function VenueCombobox({
+  label,
+  value,
+  suggestions,
+  latitude,
+  longitude,
+  onChange,
+  onSelect,
+}: {
+  label: string
+  value: string
+  suggestions: VenueSuggestion[]
+  latitude?: number
+  longitude?: number
+  onChange: (value: string) => void
+  onSelect: (venue: VenueSuggestion) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const filteredSuggestions = suggestions.filter((venue) => {
+    const query = value.trim().toLowerCase()
+    if (!query) return true
+    return venue.name.toLowerCase().includes(query) || venue.detail.toLowerCase().includes(query)
+  })
+
+  function chooseVenue(venue: VenueSuggestion) {
+    onSelect(venue)
+    setOpen(false)
+  }
+
+  return (
+    <div className="venue-combobox">
+      <label>
+        {label}
+        <span className="venue-input-wrap">
+          <input
+            onBlur={() => window.setTimeout(() => setOpen(false), 140)}
+            onChange={(event) => {
+              onChange(event.target.value)
+              setOpen(true)
+            }}
+            onFocus={() => setOpen(true)}
+            placeholder="Type a venue or choose a saved venue"
+            value={value}
+          />
+          <button aria-label="Show saved venues" onClick={() => setOpen((current) => !current)} type="button">
+            <ChevronDown size={16} />
+          </button>
+        </span>
+      </label>
+      {open && (
+        <div className="venue-suggestion-menu">
+          {filteredSuggestions.length === 0 ? (
+            <span className="venue-suggestion empty">No saved venue yet</span>
+          ) : (
+            filteredSuggestions.map((venue) => (
+              <button className="venue-suggestion" key={venue.id} onMouseDown={(event) => event.preventDefault()} onClick={() => chooseVenue(venue)} type="button">
+                <MapPin size={15} />
+                <span>
+                  <strong>{venue.name}</strong>
+                  <small>{venue.detail}{venue.latitude !== undefined && venue.longitude !== undefined ? ` - ${venue.latitude.toFixed(5)}, ${venue.longitude.toFixed(5)}` : ''}</small>
+                </span>
+              </button>
+            ))
+          )}
+        </div>
+      )}
+      <div className="coordinate-row compact">
+        <span>Lat {latitude?.toFixed(5) || '-'}</span>
+        <span>Lng {longitude?.toFixed(5) || '-'}</span>
+      </div>
+    </div>
+  )
+}
+
 function EventProfilesEditor({
   uid,
   profiles,
@@ -2263,7 +2398,7 @@ function EventsPage({ orgId, uid, program, events, scheduleItems, roles }: { org
           </div>
 
           {(selectedEvent || editing) && (
-            <form className="panel event-detail-panel" onSubmit={submitHandler}>
+            <section className="panel event-detail-panel">
               <div className="panel-heading">
                 <div>
                   <span className="eyebrow">{selectedEvent ? 'Event detail' : 'New event'}</span>
@@ -2325,7 +2460,7 @@ function EventsPage({ orgId, uid, program, events, scheduleItems, roles }: { org
                 )}
                 </>
               ) : (
-                <>
+                <form className="event-editor-form" onSubmit={submitHandler}>
                   <div className="form-grid two">
                     <label>
                       Event name
@@ -2414,7 +2549,7 @@ function EventsPage({ orgId, uid, program, events, scheduleItems, roles }: { org
                       </button>
                     )}
                   </div>
-                </>
+                </form>
               )}
               {selectedEvent && !editing && (
                 <ScheduleManager
@@ -2424,7 +2559,7 @@ function EventsPage({ orgId, uid, program, events, scheduleItems, roles }: { org
                   scheduleItems={scheduleItems.filter((item) => item.eventId === selectedEvent.id)}
                 />
               )}
-            </form>
+            </section>
           )}
         </section>
       )}
@@ -2439,15 +2574,32 @@ function ScheduleManager({ orgId, program, event, scheduleItems }: { orgId: stri
   const [startsAt, setStartsAt] = useState('')
   const [endsAt, setEndsAt] = useState('')
   const [venueName, setVenueName] = useState(event.venueName || program.venueName || '')
+  const [latitude, setLatitude] = useState<number | undefined>(event.latitude ?? program.latitude)
+  const [longitude, setLongitude] = useState<number | undefined>(event.longitude ?? program.longitude)
   const [roomName, setRoomName] = useState('')
   const [visibility, setVisibility] = useState<ScheduleVisibility>('public')
   const [status, setStatus] = useState<ScheduleStatus>('scheduled')
   const [description, setDescription] = useState('')
+  const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const sortedItems = [...scheduleItems].sort((a, b) => (a.startsAt || '').localeCompare(b.startsAt || ''))
+  const venueSuggestions = useMemo(() => collectVenueSuggestions(program, event, sortedItems), [program, event, sortedItems])
+
+  useEffect(() => {
+    setVenueName(event.venueName || program.venueName || '')
+    setLatitude(event.latitude ?? program.latitude)
+    setLongitude(event.longitude ?? program.longitude)
+  }, [event.id, event.latitude, event.longitude, event.venueName, program.latitude, program.longitude, program.venueName])
+
+  function selectVenue(venue: VenueSuggestion) {
+    setVenueName(venue.name)
+    setLatitude(venue.latitude)
+    setLongitude(venue.longitude)
+  }
 
   async function addScheduleItem(eventSubmit: FormEvent) {
     eventSubmit.preventDefault()
+    setError('')
     setBusy(true)
     try {
       await createScheduleItemCallable({
@@ -2463,6 +2615,8 @@ function ScheduleManager({ orgId, program, event, scheduleItems }: { orgId: stri
         timezone: program.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
         venueName: venueName.trim(),
         roomName: roomName.trim(),
+        latitude,
+        longitude,
         visibility,
         status,
         sortOrder: sortedItems.length + 1,
@@ -2473,6 +2627,8 @@ function ScheduleManager({ orgId, program, event, scheduleItems }: { orgId: stri
       setEndsAt('')
       setRoomName('')
       setDescription('')
+    } catch (scheduleError) {
+      setError(scheduleError instanceof Error ? scheduleError.message : 'Unable to add schedule item.')
     } finally {
       setBusy(false)
     }
@@ -2486,66 +2642,85 @@ function ScheduleManager({ orgId, program, event, scheduleItems }: { orgId: stri
 
   return (
     <section className="schedule-manager">
-      <div className="panel-heading">
+      <div className="schedule-manager-head">
         <div>
           <span className="eyebrow">Schedule</span>
           <h2>Time blocks for this event</h2>
+          <p>{sortedItems.length ? `${sortedItems.length} schedule blocks added` : 'Build the exact event timeline: sessions, rounds, breaks, check-in windows, and result slots.'}</p>
         </div>
-        <Clock size={20} />
+        <span className="schedule-count"><Clock size={16} /> {sortedItems.length}</span>
       </div>
 
-      <form className="schedule-form" onSubmit={addScheduleItem}>
-        <div className="form-grid two">
-          <label>
-            Schedule title
-            <input placeholder="Round 1, Poster Session, Tea Break" value={title} onChange={(eventChange) => setTitle(eventChange.target.value)} required />
-          </label>
-          <label>
-            Type
-            <select value={type} onChange={(eventChange) => setType(eventChange.target.value as ScheduleType)}>
-              {scheduleTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </select>
-          </label>
-          {type === 'custom' && (
+      <form className="schedule-form schedule-form-card" onSubmit={addScheduleItem}>
+        {error && <p className="form-error">{error}</p>}
+        <div className="schedule-form-grid">
+          <div className="schedule-main-fields">
             <label>
-              Custom schedule type
-              <input placeholder="Poster viewing, networking, rehearsal..." value={customTypeLabel} onChange={(eventChange) => setCustomTypeLabel(eventChange.target.value)} />
+              Schedule title
+              <input placeholder="Round 1, Poster Session, Tea Break" value={title} onChange={(eventChange) => setTitle(eventChange.target.value)} required />
             </label>
-          )}
-          <label>
-            Starts
-            <input type="datetime-local" value={startsAt} onChange={(eventChange) => setStartsAt(eventChange.target.value)} required />
-          </label>
-          <label>
-            Ends
-            <input type="datetime-local" value={endsAt} onChange={(eventChange) => setEndsAt(eventChange.target.value)} />
-          </label>
-          <label>
-            Venue
-            <input value={venueName} onChange={(eventChange) => setVenueName(eventChange.target.value)} />
-          </label>
-          <label>
-            Room / stage / booth zone
-            <input placeholder="Hall A, Stage 2, Poster Zone B" value={roomName} onChange={(eventChange) => setRoomName(eventChange.target.value)} />
-          </label>
-          <label>
-            Visibility
-            <select value={visibility} onChange={(eventChange) => setVisibility(eventChange.target.value as ScheduleVisibility)}>
-              <option value="public">Public</option>
-              <option value="staffOnly">Staff only</option>
-              <option value="participantsOnly">Participants only</option>
-            </select>
-          </label>
-          <label>
-            Status
-            <select value={status} onChange={(eventChange) => setStatus(eventChange.target.value as ScheduleStatus)}>
-              <option value="draft">Draft</option>
-              <option value="scheduled">Scheduled</option>
-              <option value="delayed">Delayed</option>
-              <option value="cancelled">Cancelled</option>
-              <option value="completed">Completed</option>
-            </select>
-          </label>
+            <div className="form-grid two">
+              <label>
+                Type
+                <select value={type} onChange={(eventChange) => setType(eventChange.target.value as ScheduleType)}>
+                  {scheduleTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </select>
+              </label>
+              {type === 'custom' && (
+                <label>
+                  Custom schedule type
+                  <input placeholder="Poster viewing, networking, rehearsal..." value={customTypeLabel} onChange={(eventChange) => setCustomTypeLabel(eventChange.target.value)} />
+                </label>
+              )}
+              <label>
+                Starts
+                <input type="datetime-local" value={startsAt} onChange={(eventChange) => setStartsAt(eventChange.target.value)} required />
+              </label>
+              <label>
+                Ends
+                <input type="datetime-local" value={endsAt} onChange={(eventChange) => setEndsAt(eventChange.target.value)} />
+              </label>
+            </div>
+          </div>
+          <div className="schedule-side-fields">
+            <VenueCombobox
+              label="Venue"
+              latitude={latitude}
+              longitude={longitude}
+              onChange={(nextVenue) => {
+                setVenueName(nextVenue)
+                setLatitude(undefined)
+                setLongitude(undefined)
+              }}
+              onSelect={selectVenue}
+              suggestions={venueSuggestions}
+              value={venueName}
+            />
+            <label>
+              Room / stage / booth zone
+              <input placeholder="Hall A, Stage 2, Poster Zone B" value={roomName} onChange={(eventChange) => setRoomName(eventChange.target.value)} />
+            </label>
+            <div className="form-grid two">
+              <label>
+                Visibility
+                <select value={visibility} onChange={(eventChange) => setVisibility(eventChange.target.value as ScheduleVisibility)}>
+                  <option value="public">Public</option>
+                  <option value="staffOnly">Staff only</option>
+                  <option value="participantsOnly">Participants only</option>
+                </select>
+              </label>
+              <label>
+                Status
+                <select value={status} onChange={(eventChange) => setStatus(eventChange.target.value as ScheduleStatus)}>
+                  <option value="draft">Draft</option>
+                  <option value="scheduled">Scheduled</option>
+                  <option value="delayed">Delayed</option>
+                  <option value="cancelled">Cancelled</option>
+                  <option value="completed">Completed</option>
+                </select>
+              </label>
+            </div>
+          </div>
         </div>
         <label>
           Notes
@@ -2560,15 +2735,19 @@ function ScheduleManager({ orgId, program, event, scheduleItems }: { orgId: stri
       {sortedItems.length === 0 ? (
         <EmptyState title="No schedule yet" body="Add every date/time block here: check-in, rounds, sessions, breaks, performances, judging, or result announcements." />
       ) : (
-        <div className="schedule-list">
+        <div className="schedule-list schedule-timeline">
           {sortedItems.map((item) => (
             <article className="schedule-item" key={item.id}>
-              <div>
-                <span className={`status ${item.status}`}>{item.status}</span>
+              <span className="timeline-dot" />
+              <div className="schedule-item-main">
+                <div className="schedule-item-top">
+                  <span className={`status ${item.status}`}>{item.status}</span>
+                  <small>{item.type === 'custom' && item.customTypeLabel ? item.customTypeLabel : optionLabel(scheduleTypeOptions, item.type)}</small>
+                </div>
                 <strong>{item.title}</strong>
-                <small>{item.type === 'custom' && item.customTypeLabel ? item.customTypeLabel : optionLabel(scheduleTypeOptions, item.type)}</small>
-                <p>{item.startsAt} {item.endsAt ? `to ${item.endsAt}` : ''}</p>
-                <small>{item.venueName || event.venueName || program.venueName || 'Venue pending'} {item.roomName ? `- ${item.roomName}` : ''}</small>
+                <p>{formatDateTime(item.startsAt)} {item.endsAt ? `to ${formatDateTime(item.endsAt)}` : ''}</p>
+                <small><MapPin size={13} /> {item.venueName || event.venueName || program.venueName || 'Venue pending'} {item.roomName ? `- ${item.roomName}` : ''}</small>
+                {item.description && <p>{item.description}</p>}
               </div>
               <button className="icon-button" onClick={() => removeScheduleItem(item)} title="Delete schedule item" type="button">
                 <Trash2 size={16} />
