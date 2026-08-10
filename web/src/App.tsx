@@ -741,6 +741,17 @@ function OnboardingPage({ user, onComplete }: { user: User; onComplete: (profile
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
+  async function leaveSetup() {
+    setError('')
+    setLoading(true)
+    try {
+      await signOut(auth)
+    } catch (signOutError) {
+      setError(signOutError instanceof Error ? signOutError.message : 'Could not sign out')
+      setLoading(false)
+    }
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault()
     setLoading(true)
@@ -759,9 +770,23 @@ function OnboardingPage({ user, onComplete }: { user: User; onComplete: (profile
   return (
     <main className="auth-screen">
       <form className="onboarding-card" onSubmit={submit}>
-        <span className="eyebrow">First setup</span>
-        <h1>Create your organization workspace</h1>
+        <div className="setup-card-head">
+          <div>
+            <span className="eyebrow">First setup</span>
+            <h1>Create your organization workspace</h1>
+          </div>
+          <button className="secondary-button setup-signout" disabled={loading} onClick={leaveSetup} type="button">
+            <LogOut size={16} />
+            Sign out
+          </button>
+        </div>
         <p>Your organization is the top-level workspace. Programs, roles, team access, attendees, passes, check-ins, and analytics live inside it.</p>
+        <div className="setup-account-note">
+          <ShieldCheck size={16} />
+          <span>
+            Signed in as <strong>{user.email || user.phoneNumber || user.displayName || 'this account'}</strong>. Use sign out if you want to create the workspace with another account.
+          </span>
+        </div>
 
         <div className="form-grid two">
           {!user.displayName && (

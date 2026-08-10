@@ -247,6 +247,47 @@ th {
   line-height: 1.5;
 }
 
+.setup-card-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: start;
+}
+
+.setup-card-head > div {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.setup-signout {
+  min-height: 36px;
+  white-space: nowrap;
+}
+
+.setup-account-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  border: 1px solid #cfe2e5;
+  border-radius: 8px;
+  background: #f2fbfb;
+  color: #0f5962;
+  font-size: 13px;
+  line-height: 1.45;
+  padding: 10px 12px;
+}
+
+.setup-account-note svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.setup-account-note strong {
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
 .brand-lockup {
   display: flex;
   align-items: center;
@@ -1967,6 +2008,14 @@ th {
 
   .topbar {
     display: grid;
+  }
+
+  .setup-card-head {
+    grid-template-columns: 1fr;
+  }
+
+  .setup-signout {
+    width: fit-content;
   }
 
   .nav-list,
