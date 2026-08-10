@@ -118,6 +118,31 @@ const eventTypeOptions = [
   { value: 'custom', label: 'Custom' },
 ]
 
+const scheduleTypeOptions: Array<{ value: ScheduleType; label: string }> = [
+  { value: 'session', label: 'Session' },
+  { value: 'round', label: 'Competition round' },
+  { value: 'break', label: 'Break' },
+  { value: 'checkin', label: 'Check-in window' },
+  { value: 'performance', label: 'Performance' },
+  { value: 'result', label: 'Result announcement' },
+  { value: 'ceremony', label: 'Ceremony' },
+  { value: 'custom', label: 'Custom' },
+]
+
+function isKnownOption(options: Array<{ value: string }>, value?: string) {
+  return Boolean(value && options.some((option) => option.value === value))
+}
+
+function optionLabel(options: Array<{ value: string; label: string }>, value?: string, fallback = 'Custom') {
+  if (!value) return fallback
+  return options.find((option) => option.value === value)?.label || value
+}
+
+function selectValueOrCustom(options: Array<{ value: string }>, value: string | undefined, fallback: string) {
+  if (!value) return fallback
+  return isKnownOption(options, value) ? value : 'custom'
+}
+
 type PeUser = {
   uid: string
   displayName: string
@@ -213,6 +238,7 @@ type ScheduleItem = {
   eventId?: string
   title: string
   type: ScheduleType
+  customTypeLabel?: string
   description?: string
   startsAt: string
   endsAt?: string
@@ -232,6 +258,7 @@ type ProgramJoinLink = {
   programId: string
   mode: JoinMode
   allowedCategory: PersonKind | 'custom'
+  customAllowedCategory?: string
   maxUses: number
   usedCount: number
   status: 'active' | 'revoked' | 'expired'
@@ -473,7 +500,7 @@ const updateEventCallable = httpsCallable<Partial<Omit<ProgramEvent, 'id'>> & { 
 const deleteEventCallable = httpsCallable<{ orgId: string; eventId: string }, { eventId: string }>(functions, 'deleteEvent')
 const createScheduleItemCallable = httpsCallable<Omit<ScheduleItem, 'id'>, { scheduleItemId: string }>(functions, 'createScheduleItem')
 const deleteScheduleItemCallable = httpsCallable<{ orgId: string; scheduleItemId: string }, { scheduleItemId: string }>(functions, 'deleteScheduleItem')
-const createProgramJoinLinkCallable = httpsCallable<{ orgId: string; programId: string; mode: JoinMode; allowedCategory: PersonKind | 'custom'; allowedEventIds: string[]; maxUses: number; expiresAt: string; campaignName: string }, { joinLinkId: string; qrPayload: string }>(functions, 'createProgramJoinLink')
+const createProgramJoinLinkCallable = httpsCallable<{ orgId: string; programId: string; mode: JoinMode; allowedCategory: PersonKind | 'custom'; customAllowedCategory?: string; allowedEventIds: string[]; maxUses: number; expiresAt: string; campaignName: string }, { joinLinkId: string; qrPayload: string }>(functions, 'createProgramJoinLink')
 const createProgramPersonAndPassCallable = httpsCallable<Omit<ProgramPerson, 'id' | 'passId' | 'passStatus' | 'sangUid'> & { eventIds?: string[] }, { programPersonId: string; passId: string; qrPayload: string }>(functions, 'createProgramPersonAndPass')
 const createScannerSession = httpsCallable<{ orgId: string; programId: string; eventId?: string; gateName?: string }, { scannerSessionId: string; scannerToken: string }>(functions, 'createScannerSession')
 const scanPassToken = httpsCallable<{ scannerSessionId: string; scannerToken: string; payload: string; deviceScanId: string }, { result: string; passId: string; programPersonId: string }>(functions, 'scanPassToken')
@@ -772,19 +799,19 @@ function OnboardingPage({ user, onComplete }: { user: User; onComplete: (profile
       <form className="onboarding-card" onSubmit={submit}>
         <div className="setup-card-head">
           <div>
-            <span className="eyebrow">First setup</span>
-            <h1>Create your organization workspace</h1>
+            <span className="eyebrow">Workspace setup</span>
+            <h1>Set up your organization</h1>
           </div>
           <button className="secondary-button setup-signout" disabled={loading} onClick={leaveSetup} type="button">
             <LogOut size={16} />
             Sign out
           </button>
         </div>
-        <p>Your organization is the top-level workspace. Programs, roles, team access, attendees, passes, check-ins, and analytics live inside it.</p>
+        <p>Add the organization that will manage your programs, team, guests, passes, and event operations.</p>
         <div className="setup-account-note">
           <ShieldCheck size={16} />
           <span>
-            Signed in as <strong>{user.email || user.phoneNumber || user.displayName || 'this account'}</strong>. Use sign out if you want to create the workspace with another account.
+            Signed in as <strong>{user.email || user.phoneNumber || user.displayName || 'this account'}</strong>.
           </span>
         </div>
 
@@ -843,6 +870,110 @@ function EmptyState({ title, body }: { title: string; body: string }) {
       <strong>{title}</strong>
       <p>{body}</p>
     </div>
+  )
+}
+
+function sanitizeRichText(value: string) {
+  if (!value) return ''
+  if (typeof document === 'undefined') {
+    return value.replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, '').replace(/<style[\s\S]*?>[\s\S]*?<\/style>/gi, '')
+  }
+
+  const allowedTags = new Set(['B', 'STRONG', 'I', 'EM', 'U', 'P', 'DIV', 'BR', 'UL', 'OL', 'LI', 'H2', 'H3'])
+  const template = document.createElement('template')
+  template.innerHTML = value
+
+  function cleanNode(node: Node) {
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      const element = node as HTMLElement
+      if (!allowedTags.has(element.tagName)) {
+        const parent = element.parentNode
+        while (element.firstChild) parent?.insertBefore(element.firstChild, element)
+        parent?.removeChild(element)
+        return
+      }
+      for (const attribute of Array.from(element.attributes)) {
+        element.removeAttribute(attribute.name)
+      }
+    }
+    for (const child of Array.from(node.childNodes)) {
+      cleanNode(child)
+    }
+  }
+
+  cleanNode(template.content)
+  return template.innerHTML.trim()
+}
+
+function richTextToPlainText(value?: string) {
+  if (!value) return ''
+  if (typeof document === 'undefined') return value.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+  const wrapper = document.createElement('div')
+  wrapper.innerHTML = sanitizeRichText(value)
+  return wrapper.textContent?.replace(/\s+/g, ' ').trim() || ''
+}
+
+function RichTextPreview({ value, fallback }: { value?: string; fallback: string }) {
+  const safeValue = sanitizeRichText(value || '')
+  if (!safeValue) return <p>{fallback}</p>
+  return <div className="rich-text-preview" dangerouslySetInnerHTML={{ __html: safeValue }} />
+}
+
+function RichTextEditor({
+  label,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+  placeholder: string
+}) {
+  const editorRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    const editor = editorRef.current
+    if (!editor || document.activeElement === editor) return
+    const nextValue = sanitizeRichText(value)
+    if (editor.innerHTML !== nextValue) editor.innerHTML = nextValue
+  }, [value])
+
+  function commit() {
+    onChange(sanitizeRichText(editorRef.current?.innerHTML || ''))
+  }
+
+  function runCommand(command: string, commandValue?: string) {
+    editorRef.current?.focus()
+    document.execCommand(command, false, commandValue)
+    commit()
+  }
+
+  return (
+    <label className="rich-text-field">
+      {label}
+      <div className="rich-text-shell">
+        <div className="rich-text-toolbar" aria-label={`${label} formatting`}>
+          <button onClick={() => runCommand('bold')} title="Bold" type="button"><strong>B</strong></button>
+          <button onClick={() => runCommand('italic')} title="Italic" type="button"><em>I</em></button>
+          <button onClick={() => runCommand('formatBlock', 'H2')} title="Heading" type="button">H2</button>
+          <button onClick={() => runCommand('formatBlock', 'P')} title="Normal text" type="button">P</button>
+          <button onClick={() => runCommand('insertUnorderedList')} title="Bullet list" type="button">•</button>
+          <button onClick={() => runCommand('insertOrderedList')} title="Numbered list" type="button">1.</button>
+        </div>
+        <div
+          aria-label={label}
+          className="rich-text-editor"
+          contentEditable
+          data-placeholder={placeholder}
+          onBlur={commit}
+          onInput={commit}
+          ref={editorRef}
+          role="textbox"
+          suppressContentEditableWarning
+        />
+      </div>
+    </label>
   )
 }
 
@@ -1123,6 +1254,7 @@ function EventProfilesEditor({
 }) {
   const [name, setName] = useState('')
   const [role, setRole] = useState('Speaker')
+  const [customRole, setCustomRole] = useState('')
   const [organization, setOrganization] = useState('')
   const [bio, setBio] = useState('')
   const [photoUrl, setPhotoUrl] = useState('')
@@ -1134,7 +1266,7 @@ function EventProfilesEditor({
       {
         id: makeLocalId(),
         name: name.trim(),
-        role: role.trim() || 'Profile',
+        role: role === 'Custom profile' ? customRole.trim() || 'Custom profile' : role.trim() || 'Profile',
         organization: organization.trim(),
         bio: bio.trim(),
         photoUrl: photoUrl.trim(),
@@ -1142,6 +1274,7 @@ function EventProfilesEditor({
     ])
     setName('')
     setRole('Speaker')
+    setCustomRole('')
     setOrganization('')
     setBio('')
     setPhotoUrl('')
@@ -1182,6 +1315,12 @@ function EventProfilesEditor({
             Organization / title
             <input placeholder="Company, college, designation" value={organization} onChange={(event) => setOrganization(event.target.value)} />
           </label>
+          {role === 'Custom profile' && (
+            <label>
+              Custom profile type
+              <input placeholder="Anchor, curator, panelist..." value={customRole} onChange={(event) => setCustomRole(event.target.value)} />
+            </label>
+          )}
           <ImageUploader folder="event-profiles" label="Profile photo" onChange={setPhotoUrl} uid={uid} value={photoUrl} />
         </div>
         <label>
@@ -1252,12 +1391,13 @@ function ProgramChooserPage({
           <div className="program-choice-grid">
             {programs.map((program) => {
               const programEvents = events.filter((item) => item.programId === program.id)
+              const aboutPreview = richTextToPlainText(program.description)
               return (
                 <button className="program-choice-card" key={program.id} onClick={() => onChoose(program.id)} type="button">
                   {program.bannerUrl || program.posterUrl ? <img alt="" src={program.bannerUrl || program.posterUrl} /> : <div className="program-choice-fallback"><CalendarDays size={24} /></div>}
                   <span className={`status ${program.status}`}>{program.status}</span>
                   <strong>{program.name}</strong>
-                  <p>{program.description || `${programEvents.length} events ready to manage.`}</p>
+                  <p>{aboutPreview || `${programEvents.length} events ready to manage.`}</p>
                   <small><MapPin size={13} /> {program.venueName || 'Venue pending'} {program.city ? `- ${program.city}` : ''}</small>
                   <div>
                     <span>{programEvents.length} events</span>
@@ -1350,7 +1490,7 @@ function ProgramWorkspaceDashboard({
         <div>
           <span className="eyebrow">{program.mode === 'standalone' ? 'Standalone program' : 'Selected program'}</span>
           <h1>{program.name}</h1>
-          <p>{program.description || 'Program workspace is ready. Add events, import people, issue passes, and track check-ins from here.'}</p>
+          <RichTextPreview fallback="Program workspace is ready. Add events, import people, issue passes, and track check-ins from here." value={program.description} />
           <div className="workspace-meta">
             <span><CalendarDays size={14} /> {program.startDate} to {program.endDate}</span>
             <span><MapPin size={14} /> {program.venueName || 'Venue pending'} {program.city ? `- ${program.city}` : ''}</span>
@@ -1538,6 +1678,7 @@ function ProgramsPage({
   const [name, setName] = useState('')
   const [mode, setMode] = useState<ProgramMode>('multiEvent')
   const [programType, setProgramType] = useState('college_fest')
+  const [customProgramType, setCustomProgramType] = useState('')
   const [startDate, setStartDate] = useState(nowDateInput())
   const [endDate, setEndDate] = useState(nowDateInput())
   const [venueName, setVenueName] = useState('')
@@ -1553,7 +1694,9 @@ function ProgramsPage({
   const [joinQrEnabled, setJoinQrEnabled] = useState(true)
   const [createOpen, setCreateOpen] = useState(programs.length === 0)
   const [busy, setBusy] = useState(false)
+  const [deletingProgramId, setDeletingProgramId] = useState('')
   const [error, setError] = useState('')
+  const visiblePrograms = programs.filter((program) => program.status !== 'archived')
 
   async function createProgram(event: FormEvent) {
     event.preventDefault()
@@ -1564,7 +1707,7 @@ function ProgramsPage({
         orgId,
         name: name.trim(),
         mode,
-        programType,
+        programType: programType === 'custom' ? customProgramType.trim() || 'custom' : programType,
         startDate,
         endDate,
         venueName: venueName.trim(),
@@ -1585,6 +1728,7 @@ function ProgramsPage({
       setName('')
       setMode('multiEvent')
       setProgramType('college_fest')
+      setCustomProgramType('')
       setStartDate(nowDateInput())
       setEndDate(nowDateInput())
       setVenueName('')
@@ -1607,6 +1751,20 @@ function ProgramsPage({
     }
   }
 
+  async function deleteProgramFromList(program: Program) {
+    const confirmed = window.confirm(`Delete "${program.name}"? It will be removed from active program screens, while past people, passes, and check-in history stay preserved.`)
+    if (!confirmed) return
+    setError('')
+    setDeletingProgramId(program.id)
+    try {
+      await deleteProgramCallable({ orgId, programId: program.id })
+    } catch (programError) {
+      setError(programError instanceof Error ? programError.message : 'Unable to delete program.')
+    } finally {
+      setDeletingProgramId('')
+    }
+  }
+
   return (
     <section className="page-stack">
       <section className="events-command command-premium">
@@ -1621,7 +1779,7 @@ function ProgramsPage({
         </button>
       </section>
 
-      {programs.length === 0 ? (
+      {visiblePrograms.length === 0 ? (
         <section className="panel premium-empty-panel">
           <EmptyState title="No programs yet" body="Create the first program, upload artwork, set dates and venue, then add events and people from the workspace." />
           <button className="primary-button" onClick={() => setCreateOpen(true)} type="button">
@@ -1631,10 +1789,12 @@ function ProgramsPage({
         </section>
       ) : (
         <div className="program-card-grid">
-          {programs.map((program) => (
+          {visiblePrograms.map((program) => (
             <ProgramBlock
+              deleting={deletingProgramId === program.id}
               events={events.filter((programEvent) => programEvent.programId === program.id)}
               key={program.id}
+              onDelete={deleteProgramFromList}
               onOpen={onChoose}
               program={program}
             />
@@ -1655,6 +1815,12 @@ function ProgramsPage({
                 {programTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
               </select>
             </label>
+            {programType === 'custom' && (
+              <label>
+                Custom program type
+                <input placeholder="Symposium, hackathon, annual meet..." value={customProgramType} onChange={(event) => setCustomProgramType(event.target.value)} required />
+              </label>
+            )}
             <label>
               Mode
               <select value={mode} onChange={(event) => setMode(event.target.value as ProgramMode)}>
@@ -1711,10 +1877,7 @@ function ProgramsPage({
             </div>
           </div>
 
-          <label>
-            Description
-            <textarea placeholder="Short organizer-facing summary for this program" value={description} onChange={(event) => setDescription(event.target.value)} />
-          </label>
+          <RichTextEditor label="About this program" onChange={setDescription} placeholder="Write a polished program overview with headings, bullets, and highlights." value={description} />
 
           {error && <p className="form-error">{error}</p>}
 
@@ -1733,10 +1896,23 @@ function ProgramsPage({
   )
 }
 
-function ProgramBlock({ program, events, onOpen }: { program: Program; events: ProgramEvent[]; onOpen?: (programId: string) => void }) {
-  const programTypeLabel = programTypeOptions.find((option) => option.value === program.programType)?.label || 'Program'
+function ProgramBlock({
+  program,
+  events,
+  onOpen,
+  onDelete,
+  deleting,
+}: {
+  program: Program
+  events: ProgramEvent[]
+  onOpen?: (programId: string) => void
+  onDelete?: (program: Program) => void
+  deleting?: boolean
+}) {
+  const programTypeLabel = optionLabel(programTypeOptions, program.programType, 'Program')
   const heroImage = program.bannerUrl || program.posterUrl || program.logoUrl
   const visibleEvents = events.slice(0, 3)
+  const aboutPreview = richTextToPlainText(program.description)
 
   return (
     <article className="program-card-premium">
@@ -1745,7 +1921,7 @@ function ProgramBlock({ program, events, onOpen }: { program: Program; events: P
         <div>
           <span className="eyebrow">{program.mode === 'standalone' ? 'Standalone event' : programTypeLabel}</span>
           <strong>{program.name}</strong>
-          <p>{program.description || 'No description added yet.'}</p>
+          <p>{aboutPreview || 'No about section added yet.'}</p>
           <span><MapPin size={14} /> {program.venueName || 'Venue pending'} {program.city ? `· ${program.city}` : ''}</span>
           {program.latitude && program.longitude && <span>{program.latitude.toFixed(5)}, {program.longitude.toFixed(5)}</span>}
         </div>
@@ -1777,6 +1953,12 @@ function ProgramBlock({ program, events, onOpen }: { program: Program; events: P
             <ChevronRight size={16} />
           </button>
         )}
+        {onDelete && (
+          <button className="danger-button subtle-button" disabled={deleting} onClick={() => onDelete(program)} type="button">
+            {deleting ? <Loader2 className="spin" size={15} /> : <Trash2 size={15} />}
+            Delete
+          </button>
+        )}
       </div>
     </article>
   )
@@ -1787,6 +1969,7 @@ function EventsPage({ orgId, uid, program, events, scheduleItems }: { orgId: str
   const selectedEvent = events.find((event) => event.id === selectedEventId) || null
   const [eventName, setEventName] = useState('')
   const [eventType, setEventType] = useState('session')
+  const [customEventType, setCustomEventType] = useState('')
   const [startDateTime, setStartDateTime] = useState('')
   const [endDateTime, setEndDateTime] = useState('')
   const [multiDate, setMultiDate] = useState(false)
@@ -1816,7 +1999,8 @@ function EventsPage({ orgId, uid, program, events, scheduleItems }: { orgId: str
   useEffect(() => {
     if (!selectedEvent) return
     setEventName(selectedEvent.name)
-    setEventType(selectedEvent.eventType || 'session')
+    setEventType(selectValueOrCustom(eventTypeOptions, selectedEvent.eventType, 'session'))
+    setCustomEventType(isKnownOption(eventTypeOptions, selectedEvent.eventType) ? '' : selectedEvent.eventType || '')
     setStartDateTime(selectedEvent.startDateTime || '')
     setEndDateTime(selectedEvent.endDateTime || '')
     setMultiDate(Boolean(selectedEvent.multiDate))
@@ -1840,7 +2024,7 @@ function EventsPage({ orgId, uid, program, events, scheduleItems }: { orgId: str
         orgId,
         programId: program.id,
         name: eventName.trim(),
-        eventType,
+        eventType: eventType === 'custom' ? customEventType.trim() || 'custom' : eventType,
         startDateTime,
         endDateTime,
         multiDate,
@@ -1875,7 +2059,7 @@ function EventsPage({ orgId, uid, program, events, scheduleItems }: { orgId: str
         eventId: selectedEvent.id,
         programId: program.id,
         name: eventName.trim(),
-        eventType,
+        eventType: eventType === 'custom' ? customEventType.trim() || 'custom' : eventType,
         startDateTime,
         endDateTime,
         multiDate,
@@ -1922,6 +2106,7 @@ function EventsPage({ orgId, uid, program, events, scheduleItems }: { orgId: str
     setEditing(true)
     setEventName('')
     setEventType('session')
+    setCustomEventType('')
     setStartDateTime('')
     setEndDateTime('')
     setMultiDate(false)
@@ -2042,6 +2227,12 @@ function EventsPage({ orgId, uid, program, events, scheduleItems }: { orgId: str
                         {eventTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                       </select>
                     </label>
+                    {eventType === 'custom' && (
+                      <label>
+                        Custom event type
+                        <input placeholder="Panel, audition, showcase..." value={customEventType} onChange={(event) => setCustomEventType(event.target.value)} />
+                      </label>
+                    )}
                     <label>
                       Location note
                       <input placeholder="Hall A, first floor, gate 2" value={locationNote} onChange={(event) => setLocationNote(event.target.value)} />
@@ -2122,6 +2313,7 @@ function EventsPage({ orgId, uid, program, events, scheduleItems }: { orgId: str
 function ScheduleManager({ orgId, program, event, scheduleItems }: { orgId: string; program: Program; event: ProgramEvent; scheduleItems: ScheduleItem[] }) {
   const [title, setTitle] = useState('')
   const [type, setType] = useState<ScheduleType>('session')
+  const [customTypeLabel, setCustomTypeLabel] = useState('')
   const [startsAt, setStartsAt] = useState('')
   const [endsAt, setEndsAt] = useState('')
   const [venueName, setVenueName] = useState(event.venueName || program.venueName || '')
@@ -2142,6 +2334,7 @@ function ScheduleManager({ orgId, program, event, scheduleItems }: { orgId: stri
         eventId: event.id,
         title: title.trim(),
         type,
+        customTypeLabel: type === 'custom' ? customTypeLabel.trim() : '',
         description: description.trim(),
         startsAt,
         endsAt,
@@ -2153,6 +2346,7 @@ function ScheduleManager({ orgId, program, event, scheduleItems }: { orgId: stri
         sortOrder: sortedItems.length + 1,
       })
       setTitle('')
+      setCustomTypeLabel('')
       setStartsAt('')
       setEndsAt('')
       setRoomName('')
@@ -2187,16 +2381,15 @@ function ScheduleManager({ orgId, program, event, scheduleItems }: { orgId: stri
           <label>
             Type
             <select value={type} onChange={(eventChange) => setType(eventChange.target.value as ScheduleType)}>
-              <option value="session">Session</option>
-              <option value="round">Competition round</option>
-              <option value="break">Break</option>
-              <option value="checkin">Check-in window</option>
-              <option value="performance">Performance</option>
-              <option value="result">Result announcement</option>
-              <option value="ceremony">Ceremony</option>
-              <option value="custom">Custom</option>
+              {scheduleTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
             </select>
           </label>
+          {type === 'custom' && (
+            <label>
+              Custom schedule type
+              <input placeholder="Poster viewing, networking, rehearsal..." value={customTypeLabel} onChange={(eventChange) => setCustomTypeLabel(eventChange.target.value)} />
+            </label>
+          )}
           <label>
             Starts
             <input type="datetime-local" value={startsAt} onChange={(eventChange) => setStartsAt(eventChange.target.value)} required />
@@ -2251,6 +2444,7 @@ function ScheduleManager({ orgId, program, event, scheduleItems }: { orgId: stri
               <div>
                 <span className={`status ${item.status}`}>{item.status}</span>
                 <strong>{item.title}</strong>
+                <small>{item.type === 'custom' && item.customTypeLabel ? item.customTypeLabel : optionLabel(scheduleTypeOptions, item.type)}</small>
                 <p>{item.startsAt} {item.endsAt ? `to ${item.endsAt}` : ''}</p>
                 <small>{item.venueName || event.venueName || program.venueName || 'Venue pending'} {item.roomName ? `- ${item.roomName}` : ''}</small>
               </div>
@@ -2376,7 +2570,8 @@ function SettingsPage({
 function ProgramSettingsForm({ orgId, uid, program, joinLinks }: { orgId: string; uid: string; program: Program; joinLinks: ProgramJoinLink[] }) {
   const [name, setName] = useState(program.name)
   const [mode, setMode] = useState<ProgramMode>(program.mode)
-  const [programType, setProgramType] = useState(program.programType || 'college_fest')
+  const [programType, setProgramType] = useState(selectValueOrCustom(programTypeOptions, program.programType, 'college_fest'))
+  const [customProgramType, setCustomProgramType] = useState(isKnownOption(programTypeOptions, program.programType) ? '' : program.programType || '')
   const [status, setStatus] = useState<Program['status']>(program.status)
   const [startDate, setStartDate] = useState(program.startDate)
   const [endDate, setEndDate] = useState(program.endDate)
@@ -2397,7 +2592,8 @@ function ProgramSettingsForm({ orgId, uid, program, joinLinks }: { orgId: string
   useEffect(() => {
     setName(program.name)
     setMode(program.mode)
-    setProgramType(program.programType || 'college_fest')
+    setProgramType(selectValueOrCustom(programTypeOptions, program.programType, 'college_fest'))
+    setCustomProgramType(isKnownOption(programTypeOptions, program.programType) ? '' : program.programType || '')
     setStatus(program.status)
     setStartDate(program.startDate)
     setEndDate(program.endDate)
@@ -2424,7 +2620,7 @@ function ProgramSettingsForm({ orgId, uid, program, joinLinks }: { orgId: string
         programId: program.id,
         name: name.trim(),
         mode,
-        programType,
+        programType: programType === 'custom' ? customProgramType.trim() || 'custom' : programType,
         status,
         startDate,
         endDate,
@@ -2449,7 +2645,7 @@ function ProgramSettingsForm({ orgId, uid, program, joinLinks }: { orgId: string
   }
 
   async function archiveProgram() {
-    const confirmed = window.confirm(`Archive "${program.name}"? People, passes, and check-in history will remain in Firestore.`)
+    const confirmed = window.confirm(`Delete "${program.name}"? It will be removed from active program screens, while people, passes, and check-in history stay preserved.`)
     if (!confirmed) return
     await deleteProgramCallable({ orgId, programId: program.id })
   }
@@ -2468,6 +2664,12 @@ function ProgramSettingsForm({ orgId, uid, program, joinLinks }: { orgId: string
               {programTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
             </select>
           </label>
+          {programType === 'custom' && (
+            <label>
+              Custom program type
+              <input placeholder="Symposium, hackathon, annual meet..." value={customProgramType} onChange={(event) => setCustomProgramType(event.target.value)} />
+            </label>
+          )}
           <label>
             Mode
             <select value={mode} onChange={(event) => setMode(event.target.value as ProgramMode)}>
@@ -2532,15 +2734,12 @@ function ProgramSettingsForm({ orgId, uid, program, joinLinks }: { orgId: string
           </div>
         </div>
 
-        <label>
-          Description
-          <textarea value={description} onChange={(event) => setDescription(event.target.value)} />
-        </label>
+        <RichTextEditor label="About this program" onChange={setDescription} placeholder="Write a polished program overview with headings, bullets, and highlights." value={description} />
 
         <div className="action-row">
           <button className="danger-button" onClick={archiveProgram} type="button">
             <Trash2 size={16} />
-            Archive program
+            Delete program
           </button>
           <button className="primary-button" disabled={busy} type="submit">
             {busy ? <Loader2 className="spin" size={17} /> : <Save size={17} />}
@@ -2557,6 +2756,7 @@ function ProgramSettingsForm({ orgId, uid, program, joinLinks }: { orgId: string
 function ProgramJoinQrPanel({ orgId, program, joinLinks }: { orgId: string; program: Program; joinLinks: ProgramJoinLink[] }) {
   const [mode, setMode] = useState<JoinMode>('request_approval')
   const [allowedCategory, setAllowedCategory] = useState<PersonKind | 'custom'>('attendee')
+  const [customAllowedCategory, setCustomAllowedCategory] = useState('')
   const [maxUses, setMaxUses] = useState(5000)
   const [campaignName, setCampaignName] = useState('Main program QR')
   const [qrPayload, setQrPayload] = useState(joinLinks.find((link) => link.qrPayload)?.qrPayload || '')
@@ -2574,6 +2774,7 @@ function ProgramJoinQrPanel({ orgId, program, joinLinks }: { orgId: string; prog
         programId: program.id,
         mode,
         allowedCategory,
+        customAllowedCategory: allowedCategory === 'custom' ? customAllowedCategory.trim() : '',
         allowedEventIds: [],
         maxUses,
         expiresAt: '',
@@ -2618,6 +2819,12 @@ function ProgramJoinQrPanel({ orgId, program, joinLinks }: { orgId: string; prog
               <option value="custom">Custom</option>
             </select>
           </label>
+          {allowedCategory === 'custom' && (
+            <label>
+              Custom category
+              <input placeholder="VIP guest, exhibitor, alumni..." value={customAllowedCategory} onChange={(event) => setCustomAllowedCategory(event.target.value)} />
+            </label>
+          )}
           <label>
             Max uses
             <input min={1} type="number" value={maxUses} onChange={(event) => setMaxUses(Number(event.target.value) || 1)} />

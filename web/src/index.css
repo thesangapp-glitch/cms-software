@@ -730,6 +730,7 @@ th {
 }
 
 .map-picker {
+  position: relative;
   display: grid;
   gap: 10px;
   border: 1px solid var(--line);
@@ -739,6 +740,8 @@ th {
 }
 
 .map-canvas {
+  position: relative;
+  z-index: 1;
   width: 100%;
   height: 230px;
   overflow: hidden;
@@ -851,9 +854,87 @@ th {
   padding: 0 11px;
 }
 
+.rich-text-field {
+  gap: 8px;
+}
+
+.rich-text-shell {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.rich-text-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  border-bottom: 1px solid var(--line);
+  background: #f6f9f9;
+  padding: 6px;
+}
+
+.rich-text-toolbar button {
+  min-width: 34px;
+  min-height: 32px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.rich-text-toolbar button:hover {
+  border-color: #b9cdd0;
+  background: #eef6f6;
+}
+
+.rich-text-editor {
+  min-height: 150px;
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.55;
+  outline: none;
+  padding: 12px;
+}
+
+.rich-text-editor:empty::before {
+  content: attr(data-placeholder);
+  color: #8a948d;
+}
+
+.rich-text-preview {
+  display: grid;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.rich-text-preview h2,
+.rich-text-preview h3,
+.rich-text-preview p,
+.rich-text-preview ul,
+.rich-text-preview ol {
+  margin: 0;
+}
+
+.rich-text-preview h2,
+.rich-text-preview h3 {
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1.25;
+}
+
+.rich-text-preview ul,
+.rich-text-preview ol {
+  padding-left: 18px;
+}
+
 .location-search {
   position: relative;
-  z-index: 20;
+  z-index: 800;
 }
 
 .location-input-wrap {
@@ -876,7 +957,7 @@ th {
 
 .location-results {
   position: absolute;
-  z-index: 40;
+  z-index: 1200;
   top: calc(100% + 7px);
   left: 0;
   right: 0;
