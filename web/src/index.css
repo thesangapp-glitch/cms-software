@@ -1885,6 +1885,12 @@ th {
   text-transform: uppercase;
 }
 
+.role-access-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
 .check-row {
   min-height: 38px;
   display: flex;
@@ -1910,6 +1916,31 @@ th {
 .role-card {
   display: grid;
   gap: 10px;
+}
+
+.inset-heading {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.compact-role-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.audience-role-card {
+  background: #fbfcf8;
+}
+
+.event-access-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(140px, 180px);
+  align-items: center;
+  gap: 8px;
+}
+
+.event-access-row .check-row {
+  min-width: 0;
 }
 
 .chip-row {
@@ -2105,6 +2136,9 @@ th {
   .form-grid.two,
   .form-grid.three,
   .role-grid,
+  .role-access-grid,
+  .compact-role-grid,
+  .event-access-row,
   .permission-grid,
   .join-qr-grid,
   .event-card-grid,

@@ -24,6 +24,7 @@ const defaultRoles = [
   {
     id: 'owner',
     name: 'Owner',
+    category: 'team',
     description: 'Full organization control',
     permissions: Object.values(permissions).concat(['program.read', 'analytics.read', 'exports.create']),
     isDefault: true,
@@ -31,6 +32,7 @@ const defaultRoles = [
   {
     id: 'event-lead',
     name: 'Event Lead',
+    category: 'team',
     description: 'Manage programs, events, people, passes, and analytics',
     permissions: ['program.read', permissions.programWrite, permissions.eventWrite, permissions.teamWrite, permissions.peopleImport, permissions.passesIssue, permissions.checkinScan, 'analytics.read', 'exports.create'],
     isDefault: true,
@@ -38,6 +40,7 @@ const defaultRoles = [
   {
     id: 'gate-staff',
     name: 'Gate Staff',
+    category: 'team',
     description: 'Scan passes and view limited attendee context',
     permissions: ['program.read', permissions.checkinScan],
     isDefault: true,
@@ -45,10 +48,24 @@ const defaultRoles = [
   {
     id: 'analyst',
     name: 'Analyst',
+    category: 'team',
     description: 'View dashboards and export reports',
     permissions: ['program.read', 'analytics.read', 'exports.create'],
     isDefault: true,
   },
+]
+
+const defaultAudienceRoles = [
+  { id: 'attendee', name: 'Attendee' },
+  { id: 'participant', name: 'Participant' },
+  { id: 'startup', name: 'Startup' },
+  { id: 'company', name: 'Company' },
+  { id: 'delegate', name: 'Delegate' },
+  { id: 'speaker', name: 'Speaker' },
+  { id: 'judge', name: 'Judge' },
+  { id: 'vip', name: 'VIP' },
+  { id: 'sponsor', name: 'Sponsor' },
+  { id: 'exhibitor', name: 'Exhibitor' },
 ]
 
 const eventProfileSchema = z.object({
@@ -59,6 +76,21 @@ const eventProfileSchema = z.object({
   bio: z.string().optional().default(''),
   photoUrl: z.string().optional().default(''),
 })
+
+const eventAccessSchema = z.object({
+  eventId: z.string().min(1),
+  roleId: z.string().min(1),
+  roleName: z.string().optional().default(''),
+  status: z.enum(['allowed', 'registered', 'blocked', 'cancelled', 'rejected', 'revoked']).optional().default('allowed'),
+})
+
+function normalizeRoleId(value: string) {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'attendee'
+}
+
+function uniqueStrings(values: string[]) {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)))
+}
 
 function requireUid(context: { auth?: { uid: string } }) {
   const uid = context.auth?.uid
@@ -186,6 +218,19 @@ export const createOrganization = onCall(callableOptions, async (request) => {
     })
   }
 
+  for (const role of defaultAudienceRoles) {
+    batch.set(orgRef.collection('roles').doc(role.id), {
+      ...role,
+      orgId: orgRef.id,
+      category: 'audience',
+      description: `${role.name} audience category`,
+      permissions: [],
+      isDefault: true,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    })
+  }
+
   batch.set(db.collection('peTeamMembers').doc(`${orgRef.id}_${uid}`), {
     orgId: orgRef.id,
     email: normalizeEmail(input.email),
@@ -263,19 +308,24 @@ export const createRole = onCall(callableOptions, async (request) => {
       orgId: z.string().min(1),
       roleId: z.string().min(2),
       name: z.string().min(2),
+      category: z.enum(['team', 'audience']).optional().default('team'),
       description: z.string().optional().default(''),
-      permissions: z.array(z.string()).min(1),
+      permissions: z.array(z.string()).optional().default([]),
     })
     .parse(request.data)
 
   await assertPermission(uid, input.orgId, permissions.rolesWrite)
+  if (input.category === 'team' && input.permissions.length === 0) {
+    throw new HttpsError('failed-precondition', 'Team roles need at least one permission.')
+  }
   const rolePath = `peOrganizations/${input.orgId}/roles/${input.roleId}`
   await db.doc(rolePath).set(
     {
       orgId: input.orgId,
       name: input.name.trim(),
+      category: input.category,
       description: input.description.trim(),
-      permissions: input.permissions,
+      permissions: input.category === 'team' ? input.permissions : [],
       isDefault: false,
       updatedAt: FieldValue.serverTimestamp(),
       createdAt: FieldValue.serverTimestamp(),
@@ -370,6 +420,11 @@ export const inviteTeamMember = onCall(callableOptions, async (request) => {
     .parse(request.data)
 
   await assertPermission(uid, input.orgId, permissions.teamWrite)
+  const roleSnapshot = await db.doc(`peOrganizations/${input.orgId}/roles/${input.roleId}`).get()
+  const role = roleSnapshot.data()
+  if (!roleSnapshot.exists || role?.category === 'audience') {
+    throw new HttpsError('failed-precondition', 'Team members must be assigned a team role.')
+  }
   const memberRef = db.collection('peTeamMembers').doc()
   await memberRef.set({
     ...input,
@@ -523,6 +578,8 @@ export const createEvent = onCall(callableOptions, async (request) => {
       nextScheduleTitle: z.string().optional().default(''),
       nextScheduleAt: z.string().optional().default(''),
       profiles: z.array(eventProfileSchema).optional().default([]),
+      allowedAudienceRoleIds: z.array(z.string()).optional().default([]),
+      allowedAudienceRoleNames: z.array(z.string()).optional().default([]),
     })
     .parse(request.data)
 
@@ -531,6 +588,8 @@ export const createEvent = onCall(callableOptions, async (request) => {
   const eventRef = db.collection('peEvents').doc()
   await eventRef.set({
     ...input,
+    allowedAudienceRoleIds: uniqueStrings(input.allowedAudienceRoleIds.map(normalizeRoleId)),
+    allowedAudienceRoleNames: uniqueStrings(input.allowedAudienceRoleNames),
     status: 'draft',
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
@@ -564,6 +623,8 @@ export const updateEvent = onCall(callableOptions, async (request) => {
       nextScheduleTitle: z.string().optional().default(''),
       nextScheduleAt: z.string().optional().default(''),
       profiles: z.array(eventProfileSchema).optional().default([]),
+      allowedAudienceRoleIds: z.array(z.string()).optional().default([]),
+      allowedAudienceRoleNames: z.array(z.string()).optional().default([]),
       status: z.enum(['draft', 'live', 'completed']).optional().default('draft'),
     })
     .parse(request.data)
@@ -574,6 +635,8 @@ export const updateEvent = onCall(callableOptions, async (request) => {
   await eventRef.set(
     {
       ...input,
+      allowedAudienceRoleIds: uniqueStrings(input.allowedAudienceRoleIds.map(normalizeRoleId)),
+      allowedAudienceRoleNames: uniqueStrings(input.allowedAudienceRoleNames),
       updatedAt: FieldValue.serverTimestamp(),
     },
     { merge: true },
@@ -735,7 +798,7 @@ export const createProgramJoinLink = onCall(callableOptions, async (request) => 
       orgId: z.string().min(1),
       programId: z.string().min(1),
       mode: z.enum(['direct_join', 'request_approval', 'invite_only']).optional().default('request_approval'),
-      allowedCategory: z.enum(['attendee', 'participant', 'speaker', 'staff', 'custom']).optional().default('attendee'),
+      allowedCategory: z.string().optional().default('attendee'),
       customAllowedCategory: z.string().optional().default(''),
       allowedEventIds: z.array(z.string()).optional().default([]),
       maxUses: z.number().int().positive().optional().default(5000),
@@ -774,19 +837,53 @@ export const createProgramPersonAndPass = onCall(callableOptions, async (request
       fullName: z.string().min(1),
       email: z.string().optional().default(''),
       phone: z.string().optional().default(''),
-      kind: z.enum(['attendee', 'participant', 'speaker', 'staff']),
+      kind: z.string().optional().default('attendee'),
+      programRoleId: z.string().optional().default('attendee'),
+      programRoleName: z.string().optional().default('Attendee'),
       company: z.string().optional().default(''),
+      organization: z.string().optional().default(''),
       designation: z.string().optional().default(''),
       eventIds: z.array(z.string()).optional().default([]),
+      eventAccess: z.array(eventAccessSchema).optional().default([]),
     })
     .parse(request.data)
 
   await assertPermission(uid, input.orgId, permissions.peopleImport)
   await assertPermission(uid, input.orgId, permissions.passesIssue)
   await assertProgram(input)
+  const eventAccessById = new Map<string, z.infer<typeof eventAccessSchema>>()
+  for (const access of input.eventAccess) {
+    eventAccessById.set(access.eventId, {
+      ...access,
+      roleId: normalizeRoleId(access.roleId),
+      roleName: access.roleName.trim() || access.roleId,
+    })
+  }
   for (const eventId of input.eventIds) {
+    if (!eventAccessById.has(eventId)) {
+      eventAccessById.set(eventId, {
+        eventId,
+        roleId: normalizeRoleId(input.programRoleId || input.kind),
+        roleName: input.programRoleName || input.kind || 'Attendee',
+        status: 'allowed',
+      })
+    }
+  }
+  const eventAccess = Array.from(eventAccessById.values())
+  for (const eventId of eventAccess.map((access) => access.eventId)) {
     await assertEvent({ orgId: input.orgId, programId: input.programId, eventId })
   }
+  const eventAccessMap = eventAccess.reduce<Record<string, Record<string, string>>>((current, access) => {
+    current[access.eventId] = {
+      roleId: normalizeRoleId(access.roleId),
+      roleName: access.roleName.trim() || access.roleId,
+      status: access.status,
+    }
+    return current
+  }, {})
+  const programRoleId = normalizeRoleId(input.programRoleId || input.kind)
+  const programRoleName = input.programRoleName.trim() || input.kind || 'Attendee'
+  const organization = input.organization.trim() || input.company.trim()
 
   const personRef = db.collection('peProgramPeople').doc()
   const passRef = db.collection('pePasses').doc()
@@ -799,21 +896,28 @@ export const createProgramPersonAndPass = onCall(callableOptions, async (request
     fullName: input.fullName.trim(),
     email: normalizeEmail(input.email),
     phone: input.phone.trim(),
-    kind: input.kind,
+    kind: programRoleId,
+    programRoleId,
+    programRoleName,
     company: input.company.trim(),
+    organization,
     designation: input.designation.trim(),
+    eventAccessIds: eventAccess.map((access) => access.eventId),
+    eventAccess: eventAccessMap,
     passId: passRef.id,
     passStatus: 'issued',
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   })
 
-  for (const eventId of input.eventIds) {
-    batch.set(personRef.collection('events').doc(eventId), {
+  for (const access of eventAccess) {
+    batch.set(personRef.collection('events').doc(access.eventId), {
       orgId: input.orgId,
       programId: input.programId,
-      eventId,
-      status: 'registered',
+      eventId: access.eventId,
+      roleId: normalizeRoleId(access.roleId),
+      roleName: access.roleName.trim() || access.roleId,
+      status: access.status,
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     })
@@ -950,19 +1054,39 @@ export const scanPassToken = onCall(callableOptions, async (request) => {
   if (pass.orgId !== session.orgId || pass.programId !== session.programId) {
     throw new HttpsError('permission-denied', 'Pass is not valid for this scanner session.')
   }
+  const personRef = db.collection('peProgramPeople').doc(pass.programPersonId)
+  let audienceRoleId = ''
+  let audienceRoleName = ''
   if (session.eventId) {
-    const accessSnapshot = await db
-      .collection('peProgramPeople')
-      .doc(pass.programPersonId)
-      .collection('events')
-      .doc(session.eventId)
-      .get()
-    const access = accessSnapshot.data()
-    if (!accessSnapshot.exists || access?.orgId !== session.orgId || access?.programId !== session.programId) {
+    const [personSnapshot, eventSnapshot, accessSnapshot] = await Promise.all([
+      personRef.get(),
+      db.collection('peEvents').doc(session.eventId).get(),
+      personRef.collection('events').doc(session.eventId).get(),
+    ])
+    const person = personSnapshot.data()
+    const eventData = eventSnapshot.data()
+    const accessFromMap = person?.eventAccess?.[session.eventId]
+    const access = accessFromMap || accessSnapshot.data()
+    if (!personSnapshot.exists || person?.orgId !== session.orgId || person?.programId !== session.programId) {
+      throw new HttpsError('permission-denied', 'Program person is not valid for this pass.')
+    }
+    if (!eventSnapshot.exists || eventData?.orgId !== session.orgId || eventData?.programId !== session.programId) {
+      throw new HttpsError('permission-denied', 'Scanner event is not valid for this program.')
+    }
+    if (!access) {
       throw new HttpsError('permission-denied', 'This pass does not have access to this event.')
     }
     if (['blocked', 'cancelled', 'rejected', 'revoked'].includes(String(access?.status || ''))) {
       throw new HttpsError('permission-denied', 'This event access is not active.')
+    }
+    const roleId = normalizeRoleId(String(access?.roleId || person?.programRoleId || person?.kind || ''))
+    audienceRoleId = roleId
+    audienceRoleName = String(access?.roleName || person?.programRoleName || person?.kind || roleId)
+    const allowedRoleIds = Array.isArray(eventData?.allowedAudienceRoleIds)
+      ? eventData.allowedAudienceRoleIds.map((roleIdValue: string) => normalizeRoleId(String(roleIdValue)))
+      : []
+    if (allowedRoleIds.length > 0 && !allowedRoleIds.includes(roleId)) {
+      throw new HttpsError('permission-denied', 'This audience role is not allowed for this event gate.')
     }
   }
 
@@ -990,6 +1114,8 @@ export const scanPassToken = onCall(callableOptions, async (request) => {
     eventId: session.eventId || '',
     programPersonId: pass.programPersonId,
     passId: passSnapshot.id,
+    audienceRoleId,
+    audienceRoleName,
     scannerSessionId: input.scannerSessionId,
     scannerUid: uid,
     result,
@@ -1003,6 +1129,8 @@ export const scanPassToken = onCall(callableOptions, async (request) => {
       eventId: session.eventId || '',
       programPersonId: pass.programPersonId,
       passId: passSnapshot.id,
+      audienceRoleId,
+      audienceRoleName,
       scannerSessionId: input.scannerSessionId,
       createdAt: FieldValue.serverTimestamp(),
     })
@@ -1010,7 +1138,7 @@ export const scanPassToken = onCall(callableOptions, async (request) => {
       status: 'checkedIn',
       updatedAt: FieldValue.serverTimestamp(),
     })
-    batch.update(db.collection('peProgramPeople').doc(pass.programPersonId), {
+    batch.update(personRef, {
       passStatus: 'checkedIn',
       updatedAt: FieldValue.serverTimestamp(),
     })

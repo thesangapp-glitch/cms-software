@@ -67,7 +67,7 @@ import { auth, db, functions, storage } from './lib/firebase'
 import { LandingPage } from './landing/LandingPage'
 
 type RouteKey = 'dashboard' | 'events' | 'programs' | 'settings' | 'roles' | 'team' | 'people' | 'checkin' | 'analytics'
-type PersonKind = 'attendee' | 'participant' | 'speaker' | 'staff'
+type PersonKind = string
 type ProgramMode = 'standalone' | 'multiEvent'
 type TeamScope = 'organization' | 'program' | 'event'
 type EntryScope = 'program' | 'event' | 'both'
@@ -75,6 +75,18 @@ type JoinMode = 'direct_join' | 'request_approval' | 'invite_only'
 type ScheduleType = 'session' | 'round' | 'break' | 'checkin' | 'performance' | 'result' | 'ceremony' | 'custom'
 type ScheduleStatus = 'draft' | 'scheduled' | 'delayed' | 'cancelled' | 'completed'
 type ScheduleVisibility = 'public' | 'staffOnly' | 'participantsOnly'
+type RoleCategory = 'team' | 'audience'
+
+type AudienceRoleOption = {
+  id: string
+  name: string
+}
+
+type EventAccess = {
+  roleId: string
+  roleName: string
+  status: 'allowed' | 'registered' | 'blocked' | 'cancelled' | 'rejected' | 'revoked'
+}
 
 type EventProfile = {
   id: string
@@ -129,6 +141,19 @@ const scheduleTypeOptions: Array<{ value: ScheduleType; label: string }> = [
   { value: 'custom', label: 'Custom' },
 ]
 
+const audienceRolePresets: AudienceRoleOption[] = [
+  { id: 'attendee', name: 'Attendee' },
+  { id: 'participant', name: 'Participant' },
+  { id: 'startup', name: 'Startup' },
+  { id: 'company', name: 'Company' },
+  { id: 'delegate', name: 'Delegate' },
+  { id: 'speaker', name: 'Speaker' },
+  { id: 'judge', name: 'Judge' },
+  { id: 'vip', name: 'VIP' },
+  { id: 'sponsor', name: 'Sponsor' },
+  { id: 'exhibitor', name: 'Exhibitor' },
+]
+
 function isKnownOption(options: Array<{ value: string }>, value?: string) {
   return Boolean(value && options.some((option) => option.value === value))
 }
@@ -141,6 +166,36 @@ function optionLabel(options: Array<{ value: string; label: string }>, value?: s
 function selectValueOrCustom(options: Array<{ value: string }>, value: string | undefined, fallback: string) {
   if (!value) return fallback
   return isKnownOption(options, value) ? value : 'custom'
+}
+
+function slugify(value: string) {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'custom'
+}
+
+function roleCategory(role: Role): RoleCategory {
+  return role.category || 'team'
+}
+
+function getAudienceRoles(roles: Role[]): AudienceRoleOption[] {
+  const savedRoles = roles
+    .filter((role) => roleCategory(role) === 'audience')
+    .map((role) => ({ id: slugify(role.id), name: role.name }))
+  const existingIds = new Set(savedRoles.map((role) => role.id))
+  return [
+    ...savedRoles,
+    ...audienceRolePresets.filter((role) => !existingIds.has(role.id)),
+  ]
+}
+
+function resolveAudienceRole(value: string | undefined, audienceRoles: AudienceRoleOption[], fallbackId = 'attendee') {
+  const fallback = audienceRoles.find((role) => role.id === fallbackId) || audienceRoles[0] || audienceRolePresets[0]
+  const normalized = (value || '').trim()
+  if (!normalized) return fallback
+  const byId = audienceRoles.find((role) => role.id === slugify(normalized))
+  if (byId) return byId
+  const byName = audienceRoles.find((role) => role.name.toLowerCase() === normalized.toLowerCase())
+  if (byName) return byName
+  return { id: slugify(normalized), name: normalized }
 }
 
 type PeUser = {
@@ -163,6 +218,7 @@ type Organization = {
 type Role = {
   id: string
   name: string
+  category?: RoleCategory
   description?: string
   permissions: string[]
   isDefault?: boolean
@@ -228,6 +284,8 @@ type ProgramEvent = {
   nextScheduleTitle?: string
   nextScheduleAt?: string
   profiles?: EventProfile[]
+  allowedAudienceRoleIds?: string[]
+  allowedAudienceRoleNames?: string[]
   status: 'draft' | 'live' | 'completed'
 }
 
@@ -275,11 +333,21 @@ type ProgramPerson = {
   phone?: string
   fullName: string
   kind: PersonKind
+  programRoleId?: string
+  programRoleName?: string
   company?: string
+  organization?: string
   designation?: string
+  eventAccessIds?: string[]
+  eventAccess?: Record<string, EventAccess>
   sangUid?: string
   passId?: string
   passStatus?: 'notIssued' | 'issued' | 'checkedIn'
+}
+
+type ProgramPersonInput = Omit<ProgramPerson, 'id' | 'passId' | 'passStatus' | 'sangUid' | 'eventAccess' | 'eventAccessIds'> & {
+  eventIds?: string[]
+  eventAccess?: Array<EventAccess & { eventId: string }>
 }
 
 type PassRecord = {
@@ -298,6 +366,8 @@ type CheckIn = {
   eventId?: string
   programPersonId: string
   passId: string
+  audienceRoleId?: string
+  audienceRoleName?: string
   result: 'approved' | 'duplicate' | 'denied'
   createdAt?: Timestamp
 }
@@ -490,7 +560,7 @@ const createOrganizationCallable = httpsCallable<{ displayName: string; orgName:
 const updateOrganizationCallable = httpsCallable<{ orgId: string; name: string; industry: string; website: string; logoUrl: string }, { orgId: string }>(functions, 'updateOrganization')
 const setActiveOrganizationCallable = httpsCallable<{ orgId: string }, { orgId: string }>(functions, 'setActiveOrganization')
 const claimTeamAccessCallable = httpsCallable<void, { claimedOrgIds: string[] }>(functions, 'claimTeamAccess')
-const createRoleCallable = httpsCallable<{ orgId: string; roleId: string; name: string; description: string; permissions: string[] }, { roleId: string }>(functions, 'createRole')
+const createRoleCallable = httpsCallable<{ orgId: string; roleId: string; name: string; category: RoleCategory; description: string; permissions: string[] }, { roleId: string }>(functions, 'createRole')
 const inviteTeamMemberCallable = httpsCallable<{ orgId: string; email: string; displayName: string; roleId: string; scope: TeamScope; programId?: string; eventId?: string }, { teamMemberId: string }>(functions, 'inviteTeamMember')
 const createProgramCallable = httpsCallable<Omit<Program, 'id' | 'status'>, { programId: string }>(functions, 'createProgram')
 const updateProgramCallable = httpsCallable<Omit<Program, 'id'> & { programId: string }, { programId: string }>(functions, 'updateProgram')
@@ -500,8 +570,8 @@ const updateEventCallable = httpsCallable<Partial<Omit<ProgramEvent, 'id'>> & { 
 const deleteEventCallable = httpsCallable<{ orgId: string; eventId: string }, { eventId: string }>(functions, 'deleteEvent')
 const createScheduleItemCallable = httpsCallable<Omit<ScheduleItem, 'id'>, { scheduleItemId: string }>(functions, 'createScheduleItem')
 const deleteScheduleItemCallable = httpsCallable<{ orgId: string; scheduleItemId: string }, { scheduleItemId: string }>(functions, 'deleteScheduleItem')
-const createProgramJoinLinkCallable = httpsCallable<{ orgId: string; programId: string; mode: JoinMode; allowedCategory: PersonKind | 'custom'; customAllowedCategory?: string; allowedEventIds: string[]; maxUses: number; expiresAt: string; campaignName: string }, { joinLinkId: string; qrPayload: string }>(functions, 'createProgramJoinLink')
-const createProgramPersonAndPassCallable = httpsCallable<Omit<ProgramPerson, 'id' | 'passId' | 'passStatus' | 'sangUid'> & { eventIds?: string[] }, { programPersonId: string; passId: string; qrPayload: string }>(functions, 'createProgramPersonAndPass')
+const createProgramJoinLinkCallable = httpsCallable<{ orgId: string; programId: string; mode: JoinMode; allowedCategory: string; customAllowedCategory?: string; allowedEventIds: string[]; maxUses: number; expiresAt: string; campaignName: string }, { joinLinkId: string; qrPayload: string }>(functions, 'createProgramJoinLink')
+const createProgramPersonAndPassCallable = httpsCallable<ProgramPersonInput, { programPersonId: string; passId: string; qrPayload: string }>(functions, 'createProgramPersonAndPass')
 const createScannerSession = httpsCallable<{ orgId: string; programId: string; eventId?: string; gateName?: string }, { scannerSessionId: string; scannerToken: string }>(functions, 'createScannerSession')
 const scanPassToken = httpsCallable<{ scannerSessionId: string; scannerToken: string; payload: string; deviceScanId: string }, { result: string; passId: string; programPersonId: string }>(functions, 'scanPassToken')
 
@@ -1964,9 +2034,10 @@ function ProgramBlock({
   )
 }
 
-function EventsPage({ orgId, uid, program, events, scheduleItems }: { orgId: string; uid: string; program: Program; events: ProgramEvent[]; scheduleItems: ScheduleItem[] }) {
+function EventsPage({ orgId, uid, program, events, scheduleItems, roles }: { orgId: string; uid: string; program: Program; events: ProgramEvent[]; scheduleItems: ScheduleItem[]; roles: Role[] }) {
   const [selectedEventId, setSelectedEventId] = useState(events[0]?.id || '')
   const selectedEvent = events.find((event) => event.id === selectedEventId) || null
+  const audienceRoles = useMemo(() => getAudienceRoles(roles), [roles])
   const [eventName, setEventName] = useState('')
   const [eventType, setEventType] = useState('session')
   const [customEventType, setCustomEventType] = useState('')
@@ -1980,6 +2051,7 @@ function EventsPage({ orgId, uid, program, events, scheduleItems }: { orgId: str
   const [longitude, setLongitude] = useState<number | undefined>(program.longitude)
   const [entryScope, setEntryScope] = useState<EntryScope>(program.entryScope === 'both' ? 'both' : 'event')
   const [profiles, setProfiles] = useState<EventProfile[]>([])
+  const [allowedAudienceRoleIds, setAllowedAudienceRoleIds] = useState<string[]>(audienceRoles.map((role) => role.id))
   const [competitive, setCompetitive] = useState(Boolean(program.competitive))
   const [resultsEnabled, setResultsEnabled] = useState(Boolean(program.resultsEnabled))
   const [busy, setBusy] = useState(false)
@@ -2011,13 +2083,26 @@ function EventsPage({ orgId, uid, program, events, scheduleItems }: { orgId: str
     setLongitude(selectedEvent.longitude ?? program.longitude)
     setEntryScope(selectedEvent.entryScope || (program.entryScope === 'both' ? 'both' : 'event'))
     setProfiles(selectedEvent.profiles || [])
+    setAllowedAudienceRoleIds(selectedEvent.allowedAudienceRoleIds?.length ? selectedEvent.allowedAudienceRoleIds.map(slugify) : audienceRoles.map((role) => role.id))
     setCompetitive(Boolean(selectedEvent.competitive ?? program.competitive))
     setResultsEnabled(Boolean(selectedEvent.resultsEnabled))
-  }, [program.competitive, program.entryScope, program.latitude, program.longitude, program.venueName, selectedEvent])
+  }, [audienceRoles, program.competitive, program.entryScope, program.latitude, program.longitude, program.venueName, selectedEvent])
+
+  function selectedAudienceRoleNames(roleIds = allowedAudienceRoleIds) {
+    return roleIds.map((roleId) => audienceRoles.find((role) => role.id === roleId)?.name || roleId)
+  }
+
+  function toggleAllowedRole(roleId: string, checked: boolean) {
+    setAllowedAudienceRoleIds((current) => checked ? Array.from(new Set([...current, roleId])) : current.filter((id) => id !== roleId))
+  }
 
   async function createEvent(event: FormEvent) {
     event.preventDefault()
     setError('')
+    if (allowedAudienceRoleIds.length === 0) {
+      setError('Select at least one audience role allowed for this event.')
+      return
+    }
     setBusy(true)
     try {
       const response = await createEventCallable({
@@ -2036,6 +2121,8 @@ function EventsPage({ orgId, uid, program, events, scheduleItems }: { orgId: str
         address: venueName.trim(),
         entryScope,
         profiles,
+        allowedAudienceRoleIds,
+        allowedAudienceRoleNames: selectedAudienceRoleNames(),
         competitive,
         resultsEnabled: program.competitive && competitive ? resultsEnabled : false,
       })
@@ -2052,6 +2139,10 @@ function EventsPage({ orgId, uid, program, events, scheduleItems }: { orgId: str
     event.preventDefault()
     if (!selectedEvent) return
     setError('')
+    if (allowedAudienceRoleIds.length === 0) {
+      setError('Select at least one audience role allowed for this event.')
+      return
+    }
     setBusy(true)
     try {
       await updateEventCallable({
@@ -2071,6 +2162,8 @@ function EventsPage({ orgId, uid, program, events, scheduleItems }: { orgId: str
         address: venueName.trim(),
         entryScope,
         profiles,
+        allowedAudienceRoleIds,
+        allowedAudienceRoleNames: selectedAudienceRoleNames(),
         competitive,
         resultsEnabled: program.competitive && competitive ? resultsEnabled : false,
         scheduleItemCount: scheduleItems.filter((item) => item.eventId === selectedEvent.id).length,
@@ -2117,6 +2210,7 @@ function EventsPage({ orgId, uid, program, events, scheduleItems }: { orgId: str
     setLongitude(program.longitude)
     setEntryScope(program.entryScope === 'both' ? 'both' : 'event')
     setProfiles([])
+    setAllowedAudienceRoleIds(audienceRoles.map((role) => role.id))
     setCompetitive(Boolean(program.competitive))
     setResultsEnabled(Boolean(program.resultsEnabled))
   }
@@ -2200,6 +2294,15 @@ function EventsPage({ orgId, uid, program, events, scheduleItems }: { orgId: str
                     {selectedEvent.latitude && selectedEvent.longitude && <small>{selectedEvent.latitude.toFixed(5)}, {selectedEvent.longitude.toFixed(5)}</small>}
                   </div>
                 </div>
+                <div className="assignment-box">
+                  <span>Allowed audience roles</span>
+                  <div className="chip-row">
+                    {(selectedEvent.allowedAudienceRoleNames?.length ? selectedEvent.allowedAudienceRoleNames : selectedAudienceRoleNames(selectedEvent.allowedAudienceRoleIds || [])).map((roleName) => (
+                      <span className="chip" key={roleName}>{roleName}</span>
+                    ))}
+                    {!selectedEvent.allowedAudienceRoleIds?.length && <span className="chip">All audience roles</span>}
+                  </div>
+                </div>
                 {selectedEvent.profiles && selectedEvent.profiles.length > 0 && (
                   <div className="profile-list read-profiles">
                     {selectedEvent.profiles.map((profile) => (
@@ -2257,6 +2360,18 @@ function EventsPage({ orgId, uid, program, events, scheduleItems }: { orgId: str
                         <input checked={multiDate} onChange={(event) => setMultiDate(event.target.checked)} type="checkbox" />
                         <span>This event has multiple dates/times. Add exact blocks in Schedule below.</span>
                       </label>
+                    </div>
+                    <div className="role-access-grid">
+                      {audienceRoles.map((role) => (
+                        <label className="check-row" key={role.id}>
+                          <input
+                            checked={allowedAudienceRoleIds.includes(role.id)}
+                            onChange={(changeEvent) => toggleAllowedRole(role.id, changeEvent.target.checked)}
+                            type="checkbox"
+                          />
+                          <span>{role.name}</span>
+                        </label>
+                      ))}
                     </div>
                     {program.competitive && (
                       <div className="form-grid two">
@@ -2466,6 +2581,7 @@ function SettingsPage({
   program,
   programs,
   joinLinks,
+  roles,
   onProgramSelect,
 }: {
   orgId: string
@@ -2474,6 +2590,7 @@ function SettingsPage({
   program: Program | null
   programs: Program[]
   joinLinks: ProgramJoinLink[]
+  roles: Role[]
   onProgramSelect: (programId: string) => void
 }) {
   const [orgName, setOrgName] = useState(organization?.name || '')
@@ -2557,7 +2674,7 @@ function SettingsPage({
             </label>
           )}
           {program ? (
-            <ProgramSettingsForm joinLinks={joinLinks.filter((link) => link.programId === program.id)} orgId={orgId} program={program} uid={uid} />
+            <ProgramSettingsForm joinLinks={joinLinks.filter((link) => link.programId === program.id)} orgId={orgId} program={program} roles={roles} uid={uid} />
           ) : (
             <EmptyState title="Choose a program" body="Create or select a program before editing program artwork, QR access, result settings, and join flow." />
           )}
@@ -2567,7 +2684,7 @@ function SettingsPage({
   )
 }
 
-function ProgramSettingsForm({ orgId, uid, program, joinLinks }: { orgId: string; uid: string; program: Program; joinLinks: ProgramJoinLink[] }) {
+function ProgramSettingsForm({ orgId, uid, program, joinLinks, roles }: { orgId: string; uid: string; program: Program; joinLinks: ProgramJoinLink[]; roles: Role[] }) {
   const [name, setName] = useState(program.name)
   const [mode, setMode] = useState<ProgramMode>(program.mode)
   const [programType, setProgramType] = useState(selectValueOrCustom(programTypeOptions, program.programType, 'college_fest'))
@@ -2748,15 +2865,15 @@ function ProgramSettingsForm({ orgId, uid, program, joinLinks }: { orgId: string
         </div>
       </form>
 
-      <ProgramJoinQrPanel joinLinks={joinLinks} orgId={orgId} program={program} />
+      <ProgramJoinQrPanel joinLinks={joinLinks} orgId={orgId} program={program} roles={roles} />
     </div>
   )
 }
 
-function ProgramJoinQrPanel({ orgId, program, joinLinks }: { orgId: string; program: Program; joinLinks: ProgramJoinLink[] }) {
+function ProgramJoinQrPanel({ orgId, program, joinLinks, roles }: { orgId: string; program: Program; joinLinks: ProgramJoinLink[]; roles: Role[] }) {
+  const audienceRoles = useMemo(() => getAudienceRoles(roles), [roles])
   const [mode, setMode] = useState<JoinMode>('request_approval')
-  const [allowedCategory, setAllowedCategory] = useState<PersonKind | 'custom'>('attendee')
-  const [customAllowedCategory, setCustomAllowedCategory] = useState('')
+  const [allowedCategory, setAllowedCategory] = useState<PersonKind>(audienceRoles[0]?.id || 'attendee')
   const [maxUses, setMaxUses] = useState(5000)
   const [campaignName, setCampaignName] = useState('Main program QR')
   const [qrPayload, setQrPayload] = useState(joinLinks.find((link) => link.qrPayload)?.qrPayload || '')
@@ -2766,6 +2883,12 @@ function ProgramJoinQrPanel({ orgId, program, joinLinks }: { orgId: string; prog
     setQrPayload(joinLinks.find((link) => link.qrPayload)?.qrPayload || '')
   }, [joinLinks])
 
+  useEffect(() => {
+    if (!audienceRoles.some((role) => role.id === allowedCategory)) {
+      setAllowedCategory(audienceRoles[0]?.id || 'attendee')
+    }
+  }, [allowedCategory, audienceRoles])
+
   async function generateQr() {
     setBusy(true)
     try {
@@ -2774,7 +2897,7 @@ function ProgramJoinQrPanel({ orgId, program, joinLinks }: { orgId: string; prog
         programId: program.id,
         mode,
         allowedCategory,
-        customAllowedCategory: allowedCategory === 'custom' ? customAllowedCategory.trim() : '',
+        customAllowedCategory: '',
         allowedEventIds: [],
         maxUses,
         expiresAt: '',
@@ -2811,20 +2934,10 @@ function ProgramJoinQrPanel({ orgId, program, joinLinks }: { orgId: string; prog
           </label>
           <label>
             Default category
-            <select value={allowedCategory} onChange={(event) => setAllowedCategory(event.target.value as PersonKind | 'custom')}>
-              <option value="attendee">Attendee</option>
-              <option value="participant">Participant</option>
-              <option value="speaker">Speaker</option>
-              <option value="staff">Staff</option>
-              <option value="custom">Custom</option>
+            <select value={allowedCategory} onChange={(event) => setAllowedCategory(event.target.value)}>
+              {audienceRoles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
             </select>
           </label>
-          {allowedCategory === 'custom' && (
-            <label>
-              Custom category
-              <input placeholder="VIP guest, exhibitor, alumni..." value={customAllowedCategory} onChange={(event) => setCustomAllowedCategory(event.target.value)} />
-            </label>
-          )}
           <label>
             Max uses
             <input min={1} type="number" value={maxUses} onChange={(event) => setMaxUses(Number(event.target.value) || 1)} />
@@ -2854,22 +2967,27 @@ function ProgramJoinQrPanel({ orgId, program, joinLinks }: { orgId: string; prog
 
 function RolesPage({ orgId, roles }: { orgId: string; roles: Role[] }) {
   const [name, setName] = useState('')
+  const [category, setCategory] = useState<RoleCategory>('audience')
   const [description, setDescription] = useState('')
   const [selected, setSelected] = useState<string[]>(['program.read'])
+  const teamRoles = roles.filter((role) => roleCategory(role) === 'team')
+  const savedAudienceRoles = roles.filter((role) => roleCategory(role) === 'audience')
+  const audienceRoles = getAudienceRoles(roles)
 
   async function createRole(event: FormEvent) {
     event.preventDefault()
-    const roleId = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')
+    const roleId = slugify(name)
     await createRoleCallable({
       orgId,
       roleId,
       name: name.trim(),
-      description: description.trim(),
-      permissions: selected,
+      category,
+      description: category === 'team' ? description.trim() : `${name.trim()} audience category`,
+      permissions: category === 'team' ? selected : [],
     })
     setName('')
     setDescription('')
-    setSelected(['program.read'])
+    if (category === 'team') setSelected(['program.read'])
   }
 
   return (
@@ -2877,31 +2995,42 @@ function RolesPage({ orgId, roles }: { orgId: string; roles: Role[] }) {
       <form className="panel form-panel" onSubmit={createRole}>
         <div className="panel-heading">
           <div>
-            <span className="eyebrow">Access</span>
+            <span className="eyebrow">Access model</span>
             <h2>Create role</h2>
           </div>
           <ShieldCheck size={20} />
         </div>
         <label>
-          Role name
-          <input placeholder="Competition Coordinator" value={name} onChange={(event) => setName(event.target.value)} required />
+          Role category
+          <select value={category} onChange={(event) => setCategory(event.target.value as RoleCategory)}>
+            <option value="audience">Audience role</option>
+            <option value="team">Team role</option>
+          </select>
         </label>
         <label>
-          Description
-          <textarea value={description} onChange={(event) => setDescription(event.target.value)} />
+          Role name
+          <input placeholder={category === 'team' ? 'Competition Coordinator' : 'Startup'} value={name} onChange={(event) => setName(event.target.value)} required />
         </label>
-        <div className="permission-grid">
-          {permissions.map((permission) => (
-            <label className="check-row" key={permission}>
-              <input
-                checked={selected.includes(permission)}
-                onChange={(event) => setSelected((current) => event.target.checked ? [...current, permission] : current.filter((item) => item !== permission))}
-                type="checkbox"
-              />
-              <span>{permission}</span>
+        {category === 'team' && (
+          <>
+            <label>
+              Description
+              <textarea value={description} onChange={(event) => setDescription(event.target.value)} />
             </label>
-          ))}
-        </div>
+            <div className="permission-grid">
+              {permissions.map((permission) => (
+                <label className="check-row" key={permission}>
+                  <input
+                    checked={selected.includes(permission)}
+                    onChange={(event) => setSelected((current) => event.target.checked ? [...current, permission] : current.filter((item) => item !== permission))}
+                    type="checkbox"
+                  />
+                  <span>{permission}</span>
+                </label>
+              ))}
+            </div>
+          </>
+        )}
         <button className="primary-button" type="submit"><Plus size={17} />Save role</button>
       </form>
 
@@ -2909,12 +3038,12 @@ function RolesPage({ orgId, roles }: { orgId: string; roles: Role[] }) {
         <div className="panel-heading">
           <div>
             <span className="eyebrow">Current</span>
-            <h2>Organization roles</h2>
+            <h2>Team roles</h2>
           </div>
           <Eye size={20} />
         </div>
         <div className="role-grid">
-          {roles.map((role) => (
+          {teamRoles.map((role) => (
             <article className="role-card" key={role.id}>
               <strong>{role.name}</strong>
               <p>{role.description || 'No description'}</p>
@@ -2925,24 +3054,46 @@ function RolesPage({ orgId, roles }: { orgId: string; roles: Role[] }) {
             </article>
           ))}
         </div>
+        <div className="panel-heading inset-heading">
+          <div>
+            <span className="eyebrow">Audience</span>
+            <h2>Audience roles</h2>
+          </div>
+          <Ticket size={20} />
+        </div>
+        <div className="role-grid compact-role-grid">
+          {audienceRoles.map((role) => {
+            const saved = savedAudienceRoles.some((savedRole) => savedRole.id === role.id)
+            return (
+              <article className="role-card audience-role-card" key={role.id}>
+                <strong>{role.name}</strong>
+                <div className="chip-row">
+                  <span className="chip">Audience</span>
+                  <span className="chip">{saved ? 'Saved' : 'Preset'}</span>
+                </div>
+              </article>
+            )
+          })}
+        </div>
       </section>
     </section>
   )
 }
 
 function TeamPage({ orgId, roles, programs, events, members }: { orgId: string; roles: Role[]; programs: Program[]; events: ProgramEvent[]; members: TeamMember[] }) {
+  const teamRoles = useMemo(() => roles.filter((role) => roleCategory(role) === 'team'), [roles])
   const [email, setEmail] = useState('')
   const [displayName, setDisplayName] = useState('')
-  const [roleId, setRoleId] = useState(roles[0]?.id || 'gate-staff')
+  const [roleId, setRoleId] = useState(teamRoles[0]?.id || 'gate-staff')
   const [scope, setScope] = useState<TeamScope>('organization')
   const [programId, setProgramId] = useState('')
   const [eventId, setEventId] = useState('')
 
   useEffect(() => {
-    if (!roles.some((role) => role.id === roleId)) {
-      setRoleId(roles[0]?.id || 'gate-staff')
+    if (!teamRoles.some((role) => role.id === roleId)) {
+      setRoleId(teamRoles[0]?.id || 'gate-staff')
     }
-  }, [roleId, roles])
+  }, [roleId, teamRoles])
 
   async function inviteMember(event: FormEvent) {
     event.preventDefault()
@@ -2980,7 +3131,7 @@ function TeamPage({ orgId, roles, programs, events, members }: { orgId: string; 
         <label>
           Role
           <select value={roleId} onChange={(event) => setRoleId(event.target.value)}>
-            {roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
+            {teamRoles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
           </select>
         </label>
         <label>
@@ -3032,7 +3183,7 @@ function TeamPage({ orgId, roles, programs, events, members }: { orgId: string; 
                 <tr key={member.id}>
                   <td>{member.displayName}</td>
                   <td>{member.email}</td>
-                  <td>{roles.find((role) => role.id === member.roleId)?.name || member.roleId}</td>
+                  <td>{teamRoles.find((role) => role.id === member.roleId)?.name || member.roleId}</td>
                   <td>{member.scope}</td>
                   <td><span className={`status ${member.status}`}>{member.status}</span></td>
                 </tr>
@@ -3045,10 +3196,12 @@ function TeamPage({ orgId, roles, programs, events, members }: { orgId: string; 
   )
 }
 
-function PeoplePage({ orgId, programs, events, people, passes }: { orgId: string; programs: Program[]; events: ProgramEvent[]; people: ProgramPerson[]; passes: PassRecord[] }) {
+function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId: string; programs: Program[]; events: ProgramEvent[]; people: ProgramPerson[]; passes: PassRecord[]; roles: Role[] }) {
   const [programId, setProgramId] = useState('')
   const [eventIds, setEventIds] = useState<string[]>([])
-  const [kind, setKind] = useState<PersonKind>('attendee')
+  const audienceRoles = useMemo(() => getAudienceRoles(roles), [roles])
+  const [programRoleId, setProgramRoleId] = useState(audienceRoles[0]?.id || 'attendee')
+  const [eventRoleById, setEventRoleById] = useState<Record<string, string>>({})
   const [manualName, setManualName] = useState('')
   const [manualEmail, setManualEmail] = useState('')
   const [manualPhone, setManualPhone] = useState('')
@@ -3062,7 +3215,51 @@ function PeoplePage({ orgId, programs, events, people, passes }: { orgId: string
     }
   }, [programId, programs])
 
-  async function createPerson(input: Omit<ProgramPerson, 'id' | 'passId' | 'passStatus'> & { eventIds?: string[] }) {
+  useEffect(() => {
+    if (!audienceRoles.some((role) => role.id === programRoleId)) {
+      setProgramRoleId(audienceRoles[0]?.id || 'attendee')
+    }
+  }, [audienceRoles, programRoleId])
+
+  function roleName(roleId: string) {
+    return audienceRoles.find((role) => role.id === roleId)?.name || roleId
+  }
+
+  function rolesForEvent(programEvent: ProgramEvent) {
+    const allowedIds = programEvent.allowedAudienceRoleIds?.map(slugify) || []
+    if (allowedIds.length === 0) return audienceRoles
+    return audienceRoles.filter((role) => allowedIds.includes(role.id))
+  }
+
+  function fitRoleToEvent(programEvent: ProgramEvent, role: AudienceRoleOption) {
+    const eventRoles = rolesForEvent(programEvent)
+    if (eventRoles.some((eventRole) => eventRole.id === role.id)) return role
+    return eventRoles[0] || role
+  }
+
+  function toggleEventAccess(programEvent: ProgramEvent, checked: boolean) {
+    setEventIds((current) => checked ? Array.from(new Set([...current, programEvent.id])) : current.filter((id) => id !== programEvent.id))
+    if (checked) {
+      const firstAllowedRole = rolesForEvent(programEvent)[0]?.id || programRoleId
+      setEventRoleById((current) => ({ ...current, [programEvent.id]: current[programEvent.id] || firstAllowedRole }))
+    }
+  }
+
+  function buildManualEventAccess() {
+    return eventIds.map((eventId) => {
+      const programEvent = availableEvents.find((item) => item.id === eventId)
+      const allowedRole = programEvent ? rolesForEvent(programEvent).find((role) => role.id === eventRoleById[eventId]) : null
+      const role = allowedRole || resolveAudienceRole(eventRoleById[eventId] || programRoleId, audienceRoles, programRoleId)
+      return {
+        eventId,
+        roleId: role.id,
+        roleName: role.name,
+        status: 'allowed' as const,
+      }
+    })
+  }
+
+  async function createPerson(input: ProgramPersonInput) {
     await createProgramPersonAndPassCallable(input)
   }
 
@@ -3074,9 +3271,13 @@ function PeoplePage({ orgId, programs, events, people, passes }: { orgId: string
       fullName: manualName.trim(),
       email: manualEmail.trim().toLowerCase(),
       phone: manualPhone.trim(),
-      kind,
+      kind: programRoleId,
+      programRoleId,
+      programRoleName: roleName(programRoleId),
       company: manualCompany.trim(),
+      organization: manualCompany.trim(),
       eventIds,
+      eventAccess: buildManualEventAccess(),
     })
     setManualName('')
     setManualEmail('')
@@ -3085,29 +3286,132 @@ function PeoplePage({ orgId, programs, events, people, passes }: { orgId: string
   }
 
   function importCsv(file: File) {
+    const normalizeColumn = (value: string) => value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '')
+    const eventColumnMap = new Map<string, ProgramEvent>()
+    for (const programEvent of availableEvents) {
+      eventColumnMap.set(normalizeColumn(programEvent.id), programEvent)
+      eventColumnMap.set(normalizeColumn(programEvent.name), programEvent)
+      eventColumnMap.set(normalizeColumn(`event ${programEvent.name}`), programEvent)
+      eventColumnMap.set(normalizeColumn(`event:${programEvent.name}`), programEvent)
+    }
+    const emptyValues = new Set(['', 'no', 'n', 'false', '0', 'none', 'na', 'n/a'])
+    const defaultValues = new Set(['yes', 'y', 'true', '1', 'allowed', 'registered', 'access'])
+
+    function eventFromText(value: string) {
+      return eventColumnMap.get(normalizeColumn(value))
+    }
+
+    function accessFromRow(row: Record<string, string>, fallbackRole: AudienceRoleOption) {
+      const access = new Map<string, EventAccess & { eventId: string }>()
+      for (const [key, value] of Object.entries(row)) {
+        const programEvent = eventColumnMap.get(normalizeColumn(key))
+        if (!programEvent) continue
+        const cell = (value || '').trim()
+        if (emptyValues.has(cell.toLowerCase())) continue
+        const role = fitRoleToEvent(programEvent, defaultValues.has(cell.toLowerCase()) ? fallbackRole : resolveAudienceRole(cell, audienceRoles, fallbackRole.id))
+        access.set(programEvent.id, {
+          eventId: programEvent.id,
+          roleId: role.id,
+          roleName: role.name,
+          status: 'allowed',
+        })
+      }
+
+      const namedEvents = (row.eventName || row.EventName || row.event || row.Event || row.events || row.Events || '')
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean)
+      for (const eventName of namedEvents) {
+        const programEvent = eventFromText(eventName)
+        if (!programEvent) continue
+        const roleText = row.eventRole || row.EventRole || row.role || row.Role || fallbackRole.name
+        const role = fitRoleToEvent(programEvent, resolveAudienceRole(roleText, audienceRoles, fallbackRole.id))
+        access.set(programEvent.id, {
+          eventId: programEvent.id,
+          roleId: role.id,
+          roleName: role.name,
+          status: 'allowed',
+        })
+      }
+
+      if (access.size === 0) {
+        for (const eventId of eventIds) {
+          const programEvent = availableEvents.find((item) => item.id === eventId)
+          const role = programEvent
+            ? fitRoleToEvent(programEvent, resolveAudienceRole(eventRoleById[eventId] || fallbackRole.id, audienceRoles, fallbackRole.id))
+            : resolveAudienceRole(eventRoleById[eventId] || fallbackRole.id, audienceRoles, fallbackRole.id)
+          access.set(eventId, {
+            eventId,
+            roleId: role.id,
+            roleName: role.name,
+            status: 'allowed',
+          })
+        }
+      }
+      return access
+    }
+
     Papa.parse<Record<string, string>>(file, {
       header: true,
       skipEmptyLines: true,
       complete: async (result) => {
-        const rows = result.data.filter((row) => row.email || row.phone || row.name || row.fullName)
-        for (const row of rows) {
+        const rows = result.data.filter((row) => row.email || row.Email || row.phone || row.Phone || row.name || row.Name || row.fullName || row.FullName)
+        const grouped = new Map<string, {
+          fullName: string
+          email: string
+          phone: string
+          organization: string
+          designation: string
+          programRole: AudienceRoleOption
+          eventAccess: Map<string, EventAccess & { eventId: string }>
+        }>()
+        rows.forEach((row, index) => {
+          const fullName = (row.fullName || row.name || row.FullName || row.Name || 'Unnamed').trim()
+          const email = (row.email || row.Email || '').trim().toLowerCase()
+          const phone = (row.phone || row.Phone || '').trim()
+          const roleText = row.programRole || row.ProgramRole || row.audienceRole || row.AudienceRole || row.kind || row.type || row.Kind || row.Type || row.role || row.Role || programRoleId
+          const programRole = resolveAudienceRole(roleText, audienceRoles, programRoleId)
+          const organization = (row.organization || row.Organization || row.company || row.Company || row.college || row.College || '').trim()
+          const key = email || phone || `${fullName.toLowerCase()}-${index}`
+          const existing = grouped.get(key)
+          const rowAccess = accessFromRow(row, programRole)
+          if (existing) {
+            rowAccess.forEach((value, eventId) => existing.eventAccess.set(eventId, value))
+            return
+          }
+          grouped.set(key, {
+            fullName,
+            email,
+            phone,
+            organization,
+            designation: (row.designation || row.Designation || '').trim(),
+            programRole,
+            eventAccess: rowAccess,
+          })
+        })
+
+        for (const person of grouped.values()) {
           await createPerson({
             orgId,
             programId,
-            fullName: (row.fullName || row.name || row.FullName || row.Name || 'Unnamed').trim(),
-            email: (row.email || row.Email || '').trim().toLowerCase(),
-            phone: (row.phone || row.Phone || '').trim(),
-            kind: ((row.kind || row.type || kind).trim().toLowerCase() as PersonKind) || kind,
-            company: (row.company || row.Company || '').trim(),
-            designation: (row.designation || row.Designation || '').trim(),
-            eventIds,
+            fullName: person.fullName,
+            email: person.email,
+            phone: person.phone,
+            kind: person.programRole.id,
+            programRoleId: person.programRole.id,
+            programRoleName: person.programRole.name,
+            company: person.organization,
+            organization: person.organization,
+            designation: person.designation,
+            eventIds: Array.from(person.eventAccess.keys()),
+            eventAccess: Array.from(person.eventAccess.values()),
           })
         }
         await addDoc(collection(db, 'peImports'), {
           orgId,
           programId,
           fileName: file.name,
-          rowCount: rows.length,
+          rowCount: grouped.size,
           status: 'completed',
           createdAt: serverTimestamp(),
         })
@@ -3127,35 +3431,45 @@ function PeoplePage({ orgId, programs, events, people, passes }: { orgId: string
         </div>
         <label>
           Program
-          <select value={programId} onChange={(event) => { setProgramId(event.target.value); setEventIds([]) }} required>
+          <select value={programId} onChange={(event) => { setProgramId(event.target.value); setEventIds([]); setEventRoleById({}) }} required>
             <option value="">Select program</option>
             {programs.map((program) => <option key={program.id} value={program.id}>{program.name}</option>)}
           </select>
         </label>
-        {availableEvents.length > 0 && (
-          <div className="assignment-box">
-            <span>Event access</span>
-            {availableEvents.map((programEvent) => (
-              <label className="check-row" key={programEvent.id}>
-                <input
-                  checked={eventIds.includes(programEvent.id)}
-                  onChange={(changeEvent) => setEventIds((current) => changeEvent.target.checked ? [...current, programEvent.id] : current.filter((id) => id !== programEvent.id))}
-                  type="checkbox"
-                />
-                <span>{programEvent.name}</span>
-              </label>
-            ))}
-          </div>
-        )}
         <label>
-          Type
-          <select value={kind} onChange={(event) => setKind(event.target.value as PersonKind)}>
-            <option value="attendee">Attendee</option>
-            <option value="participant">Participant</option>
-            <option value="speaker">Speaker</option>
-            <option value="staff">Staff</option>
+          Program audience role
+          <select value={programRoleId} onChange={(event) => setProgramRoleId(event.target.value)}>
+            {audienceRoles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
           </select>
         </label>
+        {availableEvents.length > 0 && (
+          <div className="assignment-box">
+            <span>Event access and role</span>
+            {availableEvents.map((programEvent) => {
+              const eventRoles = rolesForEvent(programEvent)
+              const currentRoleId = eventRoleById[programEvent.id] || eventRoles[0]?.id || programRoleId
+              return (
+                <div className="event-access-row" key={programEvent.id}>
+                  <label className="check-row">
+                    <input
+                      checked={eventIds.includes(programEvent.id)}
+                      onChange={(changeEvent) => toggleEventAccess(programEvent, changeEvent.target.checked)}
+                      type="checkbox"
+                    />
+                    <span>{programEvent.name}</span>
+                  </label>
+                  <select
+                    disabled={!eventIds.includes(programEvent.id)}
+                    value={currentRoleId}
+                    onChange={(changeEvent) => setEventRoleById((current) => ({ ...current, [programEvent.id]: changeEvent.target.value }))}
+                  >
+                    {eventRoles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
+                  </select>
+                </div>
+              )
+            })}
+          </div>
+        )}
         <label>
           Full name
           <input value={manualName} onChange={(event) => setManualName(event.target.value)} required />
@@ -3169,7 +3483,7 @@ function PeoplePage({ orgId, programs, events, people, passes }: { orgId: string
           <input value={manualPhone} onChange={(event) => setManualPhone(event.target.value)} />
         </label>
         <label>
-          Company / college
+          Organization / college / company
           <input value={manualCompany} onChange={(event) => setManualCompany(event.target.value)} />
         </label>
         <button className="primary-button" disabled={!programId} type="submit"><Plus size={17} />Add and issue pass</button>
@@ -3192,8 +3506,9 @@ function PeoplePage({ orgId, programs, events, people, passes }: { orgId: string
               name: person.fullName,
               email: person.email,
               phone: person.phone || '',
-              type: person.kind,
-              company: person.company || '',
+              programRole: person.programRoleName || person.kind,
+              organization: person.organization || person.company || '',
+              eventAccess: Object.entries(person.eventAccess || {}).map(([eventId, access]) => `${events.find((item) => item.id === eventId)?.name || eventId}:${access.roleName || access.roleId}`).join('; '),
               passStatus: person.passStatus || 'notIssued',
             })))}
             title="Download roster CSV"
@@ -3205,16 +3520,29 @@ function PeoplePage({ orgId, programs, events, people, passes }: { orgId: string
         <div className="table-wrap">
           <table>
             <thead>
-              <tr><th>Name</th><th>Email</th><th>Type</th><th>Pass</th><th>QR</th></tr>
+              <tr><th>Name</th><th>Contact</th><th>Organization</th><th>Program role</th><th>Event access</th><th>Pass</th><th>QR</th></tr>
             </thead>
             <tbody>
               {selectedPeople.map((person) => {
                 const pass = passes.find((item) => item.id === person.passId)
+                const accessEntries = Object.entries(person.eventAccess || {})
                 return (
                   <tr key={person.id}>
                     <td>{person.fullName}</td>
                     <td>{person.email || person.phone || 'No contact'}</td>
-                    <td>{person.kind}</td>
+                    <td>{person.organization || person.company || '-'}</td>
+                    <td>{person.programRoleName || person.kind}</td>
+                    <td>
+                      <div className="chip-row">
+                        {accessEntries.length === 0 && <span className="chip">Program only</span>}
+                        {accessEntries.slice(0, 3).map(([eventId, access]) => (
+                          <span className="chip" key={eventId}>
+                            {events.find((item) => item.id === eventId)?.name || eventId}: {access.roleName || access.roleId}
+                          </span>
+                        ))}
+                        {accessEntries.length > 3 && <span className="chip">+{accessEntries.length - 3}</span>}
+                      </div>
+                    </td>
                     <td><span className={`status ${person.passStatus || 'draft'}`}>{person.passStatus || 'notIssued'}</span></td>
                     <td>{pass ? <PassPreview payload={pass.qrPayload} /> : 'Pending'}</td>
                   </tr>
@@ -3494,13 +3822,13 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
       {programs.error || roles.error || people.error || scheduleItems.error ? <p className="form-error">{programs.error || roles.error || people.error || scheduleItems.error}</p> : null}
       {route === 'dashboard' && activeProgram && <ProgramWorkspaceDashboard checkIns={activeCheckIns} events={activeEvents} joinLinks={activeJoinLinks} people={activePeople} program={activeProgram} setRoute={setRoute} />}
       {route === 'dashboard' && !activeProgram && <DashboardPage checkIns={checkIns.rows} people={people.rows} programs={sortedPrograms} setRoute={setRoute} />}
-      {route === 'events' && activeProgram && <EventsPage events={activeEvents} orgId={orgId} program={activeProgram} scheduleItems={activeScheduleItems} uid={firebaseUser.uid} />}
+      {route === 'events' && activeProgram && <EventsPage events={activeEvents} orgId={orgId} program={activeProgram} roles={roles.rows} scheduleItems={activeScheduleItems} uid={firebaseUser.uid} />}
       {route === 'events' && !activeProgram && <ProgramsPage events={events.rows} onChoose={chooseProgram} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} />}
       {route === 'programs' && <ProgramsPage events={events.rows} onChoose={chooseProgram} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} />}
-      {route === 'settings' && <SettingsPage joinLinks={joinLinks.rows} onProgramSelect={chooseProgramInSettings} orgId={orgId} organization={organization} program={activeProgram} programs={sortedPrograms} uid={firebaseUser.uid} />}
+      {route === 'settings' && <SettingsPage joinLinks={joinLinks.rows} onProgramSelect={chooseProgramInSettings} orgId={orgId} organization={organization} program={activeProgram} programs={sortedPrograms} roles={roles.rows} uid={firebaseUser.uid} />}
       {route === 'roles' && <RolesPage orgId={orgId} roles={roles.rows} />}
       {route === 'team' && <TeamPage events={events.rows} members={members.rows} orgId={orgId} programs={sortedPrograms} roles={roles.rows} />}
-      {route === 'people' && <PeoplePage events={activeProgram ? activeEvents : events.rows} orgId={orgId} passes={activeProgram ? activePasses : passes.rows} people={activeProgram ? activePeople : people.rows} programs={activeProgram ? [activeProgram] : sortedPrograms} />}
+      {route === 'people' && <PeoplePage events={activeProgram ? activeEvents : events.rows} orgId={orgId} passes={activeProgram ? activePasses : passes.rows} people={activeProgram ? activePeople : people.rows} programs={activeProgram ? [activeProgram] : sortedPrograms} roles={roles.rows} />}
       {route === 'checkin' && <CheckInPage events={activeProgram ? activeEvents : events.rows} orgId={orgId} programs={activeProgram ? [activeProgram] : sortedPrograms} />}
       {route === 'analytics' && <AnalyticsPage checkIns={activeProgram ? activeCheckIns : checkIns.rows} people={activeProgram ? activePeople : people.rows} programs={activeProgram ? [activeProgram] : sortedPrograms} />}
     </Shell>
