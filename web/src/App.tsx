@@ -176,14 +176,19 @@ function roleCategory(role: Role): RoleCategory {
   return role.category || 'team'
 }
 
+function isDeletedRole(role: Role) {
+  return role.status === 'deleted'
+}
+
 function getAudienceRoles(roles: Role[]): AudienceRoleOption[] {
+  const deletedIds = new Set(roles.filter((role) => roleCategory(role) === 'audience' && isDeletedRole(role)).map((role) => slugify(role.id)))
   const savedRoles = roles
-    .filter((role) => roleCategory(role) === 'audience')
+    .filter((role) => roleCategory(role) === 'audience' && !isDeletedRole(role))
     .map((role) => ({ id: slugify(role.id), name: role.name }))
   const existingIds = new Set(savedRoles.map((role) => role.id))
   return [
     ...savedRoles,
-    ...audienceRolePresets.filter((role) => !existingIds.has(role.id)),
+    ...audienceRolePresets.filter((role) => !existingIds.has(role.id) && !deletedIds.has(role.id)),
   ]
 }
 
@@ -221,6 +226,7 @@ type Role = {
   category?: RoleCategory
   description?: string
   permissions: string[]
+  status?: 'active' | 'deleted'
   isDefault?: boolean
 }
 
@@ -561,6 +567,7 @@ const updateOrganizationCallable = httpsCallable<{ orgId: string; name: string; 
 const setActiveOrganizationCallable = httpsCallable<{ orgId: string }, { orgId: string }>(functions, 'setActiveOrganization')
 const claimTeamAccessCallable = httpsCallable<void, { claimedOrgIds: string[] }>(functions, 'claimTeamAccess')
 const createRoleCallable = httpsCallable<{ orgId: string; roleId: string; name: string; category: RoleCategory; description: string; permissions: string[] }, { roleId: string }>(functions, 'createRole')
+const deleteRoleCallable = httpsCallable<{ orgId: string; roleId: string }, { roleId: string }>(functions, 'deleteRole')
 const inviteTeamMemberCallable = httpsCallable<{ orgId: string; email: string; displayName: string; roleId: string; scope: TeamScope; programId?: string; eventId?: string }, { teamMemberId: string }>(functions, 'inviteTeamMember')
 const createProgramCallable = httpsCallable<Omit<Program, 'id' | 'status'>, { programId: string }>(functions, 'createProgram')
 const updateProgramCallable = httpsCallable<Omit<Program, 'id'> & { programId: string }, { programId: string }>(functions, 'updateProgram')
@@ -2970,24 +2977,45 @@ function RolesPage({ orgId, roles }: { orgId: string; roles: Role[] }) {
   const [category, setCategory] = useState<RoleCategory>('audience')
   const [description, setDescription] = useState('')
   const [selected, setSelected] = useState<string[]>(['program.read'])
-  const teamRoles = roles.filter((role) => roleCategory(role) === 'team')
-  const savedAudienceRoles = roles.filter((role) => roleCategory(role) === 'audience')
+  const [deletingRoleId, setDeletingRoleId] = useState('')
+  const [error, setError] = useState('')
+  const teamRoles = roles.filter((role) => roleCategory(role) === 'team' && !isDeletedRole(role))
+  const savedAudienceRoles = roles.filter((role) => roleCategory(role) === 'audience' && !isDeletedRole(role))
   const audienceRoles = getAudienceRoles(roles)
 
   async function createRole(event: FormEvent) {
     event.preventDefault()
+    setError('')
     const roleId = slugify(name)
-    await createRoleCallable({
-      orgId,
-      roleId,
-      name: name.trim(),
-      category,
-      description: category === 'team' ? description.trim() : `${name.trim()} audience category`,
-      permissions: category === 'team' ? selected : [],
-    })
-    setName('')
-    setDescription('')
-    if (category === 'team') setSelected(['program.read'])
+    try {
+      await createRoleCallable({
+        orgId,
+        roleId,
+        name: name.trim(),
+        category,
+        description: category === 'team' ? description.trim() : `${name.trim()} audience category`,
+        permissions: category === 'team' ? selected : [],
+      })
+      setName('')
+      setDescription('')
+      if (category === 'team') setSelected(['program.read'])
+    } catch (createError) {
+      setError(createError instanceof Error ? createError.message : 'Unable to save role.')
+    }
+  }
+
+  async function deleteRole(roleId: string, roleName: string) {
+    const confirmed = window.confirm(`Delete "${roleName}"? You can recreate it later, but it must not be in active use.`)
+    if (!confirmed) return
+    setError('')
+    setDeletingRoleId(roleId)
+    try {
+      await deleteRoleCallable({ orgId, roleId })
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : 'Unable to delete role.')
+    } finally {
+      setDeletingRoleId('')
+    }
   }
 
   return (
@@ -3000,6 +3028,7 @@ function RolesPage({ orgId, roles }: { orgId: string; roles: Role[] }) {
           </div>
           <ShieldCheck size={20} />
         </div>
+        {error && <p className="form-error">{error}</p>}
         <label>
           Role category
           <select value={category} onChange={(event) => setCategory(event.target.value as RoleCategory)}>
@@ -3045,7 +3074,12 @@ function RolesPage({ orgId, roles }: { orgId: string; roles: Role[] }) {
         <div className="role-grid">
           {teamRoles.map((role) => (
             <article className="role-card" key={role.id}>
-              <strong>{role.name}</strong>
+              <div className="role-card-head">
+                <strong>{role.name}</strong>
+                <button className="icon-button danger-icon" disabled={deletingRoleId === role.id} onClick={() => deleteRole(role.id, role.name)} title="Delete role" type="button">
+                  {deletingRoleId === role.id ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />}
+                </button>
+              </div>
               <p>{role.description || 'No description'}</p>
               <div className="chip-row">
                 {role.permissions.slice(0, 5).map((permission) => <span className="chip" key={permission}>{permission}</span>)}
@@ -3066,7 +3100,12 @@ function RolesPage({ orgId, roles }: { orgId: string; roles: Role[] }) {
             const saved = savedAudienceRoles.some((savedRole) => savedRole.id === role.id)
             return (
               <article className="role-card audience-role-card" key={role.id}>
-                <strong>{role.name}</strong>
+                <div className="role-card-head">
+                  <strong>{role.name}</strong>
+                  <button className="icon-button danger-icon" disabled={deletingRoleId === role.id} onClick={() => deleteRole(role.id, role.name)} title="Delete role" type="button">
+                    {deletingRoleId === role.id ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />}
+                  </button>
+                </div>
                 <div className="chip-row">
                   <span className="chip">Audience</span>
                   <span className="chip">{saved ? 'Saved' : 'Preset'}</span>

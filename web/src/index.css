@@ -1918,6 +1918,17 @@ th {
   gap: 10px;
 }
 
+.role-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.danger-icon {
+  color: #b42318;
+}
+
 .inset-heading {
   margin-top: 18px;
   padding-top: 16px;

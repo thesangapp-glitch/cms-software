@@ -92,6 +92,10 @@ function uniqueStrings(values: string[]) {
   return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)))
 }
 
+function isDefaultAudienceRole(roleId: string) {
+  return defaultAudienceRoles.some((role) => role.id === roleId)
+}
+
 function requireUid(context: { auth?: { uid: string } }) {
   const uid = context.auth?.uid
   if (!uid) {
@@ -318,7 +322,8 @@ export const createRole = onCall(callableOptions, async (request) => {
   if (input.category === 'team' && input.permissions.length === 0) {
     throw new HttpsError('failed-precondition', 'Team roles need at least one permission.')
   }
-  const rolePath = `peOrganizations/${input.orgId}/roles/${input.roleId}`
+  const roleId = normalizeRoleId(input.roleId)
+  const rolePath = `peOrganizations/${input.orgId}/roles/${roleId}`
   await db.doc(rolePath).set(
     {
       orgId: input.orgId,
@@ -327,13 +332,72 @@ export const createRole = onCall(callableOptions, async (request) => {
       description: input.description.trim(),
       permissions: input.category === 'team' ? input.permissions : [],
       isDefault: false,
+      status: 'active',
       updatedAt: FieldValue.serverTimestamp(),
       createdAt: FieldValue.serverTimestamp(),
     },
     { merge: true },
   )
   await writeAudit({ orgId: input.orgId, actorUid: uid, action: 'role.upsert', entityPath: rolePath })
-  return { roleId: input.roleId }
+  return { roleId }
+})
+
+export const deleteRole = onCall(callableOptions, async (request) => {
+  const uid = requireUid(request)
+  const input = z
+    .object({
+      orgId: z.string().min(1),
+      roleId: z.string().min(1),
+    })
+    .parse(request.data)
+
+  await assertPermission(uid, input.orgId, permissions.rolesWrite)
+  const roleId = normalizeRoleId(input.roleId)
+  const roleRef = db.doc(`peOrganizations/${input.orgId}/roles/${roleId}`)
+  const roleSnapshot = await roleRef.get()
+  const role = roleSnapshot.data()
+  const category = role?.category === 'audience' || isDefaultAudienceRole(roleId) ? 'audience' : 'team'
+
+  if (category === 'team') {
+    const teamUsage = await db
+      .collection('peTeamMembers')
+      .where('orgId', '==', input.orgId)
+      .where('roleId', '==', roleId)
+      .where('status', 'in', ['active', 'invited'])
+      .limit(1)
+      .get()
+    if (!teamUsage.empty) {
+      throw new HttpsError('failed-precondition', 'This team role is assigned to a member. Change those members before deleting the role.')
+    }
+  } else {
+    const [eventUsage, peopleProgramRoleUsage, peopleKindUsage, joinLinkUsage] = await Promise.all([
+      db.collection('peEvents').where('orgId', '==', input.orgId).where('allowedAudienceRoleIds', 'array-contains', roleId).limit(1).get(),
+      db.collection('peProgramPeople').where('orgId', '==', input.orgId).where('programRoleId', '==', roleId).limit(1).get(),
+      db.collection('peProgramPeople').where('orgId', '==', input.orgId).where('kind', '==', roleId).limit(1).get(),
+      db.collection('peProgramJoinLinks').where('orgId', '==', input.orgId).where('allowedCategory', '==', roleId).where('status', '==', 'active').limit(1).get(),
+    ])
+    if (!eventUsage.empty || !peopleProgramRoleUsage.empty || !peopleKindUsage.empty || !joinLinkUsage.empty) {
+      throw new HttpsError('failed-precondition', 'This audience role is in use. Remove it from event rules, people, and active join links before deleting.')
+    }
+  }
+
+  await roleRef.set(
+    {
+      orgId: input.orgId,
+      name: role?.name || defaultAudienceRoles.find((item) => item.id === roleId)?.name || roleId,
+      category,
+      description: role?.description || '',
+      permissions: [],
+      isDefault: Boolean(role?.isDefault || isDefaultAudienceRole(roleId)),
+      status: 'deleted',
+      deletedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+      createdAt: role?.createdAt || FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  )
+  await writeAudit({ orgId: input.orgId, actorUid: uid, action: 'role.delete', entityPath: roleRef.path })
+  return { roleId }
 })
 
 export const claimTeamAccess = onCall(callableOptions, async (request) => {
