@@ -1,35 +1,41 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import {
   Activity,
   BadgeCheck,
-  BarChart3,
+  Bold,
   Building2,
   CalendarDays,
   Check,
-  ChevronDown,
   ChevronRight,
   Clock,
   ClipboardList,
-  Copy,
   Download,
   Eye,
+  Heading2,
+  Heading3,
+  Italic,
   LayoutDashboard,
   Link2,
+  List,
+  ListOrdered,
   Loader2,
   Lock,
   LogOut,
   MapPin,
   Pencil,
+  Pilcrow,
   Plus,
   QrCode,
+  RefreshCw,
   Save,
-  ScanLine,
   Search,
   Settings,
   ShieldCheck,
   Sparkles,
   Ticket,
   Trash2,
+  Underline,
+  Unlock,
   Upload,
   UserRound,
   Users,
@@ -54,6 +60,7 @@ import {
   addDoc,
   collection,
   doc,
+  documentId,
   getDoc,
   onSnapshot,
   query,
@@ -61,18 +68,18 @@ import {
   where,
   type DocumentData,
   type Query,
-  type Timestamp,
 } from 'firebase/firestore'
 import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage'
 import { auth, db, functions, storage } from './lib/firebase'
 import { LandingPage } from './landing/LandingPage'
 
-type RouteKey = 'dashboard' | 'events' | 'programs' | 'settings' | 'roles' | 'team' | 'people' | 'checkin' | 'analytics'
+// Check-in and analytics routes are intentionally out of scope for this release.
+// Backend scanPassToken/createScannerSession remain live; only the CRM surface is hidden.
+type RouteKey = 'dashboard' | 'events' | 'venues' | 'patrons' | 'programs' | 'settings' | 'roles' | 'team' | 'people'
 type PersonKind = string
 type ProgramMode = 'standalone' | 'multiEvent'
 type TeamScope = 'organization' | 'program' | 'event'
 type EntryScope = 'program' | 'event' | 'both'
-type JoinMode = 'direct_join' | 'request_approval' | 'invite_only'
 type ScheduleType = 'session' | 'round' | 'break' | 'checkin' | 'performance' | 'result' | 'ceremony' | 'custom'
 type ScheduleStatus = 'draft' | 'scheduled' | 'delayed' | 'cancelled' | 'completed'
 type ScheduleVisibility = 'public' | 'staffOnly' | 'participantsOnly'
@@ -84,17 +91,18 @@ type AudienceRoleOption = {
 }
 
 type EventAccess = {
+  eventId?: string
+  eventNameSnapshot?: string
   roleId: string
   roleName: string
   status: 'allowed' | 'registered' | 'blocked' | 'cancelled' | 'rejected' | 'revoked'
 }
 
-type VenueSuggestion = {
+type VenueRoom = {
   id: string
   name: string
-  detail: string
-  latitude?: number
-  longitude?: number
+  floor?: string
+  capacity?: number
 }
 
 type EventProfile = {
@@ -181,6 +189,63 @@ function slugify(value: string) {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'custom'
 }
 
+function firestoreDate(value: unknown) {
+  if (!value) return null
+  if (value instanceof Date) return value
+  if (typeof value === 'string') {
+    const date = new Date(value)
+    return Number.isNaN(date.getTime()) ? null : date
+  }
+  if (typeof value === 'object' && typeof (value as { toDate?: () => Date }).toDate === 'function') {
+    return (value as { toDate: () => Date }).toDate()
+  }
+  if (
+    typeof value === 'object' &&
+    typeof (value as { seconds?: unknown }).seconds === 'number' &&
+    typeof (value as { nanoseconds?: unknown }).nanoseconds === 'number'
+  ) {
+    const timestamp = value as { seconds: number; nanoseconds: number }
+    return new Date(timestamp.seconds * 1000 + Math.floor(timestamp.nanoseconds / 1000000))
+  }
+  return null
+}
+
+function padDatePart(value: number) {
+  return String(value).padStart(2, '0')
+}
+
+function dateInputValue(value: unknown) {
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value
+  const date = firestoreDate(value)
+  if (!date) return typeof value === 'string' ? value : ''
+  return `${date.getFullYear()}-${padDatePart(date.getMonth() + 1)}-${padDatePart(date.getDate())}`
+}
+
+function dateTimeInputValue(value: unknown) {
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(value) && !/(?:Z|[+-]\d{2}:?\d{2})$/i.test(value)) {
+    return value.slice(0, 16)
+  }
+  const date = firestoreDate(value)
+  if (!date) return typeof value === 'string' ? value : ''
+  return `${dateInputValue(date)}T${padDatePart(date.getHours())}:${padDatePart(date.getMinutes())}`
+}
+
+const dateOnlyFieldNames = new Set(['startDate', 'endDate'])
+const dateTimeFieldNames = new Set(['startDateTime', 'endDateTime', 'startsAt', 'endsAt', 'nextScheduleAt', 'expiresAt'])
+
+function normalizeFirestoreDateFields(value: unknown, key = ''): unknown {
+  if (dateOnlyFieldNames.has(key)) return dateInputValue(value)
+  if (dateTimeFieldNames.has(key)) return dateTimeInputValue(value)
+  if (Array.isArray(value)) return value.map((item) => normalizeFirestoreDateFields(item))
+  if (!value || typeof value !== 'object' || value instanceof Date || typeof (value as { toDate?: unknown }).toDate === 'function') return value
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([entryKey, entryValue]) => [
+      entryKey,
+      normalizeFirestoreDateFields(entryValue, entryKey),
+    ]),
+  )
+}
+
 function roleCategory(role: Role): RoleCategory {
   return role.category || 'team'
 }
@@ -222,48 +287,6 @@ function formatDateTime(value?: string) {
   }).format(date)
 }
 
-function collectVenueSuggestions(program: Program, event: ProgramEvent, scheduleItems: ScheduleItem[]) {
-  const venues: VenueSuggestion[] = []
-  const addVenue = (input: { id: string; name?: string; detail: string; latitude?: number; longitude?: number }) => {
-    const name = input.name?.trim()
-    if (!name) return
-    const key = `${name.toLowerCase()}_${input.latitude ?? ''}_${input.longitude ?? ''}`
-    if (venues.some((venue) => `${venue.name.toLowerCase()}_${venue.latitude ?? ''}_${venue.longitude ?? ''}` === key)) return
-    venues.push({
-      id: input.id,
-      name,
-      detail: input.detail,
-      latitude: input.latitude,
-      longitude: input.longitude,
-    })
-  }
-
-  addVenue({
-    id: 'event-primary',
-    name: event.venueName,
-    detail: event.locationNote || 'Event venue',
-    latitude: event.latitude,
-    longitude: event.longitude,
-  })
-  addVenue({
-    id: 'program-primary',
-    name: program.venueName,
-    detail: program.city || 'Program primary venue',
-    latitude: program.latitude,
-    longitude: program.longitude,
-  })
-  scheduleItems.forEach((item) => {
-    addVenue({
-      id: item.id,
-      name: item.venueName,
-      detail: item.roomName || 'Used in schedule',
-      latitude: item.latitude,
-      longitude: item.longitude,
-    })
-  })
-  return venues
-}
-
 type PeUser = {
   uid: string
   displayName: string
@@ -300,7 +323,7 @@ type TeamMember = {
   scope: TeamScope
   programId?: string
   eventId?: string
-  status: 'invited' | 'active' | 'disabled'
+  status: 'invited' | 'active' | 'disabled' | 'deleted' | 'claimed'
   uid?: string
 }
 
@@ -309,6 +332,7 @@ type Program = {
   orgId: string
   name: string
   mode: ProgramMode
+  tagline?: string
   programType?: string
   status: 'draft' | 'live' | 'archived'
   startDate: string
@@ -321,12 +345,15 @@ type Program = {
   latitude?: number
   longitude?: number
   address?: string
+  directionsNote?: string
   timezone: string
   description?: string
+  schedule?: unknown[]
+  infoSections?: unknown[]
+  fieldDefinitions?: unknown[]
   entryScope?: EntryScope
   competitive?: boolean
   resultsEnabled?: boolean
-  joinQrEnabled?: boolean
 }
 
 type ProgramEvent = {
@@ -335,11 +362,13 @@ type ProgramEvent = {
   programId: string
   name: string
   eventType?: string
+  description?: string
   startDateTime: string
   endDateTime: string
   multiDate?: boolean
   venueName: string
   locationNote?: string
+  directionsNote?: string
   posterUrl?: string
   latitude?: number
   longitude?: number
@@ -356,6 +385,57 @@ type ProgramEvent = {
   status: 'draft' | 'live' | 'completed'
 }
 
+type ProgramVenueCatalog = {
+  id: string
+  orgId: string
+  programId: string
+  venues?: ProgramVenue[]
+}
+
+type ProgramVenue = {
+  id: string
+  name: string
+  address?: string
+  directionsNote?: string
+  latitude?: number
+  longitude?: number
+  rooms?: VenueRoom[]
+}
+
+type ProgramVenueInput = {
+  id?: string
+  name: string
+  address?: string
+  directionsNote?: string
+  latitude?: number
+  longitude?: number
+  rooms?: Array<{
+    id?: string
+    name: string
+    floor?: string
+    capacity?: number
+  }>
+}
+
+type ProgramPartner = {
+  id: string
+  orgId: string
+  programId: string
+  name: string
+  tier?: string
+  category?: string
+  booth?: string
+  description?: string
+  websiteUrl?: string
+  logoUrl?: string
+  sortOrder?: number
+  status?: 'active' | 'hidden'
+}
+
+type CreateProgramPayload = Omit<Program, 'id' | 'status'> & {
+  primaryVenue?: ProgramVenueInput
+}
+
 type ScheduleItem = {
   id: string
   orgId: string
@@ -368,6 +448,8 @@ type ScheduleItem = {
   startsAt: string
   endsAt?: string
   timezone: string
+  venueId?: string
+  roomId?: string
   venueName?: string
   roomName?: string
   latitude?: number
@@ -377,19 +459,22 @@ type ScheduleItem = {
   sortOrder?: number
 }
 
-type ProgramJoinLink = {
+type ScheduleDraftRow = {
   id: string
-  orgId: string
-  programId: string
-  mode: JoinMode
-  allowedCategory: PersonKind | 'custom'
-  customAllowedCategory?: string
-  maxUses: number
-  usedCount: number
-  status: 'active' | 'revoked' | 'expired'
-  qrPayload?: string
-  campaignName?: string
-  expiresAt?: string
+  title: string
+  type: ScheduleType
+  customTypeLabel: string
+  startsAt: string
+  endsAt: string
+  venueId: string
+  venueName: string
+  roomId: string
+  roomName: string
+  latitude?: number
+  longitude?: number
+  visibility: ScheduleVisibility
+  status: ScheduleStatus
+  description: string
 }
 
 type ProgramPerson = {
@@ -407,14 +492,53 @@ type ProgramPerson = {
   designation?: string
   eventAccessIds?: string[]
   eventAccess?: Record<string, EventAccess>
+  eventAccessList?: Array<EventAccess & { eventId: string }>
+  eventRoleKeys?: string[]
   sangUid?: string
+  sangUserId?: string
+  linkStatus?: 'linked' | 'pending' | 'manual_review'
+  linkConflictReason?: string
+  sangAppStatus?: 'linked' | 'not_found' | 'missing_identity' | 'manual_review'
+  sangAppLinked?: boolean
+  sangAppUserId?: string
+  sangAppMatchMethod?: 'verified_email' | 'verified_phone' | 'manual' | ''
+  sangAppConflictReason?: string
   passId?: string
-  passStatus?: 'notIssued' | 'issued' | 'checkedIn'
+  passStatus?: 'notIssued' | 'issued' | 'checkedIn' | 'blocked' | 'revoked'
+  rosterStatus?: 'active' | 'blocked' | 'removed'
+  accessStatus?: 'active' | 'blocked' | 'removed'
+  blockedReason?: string
+  removedReason?: string
 }
 
 type ProgramPersonInput = Omit<ProgramPerson, 'id' | 'passId' | 'passStatus' | 'sangUid' | 'eventAccess' | 'eventAccessIds'> & {
   eventIds?: string[]
   eventAccess?: Array<EventAccess & { eventId: string }>
+}
+
+function sangAppStatusLabel(person: ProgramPerson) {
+  if (person.sangAppStatus === 'linked' || person.linkStatus === 'linked') return 'Linked'
+  if (person.sangAppStatus === 'manual_review' || person.linkStatus === 'manual_review') return 'Review'
+  if (person.sangAppStatus === 'missing_identity') return 'No email/phone'
+  if (person.sangAppStatus === 'not_found') return 'Not on Sang'
+  return 'Pending'
+}
+
+function sangAppStatusClass(person: ProgramPerson) {
+  if (person.sangAppStatus === 'linked' || person.linkStatus === 'linked') return 'active'
+  if (person.sangAppStatus === 'manual_review' || person.linkStatus === 'manual_review') return 'cancelled'
+  return 'draft'
+}
+
+function personAccessState(person: ProgramPerson) {
+  return person.accessStatus || person.rosterStatus || 'active'
+}
+
+function passStatusClass(person: ProgramPerson) {
+  const status = person.passStatus || 'notIssued'
+  if (status === 'issued' || status === 'checkedIn') return status
+  if (status === 'blocked' || status === 'revoked') return 'cancelled'
+  return 'notIssued'
 }
 
 type PassRecord = {
@@ -423,20 +547,7 @@ type PassRecord = {
   programId: string
   programPersonId: string
   qrPayload: string
-  status: 'issued' | 'checkedIn' | 'revoked'
-}
-
-type CheckIn = {
-  id: string
-  orgId: string
-  programId: string
-  eventId?: string
-  programPersonId: string
-  passId: string
-  audienceRoleId?: string
-  audienceRoleName?: string
-  result: 'approved' | 'duplicate' | 'denied'
-  createdAt?: Timestamp
+  status: 'issued' | 'checkedIn' | 'blocked' | 'revoked'
 }
 
 const permissions = [
@@ -447,34 +558,66 @@ const permissions = [
   'team.write',
   'people.import',
   'passes.issue',
-  'checkin.scan',
-  'analytics.read',
   'exports.create',
+  // 'checkin.scan' and 'analytics.read' are omitted while check-in and analytics
+  // are out of scope. Existing roles that still carry them are harmless: no route
+  // reads them. Re-add here when those features are switched back on.
 ]
 
 const routeLabels: Record<RouteKey, string> = {
   dashboard: 'Dashboard',
   events: 'Events',
+  venues: 'Venues',
+  patrons: 'Patrons',
   programs: 'Programs',
   settings: 'Settings',
   roles: 'Roles',
   team: 'Team',
   people: 'People',
-  checkin: 'Check-in',
-  analytics: 'Analytics',
 }
 
 const navItems = [
   { key: 'dashboard' as const, icon: LayoutDashboard },
   { key: 'events' as const, icon: CalendarDays },
+  { key: 'venues' as const, icon: MapPin },
+  { key: 'patrons' as const, icon: BadgeCheck },
   { key: 'programs' as const, icon: CalendarDays },
   { key: 'settings' as const, icon: Settings },
   { key: 'roles' as const, icon: ShieldCheck },
   { key: 'team' as const, icon: Users },
   { key: 'people' as const, icon: ClipboardList },
-  { key: 'checkin' as const, icon: ScanLine },
-  { key: 'analytics' as const, icon: BarChart3 },
 ]
+
+function hasPermission(role: Role | undefined, permission: string) {
+  const rolePermissions = Array.isArray(role?.permissions) ? role.permissions : []
+  return rolePermissions.includes('*') || rolePermissions.includes(permission)
+}
+
+function canOpenRoute(route: RouteKey, role: Role | undefined, member: TeamMember | null) {
+  if (!member || member.status !== 'active') return false
+  switch (route) {
+    case 'dashboard':
+      return hasPermission(role, 'program.read')
+    case 'events':
+      return hasPermission(role, 'program.read') || hasPermission(role, 'event.write')
+    case 'venues':
+      return (hasPermission(role, 'program.write') || hasPermission(role, 'event.write')) && member.scope !== 'event'
+    case 'patrons':
+      return hasPermission(role, 'program.write') && member.scope !== 'event'
+    case 'programs':
+      return hasPermission(role, 'program.write') && member.scope !== 'event'
+    case 'settings':
+      return (hasPermission(role, 'program.write') && member.scope !== 'event') || (hasPermission(role, 'team.write') && member.scope === 'organization')
+    case 'roles':
+      return hasPermission(role, 'roles.write') && member.scope === 'organization'
+    case 'team':
+      return hasPermission(role, 'team.write') && member.scope === 'organization'
+    case 'people':
+      return hasPermission(role, 'people.import') || hasPermission(role, 'passes.issue')
+    default:
+      return false
+  }
+}
 
 function nowDateInput() {
   return new Date().toISOString().slice(0, 10)
@@ -509,7 +652,7 @@ function readHashRoute(): RouteKey {
 }
 
 function toRows<T extends { id: string }>(snapshotDocs: DocumentData[]) {
-  return snapshotDocs.map((snapshotDoc) => ({ id: snapshotDoc.id, ...snapshotDoc.data() }) as T)
+  return snapshotDocs.map((snapshotDoc) => normalizeFirestoreDateFields({ id: snapshotDoc.id, ...snapshotDoc.data() }) as T)
 }
 
 // Errors Firestore emits while auth is transitioning (sign-out / sign-in) or the
@@ -524,7 +667,7 @@ function isTransientListenerError(error: { code?: string; message?: string }): b
   )
 }
 
-function useCollection<T extends { id: string }>(dataQuery: Query | null) {
+function useCollection<T extends { id: string }>(dataQuery: Query | null, label = 'Data') {
   const [rows, setRows] = useState<T[]>([])
   const [loading, setLoading] = useState(Boolean(dataQuery))
   const [error, setError] = useState('')
@@ -551,7 +694,7 @@ function useCollection<T extends { id: string }>(dataQuery: Query | null) {
         if (!active) return
         setLoading(false)
         if (isTransientListenerError(snapshotError)) return
-        setError(snapshotError.message)
+        setError(`${label}: ${snapshotError.message}`)
       },
     )
 
@@ -559,7 +702,7 @@ function useCollection<T extends { id: string }>(dataQuery: Query | null) {
       active = false
       unsubscribe()
     }
-  }, [dataQuery])
+  }, [dataQuery, label])
 
   return { rows, loading, error }
 }
@@ -571,6 +714,7 @@ function useAuthProfile() {
 
   useEffect(() => {
     let mounted = true
+    let profileUnsubscribe: (() => void) | null = null
     let finished = false
     const fallbackTimer = window.setTimeout(() => {
       if (!finished && mounted) {
@@ -580,7 +724,10 @@ function useAuthProfile() {
 
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       if (!mounted) return
+      profileUnsubscribe?.()
+      profileUnsubscribe = null
       setFirebaseUser(currentUser)
+      setLoading(true)
       if (!currentUser) {
         setProfile(null)
         finished = true
@@ -599,14 +746,30 @@ function useAuthProfile() {
       }
 
       try {
-        const userSnapshot = await getDoc(doc(db, 'peUsers', currentUser.uid))
-        if (mounted) {
-          setProfile(userSnapshot.exists() ? (userSnapshot.data() as PeUser) : null)
-        }
+        profileUnsubscribe = onSnapshot(
+          doc(db, 'peUsers', currentUser.uid),
+          (userSnapshot) => {
+            if (!mounted) return
+            setProfile(userSnapshot.exists() ? (userSnapshot.data() as PeUser) : null)
+            finished = true
+            window.clearTimeout(fallbackTimer)
+            setLoading(false)
+          },
+          (profileError) => {
+            if (!mounted) return
+            // A deleted/stale CRM profile should move the user back to setup instead
+            // of leaving an old in-memory activeOrgId to trigger permission errors.
+            console.warn('Could not load user profile:', profileError)
+            setProfile(null)
+            finished = true
+            window.clearTimeout(fallbackTimer)
+            setLoading(false)
+          },
+        )
       } catch (profileError) {
         // Transient read failures during an auth transition shouldn't crash the app.
         console.warn('Could not load user profile:', profileError)
-      } finally {
+        if (mounted) setProfile(null)
         finished = true
         window.clearTimeout(fallbackTimer)
         if (mounted) setLoading(false)
@@ -616,6 +779,7 @@ function useAuthProfile() {
     return () => {
       mounted = false
       window.clearTimeout(fallbackTimer)
+      profileUnsubscribe?.()
       unsubscribe()
     }
   }, [])
@@ -630,18 +794,26 @@ const claimTeamAccessCallable = httpsCallable<void, { claimedOrgIds: string[] }>
 const createRoleCallable = httpsCallable<{ orgId: string; roleId: string; name: string; category: RoleCategory; description: string; permissions: string[] }, { roleId: string }>(functions, 'createRole')
 const deleteRoleCallable = httpsCallable<{ orgId: string; roleId: string }, { roleId: string }>(functions, 'deleteRole')
 const inviteTeamMemberCallable = httpsCallable<{ orgId: string; email: string; displayName: string; roleId: string; scope: TeamScope; programId?: string; eventId?: string }, { teamMemberId: string }>(functions, 'inviteTeamMember')
-const createProgramCallable = httpsCallable<Omit<Program, 'id' | 'status'>, { programId: string }>(functions, 'createProgram')
+const updateTeamMemberCallable = httpsCallable<{ orgId: string; teamMemberId: string; displayName: string; roleId: string; scope: TeamScope; programId?: string; eventId?: string; status: 'active' | 'invited' | 'disabled' }, { teamMemberId: string }>(functions, 'updateTeamMember')
+const deleteTeamMemberCallable = httpsCallable<{ orgId: string; teamMemberId: string }, { teamMemberId: string }>(functions, 'deleteTeamMember')
+const createProgramCallable = httpsCallable<CreateProgramPayload, { programId: string }>(functions, 'createProgram')
 const updateProgramCallable = httpsCallable<Omit<Program, 'id'> & { programId: string }, { programId: string }>(functions, 'updateProgram')
 const deleteProgramCallable = httpsCallable<{ orgId: string; programId: string }, { programId: string }>(functions, 'deleteProgram')
+const saveProgramVenueCallable = httpsCallable<{ orgId: string; programId: string; venueId?: string; name: string; address: string; directionsNote?: string; latitude?: number; longitude?: number; rooms: Array<{ id?: string; name: string; floor?: string; capacity?: number }> }, { venueId: string }>(functions, 'saveProgramVenue')
+const deleteProgramVenueCallable = httpsCallable<{ orgId: string; programId: string; venueId: string; roomId?: string }, { venueId: string; roomId?: string }>(functions, 'deleteProgramVenue')
+const saveProgramPartnerCallable = httpsCallable<Omit<ProgramPartner, 'id'> & { partnerId?: string }, { partnerId: string }>(functions, 'saveProgramPartner')
+const deleteProgramPartnerCallable = httpsCallable<{ orgId: string; programId: string; partnerId: string }, { partnerId: string }>(functions, 'deleteProgramPartner')
 const createEventCallable = httpsCallable<Omit<ProgramEvent, 'id' | 'status'>, { eventId: string }>(functions, 'createEvent')
 const updateEventCallable = httpsCallable<Partial<Omit<ProgramEvent, 'id'>> & { eventId: string }, { eventId: string }>(functions, 'updateEvent')
 const deleteEventCallable = httpsCallable<{ orgId: string; eventId: string }, { eventId: string }>(functions, 'deleteEvent')
 const createScheduleItemCallable = httpsCallable<Omit<ScheduleItem, 'id'>, { scheduleItemId: string }>(functions, 'createScheduleItem')
 const deleteScheduleItemCallable = httpsCallable<{ orgId: string; scheduleItemId: string }, { scheduleItemId: string }>(functions, 'deleteScheduleItem')
-const createProgramJoinLinkCallable = httpsCallable<{ orgId: string; programId: string; mode: JoinMode; allowedCategory: string; customAllowedCategory?: string; allowedEventIds: string[]; maxUses: number; expiresAt: string; campaignName: string }, { joinLinkId: string; qrPayload: string }>(functions, 'createProgramJoinLink')
 const createProgramPersonAndPassCallable = httpsCallable<ProgramPersonInput, { programPersonId: string; passId: string; qrPayload: string }>(functions, 'createProgramPersonAndPass')
-const createScannerSession = httpsCallable<{ orgId: string; programId: string; eventId?: string; gateName?: string }, { scannerSessionId: string; scannerToken: string }>(functions, 'createScannerSession')
-const scanPassToken = httpsCallable<{ scannerSessionId: string; scannerToken: string; payload: string; deviceScanId: string }, { result: string; passId: string; programPersonId: string }>(functions, 'scanPassToken')
+const issuePassForProgramPersonCallable = httpsCallable<{ orgId: string; programPersonId: string }, { passId: string; qrPayload: string; revokedPassId?: string }>(functions, 'issuePassForProgramPerson')
+const publishProgramPeopleAccessCallable = httpsCallable<{ orgId: string; programId: string; notify?: boolean; forceNotify?: boolean }, { peopleCount: number; linkedCount: number; alreadyLinkedCount: number; pendingCount: number; manualReviewCount: number; notificationSentCount: number; skippedCount?: number }>(functions, 'publishProgramPeopleAccess')
+const blockProgramPersonAccessCallable = httpsCallable<{ orgId: string; programPersonId: string; reason?: string }, { programPersonId: string; status: string; passStatus: string }>(functions, 'blockProgramPersonAccess')
+const removeProgramPersonAccessCallable = httpsCallable<{ orgId: string; programPersonId: string; reason?: string }, { programPersonId: string; status: string; passStatus: string }>(functions, 'removeProgramPersonAccess')
+const unblockProgramPersonAccessCallable = httpsCallable<{ orgId: string; programPersonId: string; reason?: string }, { programPersonId: string; status: string; passStatus: string; passId: string; qrPayload: string; revokedPassId?: string }>(functions, 'unblockProgramPersonAccess')
 
 async function createOrganizationWithOwner(user: User, input: { displayName: string; orgName: string; industry: string; website: string; logoUrl: string }) {
   const response = await createOrganizationCallable({
@@ -669,6 +841,7 @@ function Shell({
   setRoute,
   organization,
   selectedProgram,
+  visibleNavItems,
   onSwitchProgram,
   user,
 }: {
@@ -677,6 +850,7 @@ function Shell({
   setRoute: (route: RouteKey) => void
   organization: Organization | null
   selectedProgram: Program | null
+  visibleNavItems: typeof navItems
   onSwitchProgram: () => void
   user: User
 }) {
@@ -692,7 +866,7 @@ function Shell({
         </div>
 
         <nav className="nav-list" aria-label="Primary navigation">
-          {navItems.map((item) => {
+          {visibleNavItems.map((item) => {
             const Icon = item.icon
             return (
               <button
@@ -1069,6 +1243,8 @@ function RichTextEditor({
   placeholder: string
 }) {
   const editorRef = useRef<HTMLDivElement | null>(null)
+  const [activeMarks, setActiveMarks] = useState({ bold: false, italic: false, underline: false, unordered: false, ordered: false })
+  const [activeBlock, setActiveBlock] = useState('P')
 
   useEffect(() => {
     const editor = editorRef.current
@@ -1077,27 +1253,92 @@ function RichTextEditor({
     if (editor.innerHTML !== nextValue) editor.innerHTML = nextValue
   }, [value])
 
+  useEffect(() => {
+    const refresh = () => refreshToolbarState()
+    document.addEventListener('selectionchange', refresh)
+    return () => document.removeEventListener('selectionchange', refresh)
+  }, [])
+
   function commit() {
-    onChange(sanitizeRichText(editorRef.current?.innerHTML || ''))
+    const editor = editorRef.current
+    if (!editor) return
+    if (!editor.textContent?.trim()) {
+      editor.innerHTML = ''
+      onChange('')
+      refreshToolbarState()
+      return
+    }
+    onChange(sanitizeRichText(editor.innerHTML || ''))
+    refreshToolbarState()
+  }
+
+  function refreshToolbarState() {
+    const editor = editorRef.current
+    const selection = typeof window === 'undefined' ? null : window.getSelection()
+    if (!editor || !selection || selection.rangeCount === 0 || !editor.contains(selection.anchorNode)) return
+    setActiveMarks({
+      bold: document.queryCommandState('bold'),
+      italic: document.queryCommandState('italic'),
+      underline: document.queryCommandState('underline'),
+      unordered: document.queryCommandState('insertUnorderedList'),
+      ordered: document.queryCommandState('insertOrderedList'),
+    })
+    setActiveBlock(String(document.queryCommandValue('formatBlock') || 'P').replace(/[<>]/g, '').toUpperCase())
+  }
+
+  function focusEditor() {
+    editorRef.current?.focus()
   }
 
   function runCommand(command: string, commandValue?: string) {
-    editorRef.current?.focus()
+    focusEditor()
     document.execCommand(command, false, commandValue)
     commit()
   }
 
+  function handlePaste(event: ReactClipboardEvent<HTMLDivElement>) {
+    event.preventDefault()
+    const text = event.clipboardData.getData('text/plain')
+    focusEditor()
+    document.execCommand('insertText', false, text)
+    commit()
+  }
+
+  function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'b') {
+      event.preventDefault()
+      runCommand('bold')
+      return
+    }
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'i') {
+      event.preventDefault()
+      runCommand('italic')
+      return
+    }
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'u') {
+      event.preventDefault()
+      runCommand('underline')
+    }
+  }
+
   return (
-    <label className="rich-text-field">
-      {label}
+    <div className="rich-text-field">
+      <div className="rich-text-label-row">
+        <span>{label}</span>
+        <small>Rich text</small>
+      </div>
       <div className="rich-text-shell">
         <div className="rich-text-toolbar" aria-label={`${label} formatting`}>
-          <button onClick={() => runCommand('bold')} title="Bold" type="button"><strong>B</strong></button>
-          <button onClick={() => runCommand('italic')} title="Italic" type="button"><em>I</em></button>
-          <button onClick={() => runCommand('formatBlock', 'H2')} title="Heading" type="button">H2</button>
-          <button onClick={() => runCommand('formatBlock', 'P')} title="Normal text" type="button">P</button>
-          <button onClick={() => runCommand('insertUnorderedList')} title="Bullet list" type="button">•</button>
-          <button onClick={() => runCommand('insertOrderedList')} title="Numbered list" type="button">1.</button>
+          <button aria-pressed={activeMarks.bold} className={activeMarks.bold ? 'active' : ''} onMouseDown={(event) => event.preventDefault()} onClick={() => runCommand('bold')} title="Bold" type="button"><Bold size={15} /></button>
+          <button aria-pressed={activeMarks.italic} className={activeMarks.italic ? 'active' : ''} onMouseDown={(event) => event.preventDefault()} onClick={() => runCommand('italic')} title="Italic" type="button"><Italic size={15} /></button>
+          <button aria-pressed={activeMarks.underline} className={activeMarks.underline ? 'active' : ''} onMouseDown={(event) => event.preventDefault()} onClick={() => runCommand('underline')} title="Underline" type="button"><Underline size={15} /></button>
+          <span className="toolbar-separator" />
+          <button aria-pressed={activeBlock === 'H2'} className={activeBlock === 'H2' ? 'active' : ''} onMouseDown={(event) => event.preventDefault()} onClick={() => runCommand('formatBlock', 'H2')} title="Large heading" type="button"><Heading2 size={15} /></button>
+          <button aria-pressed={activeBlock === 'H3'} className={activeBlock === 'H3' ? 'active' : ''} onMouseDown={(event) => event.preventDefault()} onClick={() => runCommand('formatBlock', 'H3')} title="Small heading" type="button"><Heading3 size={15} /></button>
+          <button aria-pressed={activeBlock === 'P'} className={activeBlock === 'P' ? 'active' : ''} onMouseDown={(event) => event.preventDefault()} onClick={() => runCommand('formatBlock', 'P')} title="Paragraph" type="button"><Pilcrow size={15} /></button>
+          <span className="toolbar-separator" />
+          <button aria-pressed={activeMarks.unordered} className={activeMarks.unordered ? 'active' : ''} onMouseDown={(event) => event.preventDefault()} onClick={() => runCommand('insertUnorderedList')} title="Bullet list" type="button"><List size={15} /></button>
+          <button aria-pressed={activeMarks.ordered} className={activeMarks.ordered ? 'active' : ''} onMouseDown={(event) => event.preventDefault()} onClick={() => runCommand('insertOrderedList')} title="Numbered list" type="button"><ListOrdered size={15} /></button>
         </div>
         <div
           aria-label={label}
@@ -1105,13 +1346,16 @@ function RichTextEditor({
           contentEditable
           data-placeholder={placeholder}
           onBlur={commit}
+          onFocus={refreshToolbarState}
           onInput={commit}
+          onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           ref={editorRef}
           role="textbox"
           suppressContentEditableWarning
         />
       </div>
-    </label>
+    </div>
   )
 }
 
@@ -1256,6 +1500,7 @@ function MapPicker({
   const mapRef = useRef<L.Map | null>(null)
   const markerRef = useRef<L.Marker | null>(null)
   const [searching, setSearching] = useState(false)
+  const [locating, setLocating] = useState(false)
   const [suggestions, setSuggestions] = useState<LocationSuggestion[]>([])
   const [searchError, setSearchError] = useState('')
 
@@ -1286,6 +1531,20 @@ function MapPicker({
     marker.on('dragend', () => commit(marker.getLatLng()))
     mapRef.current = map
     markerRef.current = marker
+
+    if (!lat && !lng && 'geolocation' in navigator) {
+      setLocating(true)
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const point = L.latLng(position.coords.latitude, position.coords.longitude)
+          commit(point)
+          map.setView(point, 15)
+          setLocating(false)
+        },
+        () => setLocating(false),
+        { enableHighAccuracy: true, maximumAge: 120000, timeout: 8000 },
+      )
+    }
   }, [lat, lng, onPick])
 
   useEffect(() => {
@@ -1376,81 +1635,587 @@ function MapPicker({
       <div className="coordinate-row">
         <span>Lat {lat?.toFixed(5) || '-'}</span>
         <span>Lng {lng?.toFixed(5) || '-'}</span>
+        {locating && <span><Loader2 className="spin" size={12} /> Current location</span>}
       </div>
     </div>
   )
 }
 
-function VenueCombobox({
-  label,
-  value,
-  suggestions,
-  latitude,
-  longitude,
-  onChange,
-  onSelect,
+function VenueLibraryModal({
+  orgId,
+  program,
+  venueCatalog,
+  open,
+  onClose,
+  seedName = '',
 }: {
-  label: string
-  value: string
-  suggestions: VenueSuggestion[]
-  latitude?: number
-  longitude?: number
-  onChange: (value: string) => void
-  onSelect: (venue: VenueSuggestion) => void
+  orgId: string
+  program: Program
+  venueCatalog?: ProgramVenueCatalog | null
+  open: boolean
+  onClose: () => void
+  seedName?: string
 }) {
-  const [open, setOpen] = useState(false)
-  const filteredSuggestions = suggestions.filter((venue) => {
-    const query = value.trim().toLowerCase()
-    if (!query) return true
-    return venue.name.toLowerCase().includes(query) || venue.detail.toLowerCase().includes(query)
-  })
+  const venues = venueCatalog?.venues || []
+  const [editingVenueId, setEditingVenueId] = useState('')
+  const [name, setName] = useState(seedName)
+  const [address, setAddress] = useState(seedName)
+  const [directionsNote, setDirectionsNote] = useState('')
+  const [latitude, setLatitude] = useState<number | undefined>(program.latitude)
+  const [longitude, setLongitude] = useState<number | undefined>(program.longitude)
+  const [rooms, setRooms] = useState<Array<{ id?: string; name: string; floor: string; capacity: string }>>([{ name: '', floor: '', capacity: '' }])
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
 
-  function chooseVenue(venue: VenueSuggestion) {
-    onSelect(venue)
-    setOpen(false)
+  useEffect(() => {
+    if (!open) return
+    setEditingVenueId('')
+    setName(seedName)
+    setAddress(seedName)
+    setDirectionsNote('')
+    setLatitude(program.latitude)
+    setLongitude(program.longitude)
+    setRooms([{ name: '', floor: '', capacity: '' }])
+    setError('')
+  }, [open, program.latitude, program.longitude, seedName])
+
+  function editVenue(venue: ProgramVenue) {
+    setEditingVenueId(venue.id)
+    setName(venue.name)
+    setAddress(venue.address || '')
+    setDirectionsNote(venue.directionsNote || '')
+    setLatitude(venue.latitude)
+    setLongitude(venue.longitude)
+    const editableRooms: VenueRoom[] = venue.rooms?.length ? venue.rooms : []
+    setRooms((editableRooms.length ? editableRooms : [{ id: '', name: '', floor: '', capacity: undefined }]).map((room) => ({
+      id: room.id,
+      name: room.name,
+      floor: room.floor || '',
+      capacity: room.capacity === undefined ? '' : String(room.capacity),
+    })))
+    setError('')
+  }
+
+  function updateRoom(index: number, key: 'name' | 'floor' | 'capacity', value: string) {
+    setRooms((current) => current.map((room, roomIndex) => roomIndex === index ? { ...room, [key]: value } : room))
+  }
+
+  function removeRoom(index: number) {
+    setRooms((current) => current.length === 1 ? [{ name: '', floor: '', capacity: '' }] : current.filter((_, roomIndex) => roomIndex !== index))
+  }
+
+  async function saveVenue(event: FormEvent) {
+    event.preventDefault()
+    setError('')
+    if (!name.trim()) {
+      setError('Venue name is required.')
+      return
+    }
+    setBusy(true)
+    try {
+      await saveProgramVenueCallable({
+        orgId,
+        programId: program.id,
+        venueId: editingVenueId,
+        name: name.trim(),
+        address: address.trim(),
+        directionsNote: directionsNote.trim(),
+        ...(latitude === undefined ? {} : { latitude }),
+        ...(longitude === undefined ? {} : { longitude }),
+        rooms: rooms
+          .filter((room) => room.name.trim())
+          .map((room) => ({
+            ...(room.id ? { id: room.id } : {}),
+            name: room.name.trim(),
+            floor: room.floor.trim(),
+            ...(room.capacity.trim() ? { capacity: Number(room.capacity) } : {}),
+          })),
+      })
+      setEditingVenueId('')
+      setName('')
+      setAddress('')
+      setDirectionsNote('')
+      setRooms([{ name: '', floor: '', capacity: '' }])
+    } catch (venueError) {
+      setError(venueError instanceof Error ? venueError.message : 'Unable to save venue.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function deleteVenue(venue: ProgramVenue) {
+    const confirmed = window.confirm(`Delete saved venue "${venue.name}"? Existing schedule rows will keep their copied venue text.`)
+    if (!confirmed) return
+    setError('')
+    setBusy(true)
+    try {
+      await deleteProgramVenueCallable({ orgId, programId: program.id, venueId: venue.id })
+      if (editingVenueId === venue.id) {
+        setEditingVenueId('')
+        setName('')
+        setAddress('')
+        setDirectionsNote('')
+        setRooms([{ name: '', floor: '', capacity: '' }])
+      }
+    } catch (venueError) {
+      setError(venueError instanceof Error ? venueError.message : 'Unable to delete venue.')
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
-    <div className="venue-combobox">
-      <label>
-        {label}
-        <span className="venue-input-wrap">
-          <input
-            onBlur={() => window.setTimeout(() => setOpen(false), 140)}
-            onChange={(event) => {
-              onChange(event.target.value)
-              setOpen(true)
-            }}
-            onFocus={() => setOpen(true)}
-            placeholder="Type a venue or choose a saved venue"
-            value={value}
-          />
-          <button aria-label="Show saved venues" onClick={() => setOpen((current) => !current)} type="button">
-            <ChevronDown size={16} />
-          </button>
-        </span>
-      </label>
-      {open && (
-        <div className="venue-suggestion-menu">
-          {filteredSuggestions.length === 0 ? (
-            <span className="venue-suggestion empty">No saved venue yet</span>
+    <Modal eyebrow="Venue library" onClose={onClose} open={open} title="Manage saved venues" wide>
+      <div className="venue-library-layout">
+        <section className="venue-library-list">
+          {venues.length === 0 ? (
+            <EmptyState title="No saved venues yet" body="Add campuses, auditoriums, halls, stages, rooms, or booth zones once, then reuse them while building schedules." />
           ) : (
-            filteredSuggestions.map((venue) => (
-              <button className="venue-suggestion" key={venue.id} onMouseDown={(event) => event.preventDefault()} onClick={() => chooseVenue(venue)} type="button">
-                <MapPin size={15} />
-                <span>
+            venues.map((venue) => (
+              <article className={editingVenueId === venue.id ? 'venue-library-card active' : 'venue-library-card'} key={venue.id}>
+                <div>
                   <strong>{venue.name}</strong>
-                  <small>{venue.detail}{venue.latitude !== undefined && venue.longitude !== undefined ? ` - ${venue.latitude.toFixed(5)}, ${venue.longitude.toFixed(5)}` : ''}</small>
-                </span>
-              </button>
+                  <span>{venue.address || 'Address pending'}</span>
+                  <small>{venue.rooms?.length ? venue.rooms.map((room) => room.name).join(', ') : 'No rooms added'}</small>
+                </div>
+                <div className="table-actions">
+                  <button className="icon-button" onClick={() => editVenue(venue)} title="Edit venue" type="button"><Pencil size={16} /></button>
+                  <button className="icon-button danger-icon" disabled={busy} onClick={() => deleteVenue(venue)} title="Delete venue" type="button"><Trash2 size={16} /></button>
+                </div>
+              </article>
             ))
           )}
-        </div>
-      )}
-      <div className="coordinate-row compact">
-        <span>Lat {latitude?.toFixed(5) || '-'}</span>
-        <span>Lng {longitude?.toFixed(5) || '-'}</span>
+        </section>
+
+        <form className="venue-library-form" onSubmit={saveVenue}>
+          <div className="panel-heading compact-heading">
+            <div>
+              <span className="eyebrow">{editingVenueId ? 'Edit saved venue' : 'Add venue'}</span>
+              <h2>{editingVenueId ? 'Update venue details' : 'New venue'}</h2>
+            </div>
+            {editingVenueId && (
+              <button className="secondary-button subtle-button" onClick={() => { setEditingVenueId(''); setName(''); setAddress(''); setDirectionsNote(''); setRooms([{ name: '', floor: '', capacity: '' }]) }} type="button">
+                New
+              </button>
+            )}
+          </div>
+          {error && <p className="form-error">{error}</p>}
+          <div className="form-grid two">
+            <label>
+              Venue name
+              <input placeholder="Main Auditorium, OAT, Convocation Hall" value={name} onChange={(event) => setName(event.target.value)} required />
+            </label>
+            <label>
+              Address / campus
+              <input placeholder="IIT Roorkee, Civil Lines..." value={address} onChange={(event) => setAddress(event.target.value)} />
+            </label>
+          </div>
+          <MapPicker
+            label="Search or pin venue on map"
+            lat={latitude}
+            lng={longitude}
+            onPick={(point) => { setLatitude(point.latitude); setLongitude(point.longitude) }}
+            onVenueChange={(nextVenue) => { setAddress(nextVenue); if (!name.trim()) setName(nextVenue.split(',')[0] || nextVenue) }}
+            venue={address}
+          />
+          <RichTextEditor
+            label="How to reach this venue"
+            onChange={setDirectionsNote}
+            placeholder="Gate instructions, parking, metro, hall route, entry desk notes..."
+            value={directionsNote}
+          />
+          <div className="rooms-editor">
+            <div className="section-mini-head">
+              <span>Rooms, halls, stages</span>
+              <button className="secondary-button subtle-button" onClick={() => setRooms((current) => [...current, { name: '', floor: '', capacity: '' }])} type="button">
+                <Plus size={15} />
+                Add room
+              </button>
+            </div>
+            {rooms.map((room, index) => (
+              <div className="room-row" key={room.id || index}>
+                <input placeholder="Hall A, Stage 2, Poster Zone" value={room.name} onChange={(event) => updateRoom(index, 'name', event.target.value)} />
+                <input placeholder="Floor / block" value={room.floor} onChange={(event) => updateRoom(index, 'floor', event.target.value)} />
+                <input inputMode="numeric" placeholder="Capacity" value={room.capacity} onChange={(event) => updateRoom(index, 'capacity', event.target.value.replace(/\D/g, ''))} />
+                <button className="icon-button danger-icon" onClick={() => removeRoom(index)} title="Remove room row" type="button"><Trash2 size={15} /></button>
+              </div>
+            ))}
+          </div>
+          <button className="primary-button" disabled={busy} type="submit">
+            {busy ? <Loader2 className="spin" size={17} /> : <Save size={17} />}
+            Save venue
+          </button>
+        </form>
       </div>
+    </Modal>
+  )
+}
+
+function cleanVenueRooms(rooms: Array<{ id?: string; name: string; floor?: string; capacity?: string | number }> = []): VenueRoom[] {
+  return rooms
+    .filter((room) => room.name.trim())
+    .map((room) => ({
+      ...(room.id ? { id: room.id } : { id: makeLocalId() }),
+      name: room.name.trim(),
+      floor: String(room.floor || '').trim(),
+      ...(room.capacity === undefined || String(room.capacity).trim() === '' ? {} : { capacity: Number(room.capacity) }),
+    }))
+}
+
+function serializeVenueForFunction(venue: ProgramVenue): ProgramVenueInput {
+  return {
+    ...(venue.id ? { id: venue.id } : {}),
+    name: venue.name.trim(),
+    address: (venue.address || '').trim(),
+    directionsNote: (venue.directionsNote || '').trim(),
+    ...(venue.latitude === undefined ? {} : { latitude: venue.latitude }),
+    ...(venue.longitude === undefined ? {} : { longitude: venue.longitude }),
+    rooms: (venue.rooms || []).map((room) => ({
+      ...(room.id ? { id: room.id } : {}),
+      name: room.name.trim(),
+      floor: (room.floor || '').trim(),
+      ...(room.capacity === undefined ? {} : { capacity: room.capacity }),
+    })),
+  }
+}
+
+function findVenueId(venues: ProgramVenue[], input: { name?: string; latitude?: number; longitude?: number }) {
+  const normalizedName = (input.name || '').trim().toLowerCase()
+  if (!normalizedName) return ''
+  const matchedVenue = venues.find((venue) => {
+    const nameMatches = venue.name.trim().toLowerCase() === normalizedName
+    const latitudeMatches = input.latitude === undefined || venue.latitude === undefined || Math.abs((venue.latitude || 0) - input.latitude) < 0.00001
+    const longitudeMatches = input.longitude === undefined || venue.longitude === undefined || Math.abs((venue.longitude || 0) - input.longitude) < 0.00001
+    return nameMatches && latitudeMatches && longitudeMatches
+  })
+  return matchedVenue?.id || ''
+}
+
+function DraftVenueLibraryModal({
+  open,
+  onClose,
+  venues,
+  onChange,
+  onSaved,
+}: {
+  open: boolean
+  onClose: () => void
+  venues: ProgramVenue[]
+  onChange: (venues: ProgramVenue[]) => void
+  onSaved: (venue: ProgramVenue) => void
+}) {
+  const [editingVenueId, setEditingVenueId] = useState('')
+  const [name, setName] = useState('')
+  const [address, setAddress] = useState('')
+  const [directionsNote, setDirectionsNote] = useState('')
+  const [latitude, setLatitude] = useState<number | undefined>()
+  const [longitude, setLongitude] = useState<number | undefined>()
+  const [rooms, setRooms] = useState<Array<{ id?: string; name: string; floor: string; capacity: string }>>([{ name: '', floor: '', capacity: '' }])
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (!open) return
+    setEditingVenueId('')
+    setName('')
+    setAddress('')
+    setDirectionsNote('')
+    setLatitude(undefined)
+    setLongitude(undefined)
+    setRooms([{ name: '', floor: '', capacity: '' }])
+    setError('')
+  }, [open])
+
+  function editVenue(venue: ProgramVenue) {
+    setEditingVenueId(venue.id)
+    setName(venue.name)
+    setAddress(venue.address || '')
+    setDirectionsNote(venue.directionsNote || '')
+    setLatitude(venue.latitude)
+    setLongitude(venue.longitude)
+    const editableRooms = venue.rooms?.length ? venue.rooms : []
+    setRooms((editableRooms.length ? editableRooms : [{ id: '', name: '', floor: '', capacity: undefined }]).map((room) => ({
+      id: room.id,
+      name: room.name,
+      floor: room.floor || '',
+      capacity: room.capacity === undefined ? '' : String(room.capacity),
+    })))
+    setError('')
+  }
+
+  function resetForm() {
+    setEditingVenueId('')
+    setName('')
+    setAddress('')
+    setDirectionsNote('')
+    setLatitude(undefined)
+    setLongitude(undefined)
+    setRooms([{ name: '', floor: '', capacity: '' }])
+  }
+
+  function updateRoom(index: number, key: 'name' | 'floor' | 'capacity', value: string) {
+    setRooms((current) => current.map((room, roomIndex) => roomIndex === index ? { ...room, [key]: value } : room))
+  }
+
+  function removeRoom(index: number) {
+    setRooms((current) => current.length === 1 ? [{ name: '', floor: '', capacity: '' }] : current.filter((_, roomIndex) => roomIndex !== index))
+  }
+
+  function saveDraftVenue(event: FormEvent) {
+    event.preventDefault()
+    setError('')
+    if (!name.trim()) {
+      setError('Venue name is required.')
+      return
+    }
+    const venueId = editingVenueId || makeLocalId()
+    const nextVenue: ProgramVenue = {
+      id: venueId,
+      name: name.trim(),
+      address: address.trim(),
+      directionsNote: directionsNote.trim(),
+      ...(latitude === undefined ? {} : { latitude }),
+      ...(longitude === undefined ? {} : { longitude }),
+      rooms: cleanVenueRooms(rooms),
+    }
+    const nextVenues = editingVenueId
+      ? venues.map((venue) => venue.id === editingVenueId ? nextVenue : venue)
+      : [...venues, nextVenue]
+    onChange(nextVenues.sort((first, second) => first.name.localeCompare(second.name)))
+    onSaved(nextVenue)
+    resetForm()
+  }
+
+  function deleteDraftVenue(venue: ProgramVenue) {
+    onChange(venues.filter((item) => item.id !== venue.id))
+    if (editingVenueId === venue.id) resetForm()
+  }
+
+  return (
+    <Modal eyebrow="Program venue" onClose={onClose} open={open} title="Add or select venue" wide>
+      <div className="venue-library-layout">
+        <section className="venue-library-list">
+          {venues.length === 0 ? (
+            <EmptyState title="No draft venues yet" body="Add the main campus, auditorium, hotel, hall, or venue zone. The selected venue will be saved with this program." />
+          ) : (
+            venues.map((venue) => (
+              <article className={editingVenueId === venue.id ? 'venue-library-card active' : 'venue-library-card'} key={venue.id}>
+                <div>
+                  <strong>{venue.name}</strong>
+                  <span>{venue.address || 'Address pending'}</span>
+                  <small>{venue.rooms?.length ? venue.rooms.map((room) => room.name).join(', ') : 'No rooms added'}</small>
+                </div>
+                <div className="table-actions">
+                  <button className="icon-button" onClick={() => { onSaved(venue); onClose() }} title="Use this venue" type="button"><Check size={16} /></button>
+                  <button className="icon-button" onClick={() => editVenue(venue)} title="Edit venue" type="button"><Pencil size={16} /></button>
+                  <button className="icon-button danger-icon" onClick={() => deleteDraftVenue(venue)} title="Delete venue" type="button"><Trash2 size={16} /></button>
+                </div>
+              </article>
+            ))
+          )}
+        </section>
+
+        <form className="venue-library-form" onSubmit={saveDraftVenue}>
+          <div className="panel-heading compact-heading">
+            <div>
+              <span className="eyebrow">{editingVenueId ? 'Edit venue' : 'Add venue'}</span>
+              <h2>{editingVenueId ? 'Update draft venue' : 'New program venue'}</h2>
+            </div>
+            {editingVenueId && (
+              <button className="secondary-button subtle-button" onClick={resetForm} type="button">
+                New
+              </button>
+            )}
+          </div>
+          {error && <p className="form-error">{error}</p>}
+          <div className="form-grid two">
+            <label>
+              Venue name
+              <input placeholder="Main Auditorium, Convention Center, Campus" value={name} onChange={(event) => setName(event.target.value)} required />
+            </label>
+            <label>
+              Address / campus
+              <input placeholder="Search below or enter address" value={address} onChange={(event) => setAddress(event.target.value)} />
+            </label>
+          </div>
+          <MapPicker
+            label="Search or pin venue on map"
+            lat={latitude}
+            lng={longitude}
+            onPick={(point) => { setLatitude(point.latitude); setLongitude(point.longitude) }}
+            onVenueChange={(nextVenue) => { setAddress(nextVenue); if (!name.trim()) setName(nextVenue.split(',')[0] || nextVenue) }}
+            venue={address}
+          />
+          <RichTextEditor
+            label="How to reach this venue"
+            onChange={setDirectionsNote}
+            placeholder="Gate instructions, parking, metro, hall route, entry desk notes..."
+            value={directionsNote}
+          />
+          <div className="rooms-editor">
+            <div className="section-mini-head">
+              <span>Optional halls, rooms, stages</span>
+              <button className="secondary-button subtle-button" onClick={() => setRooms((current) => [...current, { name: '', floor: '', capacity: '' }])} type="button">
+                <Plus size={15} />
+                Add room
+              </button>
+            </div>
+            {rooms.map((room, index) => (
+              <div className="room-row" key={room.id || index}>
+                <input placeholder="Hall A, Stage 2, Poster Zone" value={room.name} onChange={(event) => updateRoom(index, 'name', event.target.value)} />
+                <input placeholder="Floor / block" value={room.floor} onChange={(event) => updateRoom(index, 'floor', event.target.value)} />
+                <input inputMode="numeric" placeholder="Capacity" value={room.capacity} onChange={(event) => updateRoom(index, 'capacity', event.target.value.replace(/\D/g, ''))} />
+                <button className="icon-button danger-icon" onClick={() => removeRoom(index)} title="Remove room row" type="button"><Trash2 size={15} /></button>
+              </div>
+            ))}
+          </div>
+          <button className="primary-button" type="submit">
+            <Save size={17} />
+            Save venue
+          </button>
+        </form>
+      </div>
+    </Modal>
+  )
+}
+
+function ProgramVenueSelector({
+  label,
+  helper,
+  venues,
+  value,
+  onChoose,
+  onAddVenue,
+}: {
+  label: string
+  helper: string
+  venues: ProgramVenue[]
+  value: string
+  onChoose: (selection: { venueId: string; venueName: string; address: string; directionsNote?: string; latitude?: number; longitude?: number }) => void
+  onAddVenue: () => void
+}) {
+  function selectVenue(nextValue: string) {
+    if (nextValue === '__add_venue__') {
+      onAddVenue()
+      return
+    }
+    const venue = venues.find((item) => item.id === nextValue)
+    if (!venue) {
+      onChoose({ venueId: '', venueName: '', address: '', directionsNote: '', latitude: undefined, longitude: undefined })
+      return
+    }
+    onChoose({
+      venueId: venue.id,
+      venueName: venue.name,
+      address: venue.address || venue.name,
+      directionsNote: venue.directionsNote || '',
+      latitude: venue.latitude,
+      longitude: venue.longitude,
+    })
+  }
+
+  return (
+    <section className="event-venue-selector">
+      <label>
+        <span>{label}</span>
+        <select value={value} onChange={(event) => selectVenue(event.target.value)}>
+          <option value="">{venues.length ? 'Choose saved venue' : 'Add venue first'}</option>
+          {venues.map((venue) => (
+            <option key={venue.id} value={venue.id}>
+              {venue.name}{venue.address ? ` - ${venue.address}` : ''}
+            </option>
+          ))}
+          <option value="__add_venue__">+ Add venue</option>
+        </select>
+      </label>
+      <p>{helper}</p>
+    </section>
+  )
+}
+
+function ScheduleVenueSelector({
+  venues,
+  row,
+  onChange,
+  onAddVenue,
+}: {
+  venues: ProgramVenue[]
+  row: ScheduleDraftRow
+  onChange: (changes: Partial<ScheduleDraftRow>) => void
+  onAddVenue: () => void
+}) {
+  const selectedVenue = venues.find((venue) => venue.id === row.venueId)
+  const rooms = selectedVenue?.rooms || []
+
+  function chooseVenue(value: string) {
+    if (value === '__add_venue__') {
+      onAddVenue()
+      return
+    }
+    const venue = venues.find((item) => item.id === value)
+    if (!venue) {
+      onChange({
+        venueId: '',
+        venueName: '',
+        roomId: '',
+        roomName: '',
+        latitude: undefined,
+        longitude: undefined,
+      })
+      return
+    }
+    onChange({
+      venueId: venue.id,
+      venueName: venue.name,
+      roomId: '',
+      roomName: '',
+      latitude: venue.latitude,
+      longitude: venue.longitude,
+    })
+  }
+
+  function chooseRoom(value: string) {
+    if (value === '__custom_room__') {
+      onChange({ roomId: '', roomName: '' })
+      return
+    }
+    const room = rooms.find((item) => item.id === value)
+    onChange({
+      roomId: room?.id || '',
+      roomName: room?.name || '',
+    })
+  }
+
+  return (
+    <div className="schedule-venue-selector">
+      <label>
+        <span>Venue</span>
+        <select value={row.venueId || ''} onChange={(event) => chooseVenue(event.target.value)}>
+          <option value="">{venues.length ? 'Choose venue' : 'No venues saved yet'}</option>
+          {venues.map((venue) => (
+            <option key={venue.id} value={venue.id}>
+              {venue.name}{venue.address ? ` - ${venue.address}` : ''}
+            </option>
+          ))}
+          <option value="__add_venue__">+ Add venue</option>
+        </select>
+      </label>
+
+      <label>
+        <span>Hall / room</span>
+        <select disabled={!selectedVenue} value={row.roomId || ''} onChange={(event) => chooseRoom(event.target.value)}>
+          <option value="">{selectedVenue ? 'Choose hall / room' : 'Choose venue first'}</option>
+          {rooms.map((room) => (
+            <option key={room.id} value={room.id}>
+              {room.name}{room.floor ? ` - ${room.floor}` : ''}{room.capacity ? ` (${room.capacity})` : ''}
+            </option>
+          ))}
+          {selectedVenue && <option value="__custom_room__">Custom / not listed</option>}
+        </select>
+      </label>
+
+      {selectedVenue && (!rooms.length || !row.roomId) && (
+        <input placeholder={rooms.length ? 'Custom hall / room' : 'Hall / room name'} value={row.roomName} onChange={(event) => onChange({ roomId: '', roomName: event.target.value })} />
+      )}
     </div>
   )
 }
@@ -1570,11 +2335,13 @@ function ProgramChooserPage({
   events,
   onChoose,
   onCreate,
+  canCreate,
 }: {
   programs: Program[]
   events: ProgramEvent[]
   onChoose: (programId: string) => void
   onCreate: () => void
+  canCreate: boolean
 }) {
   return (
     <main className="main-surface chooser-surface">
@@ -1585,19 +2352,23 @@ function ProgramChooserPage({
             <h1>Select a program to manage</h1>
             <p>Dashboard, event list, people import, check-in, and analytics open inside the selected program.</p>
           </div>
-          <button className="primary-button" onClick={onCreate} type="button">
-            <Plus size={17} />
-            Create program
-          </button>
+          {canCreate && (
+            <button className="primary-button" onClick={onCreate} type="button">
+              <Plus size={17} />
+              Create program
+            </button>
+          )}
         </div>
 
         {programs.length === 0 ? (
           <section className="panel">
-            <EmptyState title="No programs yet" body="Create your first conference, college fest, corporate event, competition, workshop, or standalone event." />
-            <button className="primary-button" onClick={onCreate} type="button">
-              <Plus size={17} />
-              Create first program
-            </button>
+            <EmptyState title="No programs available" body={canCreate ? 'Create your first conference, college fest, corporate event, competition, workshop, or standalone event.' : 'No program has been assigned to this CRM account yet.'} />
+            {canCreate && (
+              <button className="primary-button" onClick={onCreate} type="button">
+                <Plus size={17} />
+                Create first program
+              </button>
+            )}
           </section>
         ) : (
           <div className="program-choice-grid">
@@ -1633,13 +2404,27 @@ function OrganizationChooserPage({
   onChoose: (orgId: string) => void
 }) {
   const [organizations, setOrganizations] = useState<Organization[]>([])
+  const [error, setError] = useState('')
 
   useEffect(() => {
     let mounted = true
     async function loadOrganizations() {
-      const snapshots = await Promise.all(profile.organizationIds.map((orgId) => getDoc(doc(db, 'peOrganizations', orgId))))
+      setError('')
+      const snapshots = await Promise.all(profile.organizationIds.map(async (orgId) => {
+        try {
+          return await getDoc(doc(db, 'peOrganizations', orgId))
+        } catch {
+          return null
+        }
+      }))
       if (!mounted) return
-      setOrganizations(snapshots.filter((snapshot) => snapshot.exists()).map((snapshot) => ({ id: snapshot.id, ...snapshot.data() }) as Organization))
+      const visibleOrganizations = snapshots
+        .filter((snapshot): snapshot is NonNullable<typeof snapshot> => Boolean(snapshot?.exists()))
+        .map((snapshot) => ({ id: snapshot.id, ...snapshot.data() }) as Organization)
+      setOrganizations(visibleOrganizations)
+      if (visibleOrganizations.length < profile.organizationIds.length) {
+        setError('Some saved workspaces are no longer available for this account.')
+      }
     }
     loadOrganizations()
     return () => {
@@ -1671,6 +2456,7 @@ function OrganizationChooserPage({
             </button>
           ))}
         </div>
+        {error && <p className="form-error">{error}</p>}
       </section>
     </main>
   )
@@ -1680,20 +2466,16 @@ function ProgramWorkspaceDashboard({
   program,
   events,
   people,
-  checkIns,
-  joinLinks,
+  venueCatalog,
   setRoute,
 }: {
   program: Program
   events: ProgramEvent[]
   people: ProgramPerson[]
-  checkIns: CheckIn[]
-  joinLinks: ProgramJoinLink[]
+  venueCatalog?: ProgramVenueCatalog | null
   setRoute: (route: RouteKey) => void
 }) {
   const issuedPasses = people.filter((person) => person.passStatus === 'issued' || person.passStatus === 'checkedIn').length
-  const checkedIn = people.filter((person) => person.passStatus === 'checkedIn').length
-  const activeJoinLink = joinLinks.find((link) => link.programId === program.id && link.status === 'active')
 
   return (
     <section className="page-stack">
@@ -1718,7 +2500,6 @@ function ProgramWorkspaceDashboard({
         <Stat icon={CalendarDays} label="Events" value={formatCount(events.length)} detail={program.mode === 'standalone' ? 'Optional sub-events' : 'Inside this program'} />
         <Stat icon={BadgeCheck} label="Passes issued" value={formatCount(issuedPasses)} detail="For selected program" />
         <Stat icon={Users} label="People" value={formatCount(people.length)} detail="Attendees, participants, staff" />
-        <Stat icon={ScanLine} label="Checked in" value={formatCount(checkedIn || checkIns.length)} detail="Live gate signal" />
       </div>
 
       <div className="quick-action-grid">
@@ -1726,7 +2507,7 @@ function ProgramWorkspaceDashboard({
           <Settings size={20} />
           <span>
             <strong>Program profile</strong>
-            <small>Logo, banner, dates, type, QR access</small>
+            <small>Logo, banner, dates, type, entry rules</small>
           </span>
         </button>
         <button className="quick-action" onClick={() => setRoute('people')} type="button">
@@ -1736,18 +2517,11 @@ function ProgramWorkspaceDashboard({
             <small>Upload attendees, participants, staff</small>
           </span>
         </button>
-        <button className="quick-action" onClick={() => setRoute('checkin')} type="button">
-          <ScanLine size={20} />
+        <button className="quick-action" onClick={() => setRoute('venues')} type="button">
+          <MapPin size={20} />
           <span>
-            <strong>Entry gates</strong>
-            <small>One program pass, event access checked at scan</small>
-          </span>
-        </button>
-        <button className="quick-action" onClick={() => setRoute('settings')} type="button">
-          <QrCode size={20} />
-          <span>
-            <strong>Program QR</strong>
-            <small>{activeJoinLink ? 'Ready for Sang Scan-to-Join' : 'Generate join/request QR'}</small>
+            <strong>Venues</strong>
+            <small>{venueCatalog?.venues?.length ? `${venueCatalog.venues.length} saved venues and halls` : 'Save halls, rooms, stages'}</small>
           </span>
         </button>
       </div>
@@ -1784,10 +2558,10 @@ function ProgramWorkspaceDashboard({
         <section className="panel">
           <div className="panel-heading">
             <div>
-              <span className="eyebrow">Gate readiness</span>
+              <span className="eyebrow">Setup readiness</span>
               <h2>Operations snapshot</h2>
             </div>
-            <ScanLine size={20} />
+            <ClipboardList size={20} />
           </div>
           <div className="ops-list">
             <div><Check size={16} /> Program workspace selected</div>
@@ -1801,15 +2575,351 @@ function ProgramWorkspaceDashboard({
   )
 }
 
+function VenuesPage({
+  orgId,
+  program,
+  venueCatalog,
+}: {
+  orgId: string
+  program: Program
+  venueCatalog?: ProgramVenueCatalog | null
+}) {
+  const venues = venueCatalog?.venues || []
+  const roomCount = venues.reduce((total, venue) => total + (venue.rooms?.length || 0), 0)
+  const [venueLibraryOpen, setVenueLibraryOpen] = useState(false)
+
+  return (
+    <section className="page-stack">
+      <section className="venue-page-hero">
+        <div>
+          <span className="eyebrow">Program venue library</span>
+          <h1>{program.name} venues</h1>
+          <p>Save campuses, auditoriums, halls, rooms, stages, zones, and booth areas once. Schedule rows can reuse these saved venues with coordinates and room details.</p>
+        </div>
+        <button className="primary-button" onClick={() => setVenueLibraryOpen(true)} type="button">
+          <Plus size={17} />
+          Add venue
+        </button>
+      </section>
+
+      <div className="stats-grid">
+        <Stat icon={MapPin} label="Saved venues" value={formatCount(venues.length)} detail="Reusable in event schedules" />
+        <Stat icon={Building2} label="Rooms and halls" value={formatCount(roomCount)} detail="Inside saved venues" />
+        <Stat icon={CalendarDays} label="Program" value={program.mode === 'standalone' ? 'Single' : 'Multi'} detail="Venue library is program scoped" />
+        <Stat icon={Check} label="Schedule ready" value={venues.length ? 'Yes' : 'No'} detail={venues.length ? 'Dropdown suggestions active' : 'Add the first venue'} />
+      </div>
+
+      <section className="panel">
+        <div className="panel-heading">
+          <div>
+            <span className="eyebrow">Saved library</span>
+            <h2>Venues, halls, rooms</h2>
+          </div>
+          <button className="secondary-button" onClick={() => setVenueLibraryOpen(true)} type="button">
+            <Pencil size={16} />
+            Manage venues
+          </button>
+        </div>
+
+        {venues.length === 0 ? (
+          <EmptyState title="No saved venues yet" body="Add the first venue with map coordinates, then add halls, rooms, stages, or zones under it." />
+        ) : (
+          <div className="venue-page-grid">
+            {venues.map((venue) => (
+              <article className="venue-page-card" key={venue.id}>
+                <div className="venue-page-card-head">
+                  <span><MapPin size={17} /></span>
+                  <button className="icon-button" onClick={() => setVenueLibraryOpen(true)} title="Edit venue" type="button">
+                    <Pencil size={16} />
+                  </button>
+                </div>
+                <strong>{venue.name}</strong>
+                <p>{venue.address || 'Address not added yet'}</p>
+                <small>
+                  {venue.latitude !== undefined && venue.longitude !== undefined
+                    ? `${venue.latitude.toFixed(5)}, ${venue.longitude.toFixed(5)}`
+                    : 'Coordinates pending'}
+                </small>
+                <div className="venue-card-rooms">
+                  {venue.rooms?.length ? venue.rooms.slice(0, 5).map((room) => (
+                    <span className="chip" key={room.id}>{room.name}{room.floor ? ` - ${room.floor}` : ''}</span>
+                  )) : <span className="chip muted-chip">No rooms added</span>}
+                  {(venue.rooms?.length || 0) > 5 && <span className="chip">+{(venue.rooms?.length || 0) - 5}</span>}
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <VenueLibraryModal
+        orgId={orgId}
+        onClose={() => setVenueLibraryOpen(false)}
+        open={venueLibraryOpen}
+        program={program}
+        venueCatalog={venueCatalog}
+      />
+    </section>
+  )
+}
+
+function PatronsPage({
+  orgId,
+  uid,
+  program,
+  partners,
+}: {
+  orgId: string
+  uid: string
+  program: Program
+  partners: ProgramPartner[]
+}) {
+  const sortedPartners = useMemo(
+    () => [...partners].sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0) || a.name.localeCompare(b.name)),
+    [partners],
+  )
+  const visiblePartners = sortedPartners.filter((partner) => partner.status !== 'hidden')
+  const hiddenPartners = sortedPartners.length - visiblePartners.length
+  const [editingPartner, setEditingPartner] = useState<ProgramPartner | null>(null)
+  const [name, setName] = useState('')
+  const [tier, setTier] = useState('Title Partner')
+  const [category, setCategory] = useState('')
+  const [booth, setBooth] = useState('')
+  const [websiteUrl, setWebsiteUrl] = useState('')
+  const [logoUrl, setLogoUrl] = useState('')
+  const [description, setDescription] = useState('')
+  const [sortOrder, setSortOrder] = useState(0)
+  const [status, setStatus] = useState<'active' | 'hidden'>('active')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  function resetForm() {
+    setEditingPartner(null)
+    setName('')
+    setTier('Title Partner')
+    setCategory('')
+    setBooth('')
+    setWebsiteUrl('')
+    setLogoUrl('')
+    setDescription('')
+    setSortOrder(sortedPartners.length + 1)
+    setStatus('active')
+  }
+
+  useEffect(() => {
+    resetForm()
+  }, [program.id])
+
+  function startEdit(partner: ProgramPartner) {
+    setEditingPartner(partner)
+    setName(partner.name || '')
+    setTier(partner.tier || 'Partner')
+    setCategory(partner.category || '')
+    setBooth(partner.booth || '')
+    setWebsiteUrl(partner.websiteUrl || '')
+    setLogoUrl(partner.logoUrl || '')
+    setDescription(partner.description || '')
+    setSortOrder(Number(partner.sortOrder || 0))
+    setStatus(partner.status === 'hidden' ? 'hidden' : 'active')
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  async function savePartner(event: FormEvent) {
+    event.preventDefault()
+    setError('')
+    setBusy(true)
+    try {
+      await saveProgramPartnerCallable({
+        orgId,
+        programId: program.id,
+        partnerId: editingPartner?.id || '',
+        name: name.trim(),
+        tier: tier.trim() || 'Partner',
+        category: category.trim(),
+        booth: booth.trim(),
+        description: description.trim(),
+        websiteUrl: websiteUrl.trim(),
+        logoUrl: logoUrl.trim(),
+        sortOrder: Number(sortOrder || 0),
+        status,
+      })
+      resetForm()
+    } catch (partnerError) {
+      setError(partnerError instanceof Error ? partnerError.message : 'Unable to save patron.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function removePartner(partner: ProgramPartner) {
+    const confirmed = window.confirm(`Delete "${partner.name}" from ${program.name} patrons?`)
+    if (!confirmed) return
+    setError('')
+    setBusy(true)
+    try {
+      await deleteProgramPartnerCallable({ orgId, programId: program.id, partnerId: partner.id })
+      if (editingPartner?.id === partner.id) resetForm()
+    } catch (partnerError) {
+      setError(partnerError instanceof Error ? partnerError.message : 'Unable to delete patron.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function initialsFor(value: string) {
+    return value
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part.charAt(0).toUpperCase())
+      .join('') || 'P'
+  }
+
+  return (
+    <section className="page-stack">
+      <section className="venue-page-hero patrons-hero">
+        <div>
+          <span className="eyebrow">Patrons and sponsors</span>
+          <h1>{program.name} partners</h1>
+          <p>Manage sponsor logos, tiers, categories, booth locations, websites, and short descriptions shown inside the Sang mobile app.</p>
+        </div>
+        <span className="schedule-count"><BadgeCheck size={16} /> {formatCount(visiblePartners.length)} live</span>
+      </section>
+
+      <div className="stats-grid">
+        <Stat icon={BadgeCheck} label="Visible patrons" value={formatCount(visiblePartners.length)} detail="Shown in mobile app" />
+        <Stat icon={Building2} label="Hidden" value={formatCount(hiddenPartners)} detail="Saved but not visible" />
+        <Stat icon={Ticket} label="Program" value={program.mode === 'standalone' ? 'Single' : 'Multi'} detail="Partners are program scoped" />
+        <Stat icon={Link2} label="Websites" value={formatCount(visiblePartners.filter((partner) => partner.websiteUrl).length)} detail="External links captured" />
+      </div>
+
+      <section className="page-grid">
+        <form className="panel form-panel" onSubmit={savePartner}>
+          <div className="panel-heading">
+            <div>
+              <span className="eyebrow">{editingPartner ? 'Edit patron' : 'Add patron'}</span>
+              <h2>{editingPartner ? editingPartner.name : 'Partner profile'}</h2>
+            </div>
+            <BadgeCheck size={20} />
+          </div>
+          {error && <p className="form-error">{error}</p>}
+          <ImageUploader folder="program-partners" label="Logo" onChange={setLogoUrl} uid={uid} value={logoUrl} />
+          <label>
+            Name
+            <input placeholder="Sang Labs" value={name} onChange={(event) => setName(event.target.value)} required />
+          </label>
+          <div className="form-grid two">
+            <label>
+              Tier
+              <input placeholder="Title Partner, Gold Patron..." value={tier} onChange={(event) => setTier(event.target.value)} />
+            </label>
+            <label>
+              Category
+              <input placeholder="Fintech, hiring, community..." value={category} onChange={(event) => setCategory(event.target.value)} />
+            </label>
+            <label>
+              Booth
+              <input placeholder="A1, Hall 2, booth 18..." value={booth} onChange={(event) => setBooth(event.target.value)} />
+            </label>
+            <label>
+              Sort order
+              <input min={0} type="number" value={sortOrder} onChange={(event) => setSortOrder(Number(event.target.value || 0))} />
+            </label>
+          </div>
+          <label>
+            Website
+            <input placeholder="https://..." value={websiteUrl} onChange={(event) => setWebsiteUrl(event.target.value)} />
+          </label>
+          <label>
+            Visibility
+            <select value={status} onChange={(event) => setStatus(event.target.value as 'active' | 'hidden')}>
+              <option value="active">Visible in Sang app</option>
+              <option value="hidden">Hidden for now</option>
+            </select>
+          </label>
+          <RichTextEditor label="Description" onChange={setDescription} placeholder="Short sponsor or patron introduction for attendees." value={description} />
+          <div className="action-row split-actions">
+            <button className="secondary-button" onClick={resetForm} type="button">
+              <X size={16} />
+              Clear
+            </button>
+            <button className="primary-button" disabled={busy} type="submit">
+              {busy ? <Loader2 className="spin" size={17} /> : <Save size={17} />}
+              {editingPartner ? 'Save patron' : 'Add patron'}
+            </button>
+          </div>
+        </form>
+
+        <section className="panel">
+          <div className="panel-heading">
+            <div>
+              <span className="eyebrow">Mobile directory</span>
+              <h2>Patrons list</h2>
+            </div>
+            <button
+              className="icon-button"
+              disabled={!sortedPartners.length}
+              onClick={() => downloadCsv('sang-program-patrons.csv', sortedPartners.map((partner) => ({
+                name: partner.name,
+                tier: partner.tier || '',
+                category: partner.category || '',
+                booth: partner.booth || '',
+                website: partner.websiteUrl || '',
+                status: partner.status || 'active',
+              })))}
+              title="Download patrons CSV"
+              type="button"
+            >
+              <Download size={18} />
+            </button>
+          </div>
+          {sortedPartners.length === 0 ? (
+            <EmptyState title="No patrons yet" body="Add title partners, sponsors, exhibitors, and community partners here. Active records appear in the Sang mobile Patrons tab." />
+          ) : (
+            <div className="partner-list">
+              {sortedPartners.map((partner) => (
+                <article className="partner-card" key={partner.id}>
+                  <div className="partner-logo">
+                    {partner.logoUrl ? <img alt="" src={partner.logoUrl} /> : <span>{initialsFor(partner.name)}</span>}
+                  </div>
+                  <div className="partner-body">
+                    <div className="partner-topline">
+                      <strong>{partner.name}</strong>
+                      <span className={`status ${partner.status === 'hidden' ? 'draft' : 'active'}`}>{partner.status || 'active'}</span>
+                    </div>
+                    <p>{richTextToPlainText(partner.description) || 'No description yet.'}</p>
+                    <div className="chip-row">
+                      <span className="chip">{partner.tier || 'Partner'}</span>
+                      {partner.category && <span className="chip">{partner.category}</span>}
+                      {partner.booth && <span className="chip">Booth {partner.booth}</span>}
+                      {partner.websiteUrl && <span className="chip">Website</span>}
+                    </div>
+                  </div>
+                  <div className="table-actions">
+                    <button className="icon-button" onClick={() => startEdit(partner)} title="Edit patron" type="button">
+                      <Pencil size={16} />
+                    </button>
+                    <button className="icon-button danger-icon" disabled={busy} onClick={() => removePartner(partner)} title="Delete patron" type="button">
+                      {busy ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />}
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+      </section>
+    </section>
+  )
+}
+
 function DashboardPage({
   programs,
   people,
-  checkIns,
   setRoute,
 }: {
   programs: Program[]
   people: ProgramPerson[]
-  checkIns: CheckIn[]
   setRoute: (route: RouteKey) => void
 }) {
   const livePrograms = programs.filter((program) => program.status === 'live').length
@@ -1822,7 +2932,6 @@ function DashboardPage({
         <Stat icon={CalendarDays} label="Programs" value={formatCount(programs.length)} detail={`${livePrograms} live`} />
         <Stat icon={BadgeCheck} label="Passes issued" value={formatCount(issuedPasses)} detail="Across selected organization" />
         <Stat icon={Users} label="People" value={formatCount(people.length)} detail="Attendees, participants, staff" />
-        <Stat icon={ScanLine} label="Check-ins" value={formatCount(checkIns.length)} detail="Append-only activity records" />
       </div>
 
       <div className="split-grid">
@@ -1857,10 +2966,10 @@ function DashboardPage({
         <section className="panel">
           <div className="panel-heading">
             <div>
-              <span className="eyebrow">Gate readiness</span>
+              <span className="eyebrow">Setup readiness</span>
               <h2>Operations snapshot</h2>
             </div>
-            <ScanLine size={20} />
+            <ClipboardList size={20} />
           </div>
           <div className="ops-list">
             <div><Check size={16} /> Organization workspace ready</div>
@@ -1880,80 +2989,122 @@ function ProgramsPage({
   programs,
   events,
   onChoose,
+  canCreateProgram,
+  canDeleteProgram,
 }: {
   orgId: string
   uid: string
   programs: Program[]
   events: ProgramEvent[]
   onChoose?: (programId: string) => void
+  canCreateProgram: boolean
+  canDeleteProgram: boolean
 }) {
   const [name, setName] = useState('')
+  const [tagline, setTagline] = useState('')
   const [mode, setMode] = useState<ProgramMode>('multiEvent')
   const [programType, setProgramType] = useState('college_fest')
   const [customProgramType, setCustomProgramType] = useState('')
   const [startDate, setStartDate] = useState(nowDateInput())
   const [endDate, setEndDate] = useState(nowDateInput())
-  const [venueName, setVenueName] = useState('')
-  const [city, setCity] = useState('')
+  const [draftVenues, setDraftVenues] = useState<ProgramVenue[]>([])
+  const [selectedVenueId, setSelectedVenueId] = useState('')
   const [logoUrl, setLogoUrl] = useState('')
   const [bannerUrl, setBannerUrl] = useState('')
   const [posterUrl, setPosterUrl] = useState('')
-  const [latitude, setLatitude] = useState<number | undefined>()
-  const [longitude, setLongitude] = useState<number | undefined>()
   const [description, setDescription] = useState('')
   const [competitive, setCompetitive] = useState(false)
   const [resultsEnabled, setResultsEnabled] = useState(false)
-  const [joinQrEnabled, setJoinQrEnabled] = useState(true)
-  const [createOpen, setCreateOpen] = useState(programs.length === 0)
+  const [createOpen, setCreateOpen] = useState(programs.length === 0 && canCreateProgram)
+  const [venueDraftOpen, setVenueDraftOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [deletingProgramId, setDeletingProgramId] = useState('')
   const [error, setError] = useState('')
   const visiblePrograms = programs.filter((program) => program.status !== 'archived')
+  const selectedDraftVenue = draftVenues.find((venue) => venue.id === selectedVenueId) || null
+
+  useEffect(() => {
+    if (!canCreateProgram && createOpen) {
+      setCreateOpen(false)
+    }
+  }, [canCreateProgram, createOpen])
 
   async function createProgram(event: FormEvent) {
     event.preventDefault()
     setError('')
+    if (!canCreateProgram) {
+      setError('You do not have access to create programs.')
+      return
+    }
+    if (!selectedDraftVenue) {
+      setError('Add or choose the program venue before creating the program.')
+      return
+    }
     setBusy(true)
     try {
-      const response = await createProgramCallable({
+      const createPayload: CreateProgramPayload = {
         orgId,
         name: name.trim(),
+        tagline: tagline.trim(),
         mode,
         programType: programType === 'custom' ? customProgramType.trim() || 'custom' : programType,
         startDate,
         endDate,
-        venueName: venueName.trim(),
-        city: city.trim(),
+        venueName: selectedDraftVenue.name.trim(),
+        city: '',
         logoUrl: logoUrl.trim(),
         bannerUrl: bannerUrl.trim(),
         posterUrl: posterUrl.trim(),
-        latitude,
-        longitude,
-        address: venueName.trim(),
+        ...(selectedDraftVenue.latitude === undefined ? {} : { latitude: selectedDraftVenue.latitude }),
+        ...(selectedDraftVenue.longitude === undefined ? {} : { longitude: selectedDraftVenue.longitude }),
+        address: (selectedDraftVenue.address || selectedDraftVenue.name).trim(),
+        directionsNote: (selectedDraftVenue.directionsNote || '').trim(),
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         description: description.trim(),
         entryScope: 'program',
         competitive,
         resultsEnabled: competitive ? resultsEnabled : false,
-        joinQrEnabled,
-      })
+        primaryVenue: serializeVenueForFunction(selectedDraftVenue),
+      }
+      const response = await createProgramCallable(createPayload)
+      const savedVenue = serializeVenueForFunction(selectedDraftVenue)
+      try {
+        await saveProgramVenueCallable({
+          orgId,
+          programId: response.data.programId,
+          venueId: savedVenue.id,
+          name: savedVenue.name,
+          address: savedVenue.address || savedVenue.name,
+          directionsNote: savedVenue.directionsNote || '',
+          ...(savedVenue.latitude === undefined ? {} : { latitude: savedVenue.latitude }),
+          ...(savedVenue.longitude === undefined ? {} : { longitude: savedVenue.longitude }),
+          rooms: (savedVenue.rooms || []).map((room) => ({
+            ...(room.id ? { id: room.id } : {}),
+            name: room.name,
+            floor: room.floor || '',
+            ...(room.capacity === undefined ? {} : { capacity: room.capacity }),
+          })),
+        })
+      } catch (venueError) {
+        setError(`Program created, but venue library could not be saved: ${venueError instanceof Error ? venueError.message : 'Unable to save venue.'}`)
+        onChoose?.(response.data.programId)
+        return
+      }
       setName('')
+      setTagline('')
       setMode('multiEvent')
       setProgramType('college_fest')
       setCustomProgramType('')
       setStartDate(nowDateInput())
       setEndDate(nowDateInput())
-      setVenueName('')
-      setCity('')
+      setDraftVenues([])
+      setSelectedVenueId('')
       setLogoUrl('')
       setBannerUrl('')
       setPosterUrl('')
-      setLatitude(undefined)
-      setLongitude(undefined)
       setDescription('')
       setCompetitive(false)
       setResultsEnabled(false)
-      setJoinQrEnabled(true)
       setCreateOpen(false)
       onChoose?.(response.data.programId)
     } catch (programError) {
@@ -1985,19 +3136,23 @@ function ProgramsPage({
           <h1>Program command center</h1>
           <p>Create conferences, college festivals, corporate events, competitions, or standalone programs. Each program owns its people, passes, events, schedule, QR, and analytics.</p>
         </div>
-        <button className="primary-button" onClick={() => setCreateOpen(true)} type="button">
-          <Plus size={17} />
-          Create program
-        </button>
+        {canCreateProgram && (
+          <button className="primary-button" onClick={() => setCreateOpen(true)} type="button">
+            <Plus size={17} />
+            Create program
+          </button>
+        )}
       </section>
 
       {visiblePrograms.length === 0 ? (
         <section className="panel premium-empty-panel">
-          <EmptyState title="No programs yet" body="Create the first program, upload artwork, set dates and venue, then add events and people from the workspace." />
-          <button className="primary-button" onClick={() => setCreateOpen(true)} type="button">
-            <Plus size={17} />
-            Add first program
-          </button>
+          <EmptyState title="No programs available" body={canCreateProgram ? 'Create the first program, upload artwork, set dates and venue, then add events and people from the workspace.' : 'No program has been assigned to this CRM account yet.'} />
+          {canCreateProgram && (
+            <button className="primary-button" onClick={() => setCreateOpen(true)} type="button">
+              <Plus size={17} />
+              Add first program
+            </button>
+          )}
         </section>
       ) : (
         <div className="program-card-grid">
@@ -2006,7 +3161,7 @@ function ProgramsPage({
               deleting={deletingProgramId === program.id}
               events={events.filter((programEvent) => programEvent.programId === program.id)}
               key={program.id}
-              onDelete={deleteProgramFromList}
+              onDelete={canDeleteProgram ? deleteProgramFromList : undefined}
               onOpen={onChoose}
               program={program}
             />
@@ -2014,12 +3169,16 @@ function ProgramsPage({
         </div>
       )}
 
-      <Modal eyebrow="Program setup" onClose={() => setCreateOpen(false)} open={createOpen} title="Create program" wide>
+      <Modal eyebrow="Program setup" onClose={() => setCreateOpen(false)} open={createOpen && canCreateProgram} title="Create program" wide>
         <form className="modal-form" onSubmit={createProgram}>
           <div className="form-grid two">
             <label>
               Program name
               <input placeholder="Annual Tech Summit 2026" value={name} onChange={(event) => setName(event.target.value)} required />
+            </label>
+            <label>
+              Short subtitle
+              <input maxLength={120} placeholder="One line attendees will see in the Sang app" value={tagline} onChange={(event) => setTagline(event.target.value)} />
             </label>
             <label>
               Program type
@@ -2041,10 +3200,6 @@ function ProgramsPage({
               </select>
             </label>
             <label>
-              City
-              <input placeholder="Delhi" value={city} onChange={(event) => setCity(event.target.value)} />
-            </label>
-            <label>
               Start date
               <input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} required />
             </label>
@@ -2060,22 +3215,18 @@ function ProgramsPage({
             <ImageUploader folder="program-posters" label="Program poster" onChange={setPosterUrl} uid={uid} value={posterUrl} />
           </div>
 
-          <MapPicker
-            label="Primary venue"
-            lat={latitude}
-            lng={longitude}
-            onPick={(point) => { setLatitude(point.latitude); setLongitude(point.longitude) }}
-            onVenueChange={setVenueName}
-            venue={venueName}
+          <ProgramVenueSelector
+            helper="Choose the broad program venue. Halls, rooms, stages, and booths stay optional and can be refined later in the venue library and schedule."
+            label="Program venue"
+            onAddVenue={() => setVenueDraftOpen(true)}
+            onChoose={(selection) => setSelectedVenueId(selection.venueId)}
+            value={selectedVenueId}
+            venues={draftVenues}
           />
 
           <div className="assignment-box">
             <span>Access and results</span>
             <div className="form-grid two">
-              <label className="check-row">
-                <input checked={joinQrEnabled} onChange={(event) => setJoinQrEnabled(event.target.checked)} type="checkbox" />
-                <span>Enable one secure program QR/pass for Sang entry and join flow</span>
-              </label>
               <label className="check-row">
                 <input checked={competitive} onChange={(event) => { setCompetitive(event.target.checked); if (!event.target.checked) setResultsEnabled(false) }} type="checkbox" />
                 <span>This program has competition/results</span>
@@ -2104,6 +3255,16 @@ function ProgramsPage({
           </div>
         </form>
       </Modal>
+      <DraftVenueLibraryModal
+        onChange={setDraftVenues}
+        onClose={() => setVenueDraftOpen(false)}
+        onSaved={(venue) => {
+          setSelectedVenueId(venue.id)
+          setVenueDraftOpen(false)
+        }}
+        open={venueDraftOpen && createOpen}
+        venues={draftVenues}
+      />
     </section>
   )
 }
@@ -2124,7 +3285,7 @@ function ProgramBlock({
   const programTypeLabel = optionLabel(programTypeOptions, program.programType, 'Program')
   const heroImage = program.bannerUrl || program.posterUrl || program.logoUrl
   const visibleEvents = events.slice(0, 3)
-  const aboutPreview = richTextToPlainText(program.description)
+  const aboutPreview = program.tagline || richTextToPlainText(program.description)
 
   return (
     <article className="program-card-premium">
@@ -2176,21 +3337,42 @@ function ProgramBlock({
   )
 }
 
-function EventsPage({ orgId, uid, program, events, scheduleItems, roles }: { orgId: string; uid: string; program: Program; events: ProgramEvent[]; scheduleItems: ScheduleItem[]; roles: Role[] }) {
-  const [selectedEventId, setSelectedEventId] = useState(events[0]?.id || '')
+function EventsPage({
+  orgId,
+  uid,
+  program,
+  events,
+  scheduleItems,
+  roles,
+  venueCatalog,
+}: {
+  orgId: string
+  uid: string
+  program: Program
+  events: ProgramEvent[]
+  scheduleItems: ScheduleItem[]
+  roles: Role[]
+  venueCatalog?: ProgramVenueCatalog | null
+}) {
+  const [selectedEventId, setSelectedEventId] = useState('')
   const selectedEvent = events.find((event) => event.id === selectedEventId) || null
   const audienceRoles = useMemo(() => getAudienceRoles(roles), [roles])
+  const savedVenues = useMemo(() => [...(venueCatalog?.venues || [])].sort((a, b) => a.name.localeCompare(b.name)), [venueCatalog])
   const [eventName, setEventName] = useState('')
   const [eventType, setEventType] = useState('session')
   const [customEventType, setCustomEventType] = useState('')
+  const [eventDescription, setEventDescription] = useState('')
   const [startDateTime, setStartDateTime] = useState('')
   const [endDateTime, setEndDateTime] = useState('')
   const [multiDate, setMultiDate] = useState(false)
-  const [venueName, setVenueName] = useState(program.venueName || '')
+  const [venueName, setVenueName] = useState(savedVenues[0]?.name || '')
+  const [eventVenueId, setEventVenueId] = useState(savedVenues[0]?.id || '')
+  const [eventVenueAddress, setEventVenueAddress] = useState(savedVenues[0]?.address || savedVenues[0]?.name || '')
   const [locationNote, setLocationNote] = useState('')
   const [posterUrl, setPosterUrl] = useState('')
-  const [latitude, setLatitude] = useState<number | undefined>(program.latitude)
-  const [longitude, setLongitude] = useState<number | undefined>(program.longitude)
+  const [latitude, setLatitude] = useState<number | undefined>(savedVenues[0]?.latitude)
+  const [longitude, setLongitude] = useState<number | undefined>(savedVenues[0]?.longitude)
+  const [directionsNote, setDirectionsNote] = useState(savedVenues[0]?.directionsNote || '')
   const [entryScope, setEntryScope] = useState<EntryScope>(program.entryScope === 'both' ? 'both' : 'event')
   const [profiles, setProfiles] = useState<EventProfile[]>([])
   const [allowedAudienceRoleIds, setAllowedAudienceRoleIds] = useState<string[]>(audienceRoles.map((role) => role.id))
@@ -2198,14 +3380,14 @@ function EventsPage({ orgId, uid, program, events, scheduleItems, roles }: { org
   const [resultsEnabled, setResultsEnabled] = useState(Boolean(program.resultsEnabled))
   const [busy, setBusy] = useState(false)
   const [editing, setEditing] = useState(false)
+  const [venueModalOpen, setVenueModalOpen] = useState(false)
   const [error, setError] = useState('')
 
+  const matchEventVenueId = useCallback((name: string, latitude?: number, longitude?: number) => findVenueId(savedVenues, { name, latitude, longitude }), [savedVenues])
+
   useEffect(() => {
-    if (!selectedEventId && events[0]) {
-      setSelectedEventId(events[0].id)
-    }
     if (selectedEventId && !events.some((event) => event.id === selectedEventId)) {
-      setSelectedEventId(events[0]?.id || '')
+      setSelectedEventId('')
       setEditing(false)
     }
   }, [events, selectedEventId])
@@ -2215,20 +3397,33 @@ function EventsPage({ orgId, uid, program, events, scheduleItems, roles }: { org
     setEventName(selectedEvent.name)
     setEventType(selectValueOrCustom(eventTypeOptions, selectedEvent.eventType, 'session'))
     setCustomEventType(isKnownOption(eventTypeOptions, selectedEvent.eventType) ? '' : selectedEvent.eventType || '')
+    setEventDescription(selectedEvent.description || '')
     setStartDateTime(selectedEvent.startDateTime || '')
     setEndDateTime(selectedEvent.endDateTime || '')
     setMultiDate(Boolean(selectedEvent.multiDate))
-    setVenueName(selectedEvent.venueName || program.venueName || '')
+    setVenueName(selectedEvent.venueName || '')
+    setEventVenueId(matchEventVenueId(selectedEvent.venueName || '', selectedEvent.latitude, selectedEvent.longitude))
+    setEventVenueAddress(selectedEvent.address || selectedEvent.venueName || '')
     setLocationNote(selectedEvent.locationNote || '')
+    setDirectionsNote(selectedEvent.directionsNote || '')
     setPosterUrl(selectedEvent.posterUrl || '')
-    setLatitude(selectedEvent.latitude ?? program.latitude)
-    setLongitude(selectedEvent.longitude ?? program.longitude)
+    setLatitude(selectedEvent.latitude)
+    setLongitude(selectedEvent.longitude)
     setEntryScope(selectedEvent.entryScope || (program.entryScope === 'both' ? 'both' : 'event'))
     setProfiles(selectedEvent.profiles || [])
     setAllowedAudienceRoleIds(selectedEvent.allowedAudienceRoleIds?.length ? selectedEvent.allowedAudienceRoleIds.map(slugify) : audienceRoles.map((role) => role.id))
     setCompetitive(Boolean(selectedEvent.competitive ?? program.competitive))
     setResultsEnabled(Boolean(selectedEvent.resultsEnabled))
-  }, [audienceRoles, program.competitive, program.entryScope, program.latitude, program.longitude, program.venueName, selectedEvent])
+  }, [audienceRoles, matchEventVenueId, program.competitive, program.entryScope, selectedEvent])
+
+  function chooseEventVenue(selection: { venueId: string; venueName: string; address: string; directionsNote?: string; latitude?: number; longitude?: number }) {
+    setEventVenueId(selection.venueId)
+    setVenueName(selection.venueName)
+    setEventVenueAddress(selection.address)
+    setDirectionsNote(selection.directionsNote || '')
+    setLatitude(selection.latitude)
+    setLongitude(selection.longitude)
+  }
 
   function selectedAudienceRoleNames(roleIds = allowedAudienceRoleIds) {
     return roleIds.map((roleId) => audienceRoles.find((role) => role.id === roleId)?.name || roleId)
@@ -2245,6 +3440,10 @@ function EventsPage({ orgId, uid, program, events, scheduleItems, roles }: { org
       setError('Select at least one audience role allowed for this event.')
       return
     }
+    if (!eventVenueId || !venueName.trim()) {
+      setError('Choose a saved program venue for this event.')
+      return
+    }
     setBusy(true)
     try {
       const response = await createEventCallable({
@@ -2252,15 +3451,17 @@ function EventsPage({ orgId, uid, program, events, scheduleItems, roles }: { org
         programId: program.id,
         name: eventName.trim(),
         eventType: eventType === 'custom' ? customEventType.trim() || 'custom' : eventType,
+        description: eventDescription.trim(),
         startDateTime,
         endDateTime,
         multiDate,
         venueName: venueName.trim(),
         locationNote: locationNote.trim(),
+        directionsNote: directionsNote.trim(),
         posterUrl: posterUrl.trim(),
         latitude,
         longitude,
-        address: venueName.trim(),
+        address: eventVenueAddress.trim() || venueName.trim(),
         entryScope,
         profiles,
         allowedAudienceRoleIds,
@@ -2285,6 +3486,10 @@ function EventsPage({ orgId, uid, program, events, scheduleItems, roles }: { org
       setError('Select at least one audience role allowed for this event.')
       return
     }
+    if (!eventVenueId || !venueName.trim()) {
+      setError('Choose a saved program venue for this event.')
+      return
+    }
     setBusy(true)
     try {
       await updateEventCallable({
@@ -2293,15 +3498,17 @@ function EventsPage({ orgId, uid, program, events, scheduleItems, roles }: { org
         programId: program.id,
         name: eventName.trim(),
         eventType: eventType === 'custom' ? customEventType.trim() || 'custom' : eventType,
+        description: eventDescription.trim(),
         startDateTime,
         endDateTime,
         multiDate,
         venueName: venueName.trim(),
         locationNote: locationNote.trim(),
+        directionsNote: directionsNote.trim(),
         posterUrl: posterUrl.trim(),
         latitude,
         longitude,
-        address: venueName.trim(),
+        address: eventVenueAddress.trim() || venueName.trim(),
         entryScope,
         profiles,
         allowedAudienceRoleIds,
@@ -2342,14 +3549,19 @@ function EventsPage({ orgId, uid, program, events, scheduleItems, roles }: { org
     setEventName('')
     setEventType('session')
     setCustomEventType('')
+    setEventDescription('')
     setStartDateTime('')
     setEndDateTime('')
     setMultiDate(false)
-    setVenueName(program.venueName || '')
+    const defaultVenue = savedVenues[0]
+    setVenueName(defaultVenue?.name || '')
+    setEventVenueId(defaultVenue?.id || '')
+    setEventVenueAddress(defaultVenue?.address || defaultVenue?.name || '')
     setLocationNote('')
+    setDirectionsNote(defaultVenue?.directionsNote || '')
     setPosterUrl('')
-    setLatitude(program.latitude)
-    setLongitude(program.longitude)
+    setLatitude(defaultVenue?.latitude)
+    setLongitude(defaultVenue?.longitude)
     setEntryScope(program.entryScope === 'both' ? 'both' : 'event')
     setProfiles([])
     setAllowedAudienceRoleIds(audienceRoles.map((role) => role.id))
@@ -2359,6 +3571,185 @@ function EventsPage({ orgId, uid, program, events, scheduleItems, roles }: { org
 
   const formTitle = selectedEvent ? 'Edit event' : 'Create event'
   const submitHandler = selectedEvent ? saveEvent : createEvent
+
+  if (selectedEvent || editing) {
+    return (
+      <section className="page-stack event-full-page">
+        <section className="events-command">
+          <div>
+            <span className="eyebrow">{program.name}</span>
+            <h1>{formTitle}</h1>
+            <p>{selectedEvent && !editing ? 'Event workspace, schedule, speakers, access, and venue planning.' : 'Create or update event details before building the schedule.'}</p>
+          </div>
+          <div className="action-row">
+            <button className="secondary-button" onClick={() => { setSelectedEventId(''); setEditing(false) }} type="button">
+              <ChevronRight className="flip-icon" size={16} />
+              Back to events
+            </button>
+            {selectedEvent && !editing && (
+              <button className="secondary-button" onClick={() => setEditing(true)} type="button">
+                <Pencil size={16} />
+                Edit
+              </button>
+            )}
+            {selectedEvent && (
+              <button className="danger-button" disabled={busy} onClick={deleteSelectedEvent} type="button">
+                <Trash2 size={16} />
+                Delete
+              </button>
+            )}
+          </div>
+        </section>
+
+        <section className="panel event-detail-panel full-event-panel">
+          {error && <p className="form-error">{error}</p>}
+          {selectedEvent && !editing ? (
+            <>
+              <div className="event-read-view">
+                {selectedEvent.posterUrl ? <img alt="" src={selectedEvent.posterUrl} /> : <div className="event-card-fallback"><CalendarDays size={22} /></div>}
+                <div>
+                  <span className={`status ${selectedEvent.status}`}>{selectedEvent.status}</span>
+                  <h1>{selectedEvent.name}</h1>
+                  <p>{selectedEvent.locationNote || 'No location note added yet.'}</p>
+                  <span><CalendarDays size={14} /> {selectedEvent.startDateTime || 'Start pending'} to {selectedEvent.endDateTime || 'End pending'}</span>
+                  <span><MapPin size={14} /> {selectedEvent.venueName || program.venueName || 'Venue pending'}</span>
+                  <span><Ticket size={14} /> Uses the program pass; event access is checked during scan</span>
+                  <span><BadgeCheck size={14} /> Results: {selectedEvent.resultsEnabled ? 'enabled' : 'not enabled'}</span>
+                  {selectedEvent.latitude && selectedEvent.longitude && <small>{selectedEvent.latitude.toFixed(5)}, {selectedEvent.longitude.toFixed(5)}</small>}
+                </div>
+              </div>
+              <div className="assignment-box">
+                <span>Allowed audience roles</span>
+                <div className="chip-row">
+                  {(selectedEvent.allowedAudienceRoleNames?.length ? selectedEvent.allowedAudienceRoleNames : selectedAudienceRoleNames(selectedEvent.allowedAudienceRoleIds || [])).map((roleName) => (
+                    <span className="chip" key={roleName}>{roleName}</span>
+                  ))}
+                  {!Array.isArray(selectedEvent.allowedAudienceRoleIds) && <span className="chip">All audience roles</span>}
+                  {Array.isArray(selectedEvent.allowedAudienceRoleIds) && selectedEvent.allowedAudienceRoleIds.length === 0 && <span className="chip">No roles allowed</span>}
+                </div>
+              </div>
+              {selectedEvent.profiles && selectedEvent.profiles.length > 0 && (
+                <div className="profile-list read-profiles">
+                  {selectedEvent.profiles.map((profile) => (
+                    <article className="profile-chip-card" key={profile.id || profile.name}>
+                      {profile.photoUrl ? <img alt="" src={profile.photoUrl} /> : <div><UserRound size={18} /></div>}
+                      <span>
+                        <strong>{profile.name}</strong>
+                        <small>{profile.role}{profile.organization ? ` - ${profile.organization}` : ''}</small>
+                      </span>
+                    </article>
+                  ))}
+                </div>
+              )}
+              <ScheduleManager
+                event={selectedEvent}
+                orgId={orgId}
+                program={program}
+                scheduleItems={scheduleItems.filter((item) => item.eventId === selectedEvent.id)}
+                venueCatalog={venueCatalog}
+              />
+            </>
+          ) : (
+            <>
+              <form className="event-editor-form" onSubmit={submitHandler}>
+                <div className="form-grid two">
+                  <label>
+                    Event name
+                    <input placeholder="Opening keynote" value={eventName} onChange={(event) => setEventName(event.target.value)} required />
+                  </label>
+                  <label>
+                    Event type
+                    <select value={eventType} onChange={(event) => setEventType(event.target.value)}>
+                      {eventTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                  </label>
+                  {eventType === 'custom' && (
+                    <label>
+                      Custom event type
+                      <input placeholder="Panel, audition, showcase..." value={customEventType} onChange={(event) => setCustomEventType(event.target.value)} />
+                    </label>
+                  )}
+                  <label>
+                    Starts
+                    <input aria-label="Start date time" type="datetime-local" value={startDateTime} onChange={(event) => setStartDateTime(event.target.value)} />
+                  </label>
+                  <label>
+                    Ends
+                    <input aria-label="End date time" type="datetime-local" value={endDateTime} onChange={(event) => setEndDateTime(event.target.value)} />
+                  </label>
+                </div>
+                <ProgramVenueSelector
+                  helper="Only venues saved in this program's venue library are shown here. Add halls or exact rooms later inside Schedule."
+                  label="Event venue"
+                  onAddVenue={() => setVenueModalOpen(true)}
+                  onChoose={chooseEventVenue}
+                  value={eventVenueId}
+                  venues={savedVenues}
+                />
+                <RichTextEditor label="About this event/session" onChange={setEventDescription} placeholder="Write session details, audience notes, bullets, or entry guidance for this specific event." value={eventDescription} />
+                <RichTextEditor label="How to reach this event" onChange={setDirectionsNote} placeholder="Gate, parking, metro, hall route, entry desk, or room-specific directions." value={directionsNote} />
+                <div className="assignment-box">
+                  <span>Access, dates, and results</span>
+                  <div className="form-grid two">
+                    <div className="info-callout">
+                      <Ticket size={17} />
+                      <span>People scan the same program pass. Assign event access from People before opening an event gate.</span>
+                    </div>
+                    <label className="check-row">
+                      <input checked={multiDate} onChange={(event) => setMultiDate(event.target.checked)} type="checkbox" />
+                      <span>This event has multiple dates/times. Add exact blocks in Schedule after saving.</span>
+                    </label>
+                  </div>
+                  <div className="role-access-grid">
+                    {audienceRoles.map((role) => (
+                      <label className="check-row" key={role.id}>
+                        <input
+                          checked={allowedAudienceRoleIds.includes(role.id)}
+                          onChange={(changeEvent) => toggleAllowedRole(role.id, changeEvent.target.checked)}
+                          type="checkbox"
+                        />
+                        <span>{role.name}</span>
+                      </label>
+                    ))}
+                  </div>
+                  {program.competitive && (
+                    <div className="form-grid two">
+                      <label className="check-row">
+                        <input checked={competitive} onChange={(event) => { setCompetitive(event.target.checked); if (!event.target.checked) setResultsEnabled(false) }} type="checkbox" />
+                        <span>This event has judging/competition flow</span>
+                      </label>
+                      <label className="check-row">
+                        <input checked={resultsEnabled} disabled={!competitive} onChange={(event) => setResultsEnabled(event.target.checked)} type="checkbox" />
+                        <span>Results will be published for this event</span>
+                      </label>
+                    </div>
+                  )}
+                </div>
+                <ImageUploader folder="event-posters" label="Event poster" onChange={setPosterUrl} uid={uid} value={posterUrl} />
+                <EventProfilesEditor onChange={setProfiles} profiles={profiles} uid={uid} />
+                <div className="action-row">
+                  <button className="secondary-button" onClick={() => selectedEvent ? setEditing(false) : setEditing(false)} type="button">
+                    Cancel
+                  </button>
+                  <button className="primary-button" disabled={busy} type="submit">
+                    {busy ? <Loader2 className="spin" size={17} /> : <Check size={17} />}
+                    {selectedEvent ? 'Save event' : 'Create event'}
+                  </button>
+                </div>
+              </form>
+              <VenueLibraryModal
+                orgId={orgId}
+                onClose={() => setVenueModalOpen(false)}
+                open={venueModalOpen}
+                program={program}
+                venueCatalog={venueCatalog}
+              />
+            </>
+          )}
+        </section>
+      </section>
+    )
+  }
 
   return (
     <section className="page-stack">
@@ -2396,239 +3787,116 @@ function EventsPage({ orgId, uid, program, events, scheduleItems, roles }: { org
               </button>
             ))}
           </div>
-
-          {(selectedEvent || editing) && (
-            <section className="panel event-detail-panel">
-              <div className="panel-heading">
-                <div>
-                  <span className="eyebrow">{selectedEvent ? 'Event detail' : 'New event'}</span>
-                  <h2>{formTitle}</h2>
-                </div>
-                <div className="action-row">
-                  {selectedEvent && !editing && (
-                    <button className="secondary-button" onClick={() => setEditing(true)} type="button">
-                      <Pencil size={16} />
-                      Edit
-                    </button>
-                  )}
-                  {selectedEvent && (
-                    <button className="danger-button" disabled={busy} onClick={deleteSelectedEvent} type="button">
-                      <Trash2 size={16} />
-                      Delete
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {error && <p className="form-error">{error}</p>}
-              {selectedEvent && !editing ? (
-                <>
-                <div className="event-read-view">
-                  {selectedEvent.posterUrl ? <img alt="" src={selectedEvent.posterUrl} /> : <div className="event-card-fallback"><CalendarDays size={22} /></div>}
-                  <div>
-                    <span className={`status ${selectedEvent.status}`}>{selectedEvent.status}</span>
-                    <h1>{selectedEvent.name}</h1>
-                    <p>{selectedEvent.locationNote || 'No location note added yet.'}</p>
-                    <span><CalendarDays size={14} /> {selectedEvent.startDateTime || 'Start pending'} to {selectedEvent.endDateTime || 'End pending'}</span>
-                    <span><MapPin size={14} /> {selectedEvent.venueName || program.venueName || 'Venue pending'}</span>
-                    <span><Ticket size={14} /> Uses the program pass; event access is checked during scan</span>
-                    <span><BadgeCheck size={14} /> Results: {selectedEvent.resultsEnabled ? 'enabled' : 'not enabled'}</span>
-                    {selectedEvent.latitude && selectedEvent.longitude && <small>{selectedEvent.latitude.toFixed(5)}, {selectedEvent.longitude.toFixed(5)}</small>}
-                  </div>
-                </div>
-                <div className="assignment-box">
-                  <span>Allowed audience roles</span>
-                  <div className="chip-row">
-                    {(selectedEvent.allowedAudienceRoleNames?.length ? selectedEvent.allowedAudienceRoleNames : selectedAudienceRoleNames(selectedEvent.allowedAudienceRoleIds || [])).map((roleName) => (
-                      <span className="chip" key={roleName}>{roleName}</span>
-                    ))}
-                    {!selectedEvent.allowedAudienceRoleIds?.length && <span className="chip">All audience roles</span>}
-                  </div>
-                </div>
-                {selectedEvent.profiles && selectedEvent.profiles.length > 0 && (
-                  <div className="profile-list read-profiles">
-                    {selectedEvent.profiles.map((profile) => (
-                      <article className="profile-chip-card" key={profile.id || profile.name}>
-                        {profile.photoUrl ? <img alt="" src={profile.photoUrl} /> : <div><UserRound size={18} /></div>}
-                        <span>
-                          <strong>{profile.name}</strong>
-                          <small>{profile.role}{profile.organization ? ` - ${profile.organization}` : ''}</small>
-                        </span>
-                      </article>
-                    ))}
-                  </div>
-                )}
-                </>
-              ) : (
-                <form className="event-editor-form" onSubmit={submitHandler}>
-                  <div className="form-grid two">
-                    <label>
-                      Event name
-                      <input placeholder="Opening keynote" value={eventName} onChange={(event) => setEventName(event.target.value)} required />
-                    </label>
-                    <label>
-                      Event type
-                      <select value={eventType} onChange={(event) => setEventType(event.target.value)}>
-                        {eventTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-                      </select>
-                    </label>
-                    {eventType === 'custom' && (
-                      <label>
-                        Custom event type
-                        <input placeholder="Panel, audition, showcase..." value={customEventType} onChange={(event) => setCustomEventType(event.target.value)} />
-                      </label>
-                    )}
-                    <label>
-                      Location note
-                      <input placeholder="Hall A, first floor, gate 2" value={locationNote} onChange={(event) => setLocationNote(event.target.value)} />
-                    </label>
-                    <label>
-                      Starts
-                      <input aria-label="Start date time" type="datetime-local" value={startDateTime} onChange={(event) => setStartDateTime(event.target.value)} />
-                    </label>
-                    <label>
-                      Ends
-                      <input aria-label="End date time" type="datetime-local" value={endDateTime} onChange={(event) => setEndDateTime(event.target.value)} />
-                    </label>
-                  </div>
-                  <div className="assignment-box">
-                    <span>Access, dates, and results</span>
-                    <div className="form-grid two">
-                      <div className="info-callout">
-                        <Ticket size={17} />
-                        <span>People scan the same program pass. Assign event access from People before opening an event gate.</span>
-                      </div>
-                      <label className="check-row">
-                        <input checked={multiDate} onChange={(event) => setMultiDate(event.target.checked)} type="checkbox" />
-                        <span>This event has multiple dates/times. Add exact blocks in Schedule below.</span>
-                      </label>
-                    </div>
-                    <div className="role-access-grid">
-                      {audienceRoles.map((role) => (
-                        <label className="check-row" key={role.id}>
-                          <input
-                            checked={allowedAudienceRoleIds.includes(role.id)}
-                            onChange={(changeEvent) => toggleAllowedRole(role.id, changeEvent.target.checked)}
-                            type="checkbox"
-                          />
-                          <span>{role.name}</span>
-                        </label>
-                      ))}
-                    </div>
-                    {program.competitive && (
-                      <div className="form-grid two">
-                        <label className="check-row">
-                          <input checked={competitive} onChange={(event) => { setCompetitive(event.target.checked); if (!event.target.checked) setResultsEnabled(false) }} type="checkbox" />
-                          <span>This event has judging/competition flow</span>
-                        </label>
-                        <label className="check-row">
-                          <input checked={resultsEnabled} disabled={!competitive} onChange={(event) => setResultsEnabled(event.target.checked)} type="checkbox" />
-                          <span>Results will be published for this event</span>
-                        </label>
-                      </div>
-                    )}
-                  </div>
-                  <ImageUploader folder="event-posters" label="Event poster" onChange={setPosterUrl} uid={uid} value={posterUrl} />
-                  <MapPicker
-                    label="Event location"
-                    lat={latitude}
-                    lng={longitude}
-                    onPick={(point) => { setLatitude(point.latitude); setLongitude(point.longitude) }}
-                    onVenueChange={setVenueName}
-                    venue={venueName}
-                  />
-                  <EventProfilesEditor onChange={setProfiles} profiles={profiles} uid={uid} />
-                  <div className="action-row">
-                    <button className="primary-button" disabled={busy} type="submit">
-                      {busy ? <Loader2 className="spin" size={17} /> : <Check size={17} />}
-                      {selectedEvent ? 'Save event' : 'Create event'}
-                    </button>
-                    {selectedEvent && (
-                      <button className="secondary-button" onClick={() => setEditing(false)} type="button">
-                        Cancel
-                      </button>
-                    )}
-                  </div>
-                </form>
-              )}
-              {selectedEvent && !editing && (
-                <ScheduleManager
-                  event={selectedEvent}
-                  orgId={orgId}
-                  program={program}
-                  scheduleItems={scheduleItems.filter((item) => item.eventId === selectedEvent.id)}
-                />
-              )}
-            </section>
-          )}
         </section>
       )}
     </section>
   )
 }
 
-function ScheduleManager({ orgId, program, event, scheduleItems }: { orgId: string; program: Program; event: ProgramEvent; scheduleItems: ScheduleItem[] }) {
-  const [title, setTitle] = useState('')
-  const [type, setType] = useState<ScheduleType>('session')
-  const [customTypeLabel, setCustomTypeLabel] = useState('')
-  const [startsAt, setStartsAt] = useState('')
-  const [endsAt, setEndsAt] = useState('')
-  const [venueName, setVenueName] = useState(event.venueName || program.venueName || '')
-  const [latitude, setLatitude] = useState<number | undefined>(event.latitude ?? program.latitude)
-  const [longitude, setLongitude] = useState<number | undefined>(event.longitude ?? program.longitude)
-  const [roomName, setRoomName] = useState('')
-  const [visibility, setVisibility] = useState<ScheduleVisibility>('public')
-  const [status, setStatus] = useState<ScheduleStatus>('scheduled')
-  const [description, setDescription] = useState('')
+function ScheduleManager({
+  orgId,
+  program,
+  event,
+  scheduleItems,
+  venueCatalog,
+}: {
+  orgId: string
+  program: Program
+  event: ProgramEvent
+  scheduleItems: ScheduleItem[]
+  venueCatalog?: ProgramVenueCatalog | null
+}) {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [venueModalOpen, setVenueModalOpen] = useState(false)
+  const [venueModalSeed, setVenueModalSeed] = useState('')
   const sortedItems = [...scheduleItems].sort((a, b) => (a.startsAt || '').localeCompare(b.startsAt || ''))
-  const venueSuggestions = useMemo(() => collectVenueSuggestions(program, event, sortedItems), [program, event, sortedItems])
+  const savedVenues = useMemo(() => [...(venueCatalog?.venues || [])].sort((a, b) => a.name.localeCompare(b.name)), [venueCatalog])
+
+  const createDraftRow = useCallback((): ScheduleDraftRow => {
+    return {
+      id: makeLocalId(),
+      title: '',
+      type: 'session',
+      customTypeLabel: '',
+      startsAt: '',
+      endsAt: '',
+      venueId: '',
+      venueName: '',
+      roomId: '',
+      roomName: '',
+      latitude: undefined,
+      longitude: undefined,
+      visibility: 'public',
+      status: 'scheduled',
+      description: '',
+    }
+  }, [])
+
+  const [rows, setRows] = useState<ScheduleDraftRow[]>(() => [createDraftRow()])
 
   useEffect(() => {
-    setVenueName(event.venueName || program.venueName || '')
-    setLatitude(event.latitude ?? program.latitude)
-    setLongitude(event.longitude ?? program.longitude)
-  }, [event.id, event.latitude, event.longitude, event.venueName, program.latitude, program.longitude, program.venueName])
+    setRows([createDraftRow()])
+  }, [createDraftRow, event.id])
 
-  function selectVenue(venue: VenueSuggestion) {
-    setVenueName(venue.name)
-    setLatitude(venue.latitude)
-    setLongitude(venue.longitude)
+  function updateRow(rowId: string, changes: Partial<ScheduleDraftRow>) {
+    setRows((current) => current.map((row) => row.id === rowId ? { ...row, ...changes } : row))
   }
 
-  async function addScheduleItem(eventSubmit: FormEvent) {
+  function openVenueModal(seedName = '') {
+    setVenueModalSeed(seedName)
+    setVenueModalOpen(true)
+  }
+
+  function addRow() {
+    setRows((current) => [...current, createDraftRow()])
+  }
+
+  function removeRow(rowId: string) {
+    setRows((current) => current.length === 1 ? [createDraftRow()] : current.filter((row) => row.id !== rowId))
+  }
+
+  async function addScheduleItems(eventSubmit: FormEvent) {
     eventSubmit.preventDefault()
     setError('')
+    const dirtyRows = rows.filter((row) => row.title.trim() || row.startsAt || row.endsAt || row.description.trim() || row.roomName.trim())
+    if (dirtyRows.length === 0) {
+      setError('Add at least one schedule row.')
+      return
+    }
+    const incompleteRow = dirtyRows.find((row) => !row.title.trim() || !row.startsAt)
+    if (incompleteRow) {
+      setError('Every schedule row needs a title and start time.')
+      return
+    }
     setBusy(true)
     try {
-      await createScheduleItemCallable({
-        orgId,
-        programId: program.id,
-        eventId: event.id,
-        title: title.trim(),
-        type,
-        customTypeLabel: type === 'custom' ? customTypeLabel.trim() : '',
-        description: description.trim(),
-        startsAt,
-        endsAt,
-        timezone: program.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
-        venueName: venueName.trim(),
-        roomName: roomName.trim(),
-        latitude,
-        longitude,
-        visibility,
-        status,
-        sortOrder: sortedItems.length + 1,
-      })
-      setTitle('')
-      setCustomTypeLabel('')
-      setStartsAt('')
-      setEndsAt('')
-      setRoomName('')
-      setDescription('')
+      for (const [index, row] of dirtyRows.entries()) {
+        await createScheduleItemCallable({
+          orgId,
+          programId: program.id,
+          eventId: event.id,
+          title: row.title.trim(),
+          type: row.type,
+          customTypeLabel: row.type === 'custom' ? row.customTypeLabel.trim() : '',
+          description: row.description.trim(),
+          startsAt: row.startsAt,
+          endsAt: row.endsAt,
+          timezone: program.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
+          venueId: row.venueId,
+          venueName: row.venueName.trim(),
+          roomId: row.roomId,
+          roomName: row.roomName.trim(),
+          latitude: row.latitude,
+          longitude: row.longitude,
+          visibility: row.visibility,
+          status: row.status,
+          sortOrder: sortedItems.length + index + 1,
+        })
+      }
+      setRows([createDraftRow()])
     } catch (scheduleError) {
-      setError(scheduleError instanceof Error ? scheduleError.message : 'Unable to add schedule item.')
+      setError(scheduleError instanceof Error ? scheduleError.message : 'Unable to add schedule rows.')
     } finally {
       setBusy(false)
     }
@@ -2651,85 +3919,79 @@ function ScheduleManager({ orgId, program, event, scheduleItems }: { orgId: stri
         <span className="schedule-count"><Clock size={16} /> {sortedItems.length}</span>
       </div>
 
-      <form className="schedule-form schedule-form-card" onSubmit={addScheduleItem}>
+      <form className="schedule-form schedule-form-card" onSubmit={addScheduleItems}>
         {error && <p className="form-error">{error}</p>}
-        <div className="schedule-form-grid">
-          <div className="schedule-main-fields">
-            <label>
-              Schedule title
-              <input placeholder="Round 1, Poster Session, Tea Break" value={title} onChange={(eventChange) => setTitle(eventChange.target.value)} required />
-            </label>
-            <div className="form-grid two">
+        <div className="schedule-bulk-head">
+          <span>Title</span>
+          <span>Type</span>
+          <span>Start</span>
+          <span>End</span>
+          <span>Visibility</span>
+          <span>Venue / hall</span>
+          <span>Note</span>
+          <span />
+        </div>
+        <div className="schedule-bulk-list">
+          {rows.map((row, index) => (
+            <div className="schedule-bulk-row" key={row.id}>
               <label>
-                Type
-                <select value={type} onChange={(eventChange) => setType(eventChange.target.value as ScheduleType)}>
+                <span>Schedule title</span>
+                <input placeholder={`Schedule ${index + 1}`} value={row.title} onChange={(eventChange) => updateRow(row.id, { title: eventChange.target.value })} />
+              </label>
+              <label>
+                <span>Type</span>
+                <select value={row.type} onChange={(eventChange) => updateRow(row.id, { type: eventChange.target.value as ScheduleType })}>
                   {scheduleTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                 </select>
               </label>
-              {type === 'custom' && (
-                <label>
-                  Custom schedule type
-                  <input placeholder="Poster viewing, networking, rehearsal..." value={customTypeLabel} onChange={(eventChange) => setCustomTypeLabel(eventChange.target.value)} />
+              <label>
+                <span>Starts</span>
+                <input type="datetime-local" value={row.startsAt} onChange={(eventChange) => updateRow(row.id, { startsAt: eventChange.target.value })} />
+              </label>
+              <label>
+                <span>Ends</span>
+                <input type="datetime-local" value={row.endsAt} onChange={(eventChange) => updateRow(row.id, { endsAt: eventChange.target.value })} />
+              </label>
+              <label>
+                <span>Visibility</span>
+                <select value={row.visibility} onChange={(eventChange) => updateRow(row.id, { visibility: eventChange.target.value as ScheduleVisibility })}>
+                  <option value="public">Public</option>
+                  <option value="participantsOnly">Participants</option>
+                  <option value="staffOnly">Staff only</option>
+                </select>
+              </label>
+              <ScheduleVenueSelector
+                onAddVenue={() => openVenueModal()}
+                onChange={(changes) => updateRow(row.id, changes)}
+                row={row}
+                venues={savedVenues}
+              />
+              <label>
+                <span>Note</span>
+                <input placeholder="Brief note" value={row.description} onChange={(eventChange) => updateRow(row.id, { description: eventChange.target.value })} />
+              </label>
+              <button className="icon-button danger-icon" onClick={() => removeRow(row.id)} title="Remove row" type="button">
+                <Trash2 size={16} />
+              </button>
+              {row.type === 'custom' && (
+                <label className="schedule-custom-type">
+                  <span>Custom type</span>
+                  <input placeholder="Poster viewing, rehearsal..." value={row.customTypeLabel} onChange={(eventChange) => updateRow(row.id, { customTypeLabel: eventChange.target.value })} />
                 </label>
               )}
-              <label>
-                Starts
-                <input type="datetime-local" value={startsAt} onChange={(eventChange) => setStartsAt(eventChange.target.value)} required />
-              </label>
-              <label>
-                Ends
-                <input type="datetime-local" value={endsAt} onChange={(eventChange) => setEndsAt(eventChange.target.value)} />
-              </label>
             </div>
-          </div>
-          <div className="schedule-side-fields">
-            <VenueCombobox
-              label="Venue"
-              latitude={latitude}
-              longitude={longitude}
-              onChange={(nextVenue) => {
-                setVenueName(nextVenue)
-                setLatitude(undefined)
-                setLongitude(undefined)
-              }}
-              onSelect={selectVenue}
-              suggestions={venueSuggestions}
-              value={venueName}
-            />
-            <label>
-              Room / stage / booth zone
-              <input placeholder="Hall A, Stage 2, Poster Zone B" value={roomName} onChange={(eventChange) => setRoomName(eventChange.target.value)} />
-            </label>
-            <div className="form-grid two">
-              <label>
-                Visibility
-                <select value={visibility} onChange={(eventChange) => setVisibility(eventChange.target.value as ScheduleVisibility)}>
-                  <option value="public">Public</option>
-                  <option value="staffOnly">Staff only</option>
-                  <option value="participantsOnly">Participants only</option>
-                </select>
-              </label>
-              <label>
-                Status
-                <select value={status} onChange={(eventChange) => setStatus(eventChange.target.value as ScheduleStatus)}>
-                  <option value="draft">Draft</option>
-                  <option value="scheduled">Scheduled</option>
-                  <option value="delayed">Delayed</option>
-                  <option value="cancelled">Cancelled</option>
-                  <option value="completed">Completed</option>
-                </select>
-              </label>
-            </div>
-          </div>
+          ))}
         </div>
-        <label>
-          Notes
-          <textarea value={description} onChange={(eventChange) => setDescription(eventChange.target.value)} />
-        </label>
-        <button className="primary-button" disabled={busy} type="submit">
-          {busy ? <Loader2 className="spin" size={17} /> : <Plus size={17} />}
-          Add schedule item
-        </button>
+        <div className="action-row split-actions">
+          <button className="secondary-button" onClick={addRow} type="button">
+            <Plus size={17} />
+            Add new row
+          </button>
+          <button className="primary-button" disabled={busy} type="submit">
+            {busy ? <Loader2 className="spin" size={17} /> : <Save size={17} />}
+            Save schedule rows
+          </button>
+        </div>
       </form>
 
       {sortedItems.length === 0 ? (
@@ -2756,6 +4018,14 @@ function ScheduleManager({ orgId, program, event, scheduleItems }: { orgId: stri
           ))}
         </div>
       )}
+      <VenueLibraryModal
+        orgId={orgId}
+        onClose={() => setVenueModalOpen(false)}
+        open={venueModalOpen}
+        program={program}
+        seedName={venueModalSeed}
+        venueCatalog={venueCatalog}
+      />
     </section>
   )
 }
@@ -2766,18 +4036,20 @@ function SettingsPage({
   organization,
   program,
   programs,
-  joinLinks,
-  roles,
+  venueCatalog,
   onProgramSelect,
+  canManageOrganization,
+  canManageProgram,
 }: {
   orgId: string
   uid: string
   organization: Organization | null
   program: Program | null
   programs: Program[]
-  joinLinks: ProgramJoinLink[]
-  roles: Role[]
+  venueCatalog?: ProgramVenueCatalog | null
   onProgramSelect: (programId: string) => void
+  canManageOrganization: boolean
+  canManageProgram: boolean
 }) {
   const [orgName, setOrgName] = useState(organization?.name || '')
   const [industry, setIndustry] = useState(organization?.industry || 'College fest')
@@ -2808,70 +4080,86 @@ function SettingsPage({
         <div>
           <span className="eyebrow">Workspace profile</span>
           <h1>Organization and program settings</h1>
-          <p>Manage public identity, program artwork, QR access, result settings, and Sang Scan-to-Join from one place.</p>
+          <p>Manage public identity, program artwork, entry rules, and result settings from one place.</p>
         </div>
       </section>
 
       <div className="page-grid settings-grid">
-        <form className="panel form-panel" onSubmit={saveOrganization}>
-          <div className="panel-heading">
-            <div>
-              <span className="eyebrow">Organization</span>
-              <h2>Profile details</h2>
+        {canManageOrganization && (
+          <form className="panel form-panel" onSubmit={saveOrganization}>
+            <div className="panel-heading">
+              <div>
+                <span className="eyebrow">Organization</span>
+                <h2>Profile details</h2>
+              </div>
+              <Building2 size={20} />
             </div>
-            <Building2 size={20} />
-          </div>
-          <ImageUploader folder="organization-logos" label="Organization logo" onChange={setLogoUrl} uid={uid} value={logoUrl} />
-          <label>
-            Organization name
-            <input value={orgName} onChange={(event) => setOrgName(event.target.value)} required />
-          </label>
-          <label>
-            Organization category
-            <select value={industry} onChange={(event) => setIndustry(event.target.value)}>
-              {orgCategoryOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </select>
-          </label>
-          <label>
-            Website
-            <input placeholder="https://..." value={website} onChange={(event) => setWebsite(event.target.value)} />
-          </label>
-          <button className="primary-button" disabled={orgBusy} type="submit">
-            {orgBusy ? <Loader2 className="spin" size={17} /> : <Save size={17} />}
-            Save organization
-          </button>
-        </form>
-
-        <section className="panel">
-          <div className="panel-heading">
-            <div>
-              <span className="eyebrow">Program</span>
-              <h2>Program profile and rules</h2>
-            </div>
-            <Settings size={20} />
-          </div>
-          {programs.length > 1 && (
-            <label className="settings-program-select">
-              Program workspace
-              <select value={program?.id || ''} onChange={(event) => onProgramSelect(event.target.value)}>
-                <option value="">Select program</option>
-                {programs.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+            <ImageUploader folder="organization-logos" label="Organization logo" onChange={setLogoUrl} uid={uid} value={logoUrl} />
+            <label>
+              Organization name
+              <input value={orgName} onChange={(event) => setOrgName(event.target.value)} required />
+            </label>
+            <label>
+              Organization category
+              <select value={industry} onChange={(event) => setIndustry(event.target.value)}>
+                {orgCategoryOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
               </select>
             </label>
-          )}
-          {program ? (
-            <ProgramSettingsForm joinLinks={joinLinks.filter((link) => link.programId === program.id)} orgId={orgId} program={program} roles={roles} uid={uid} />
-          ) : (
-            <EmptyState title="Choose a program" body="Create or select a program before editing program artwork, QR access, result settings, and join flow." />
-          )}
-        </section>
+            <label>
+              Website
+              <input placeholder="https://..." value={website} onChange={(event) => setWebsite(event.target.value)} />
+            </label>
+            <button className="primary-button" disabled={orgBusy} type="submit">
+              {orgBusy ? <Loader2 className="spin" size={17} /> : <Save size={17} />}
+              Save organization
+            </button>
+          </form>
+        )}
+
+        {canManageProgram && (
+          <section className="panel">
+            <div className="panel-heading">
+              <div>
+                <span className="eyebrow">Program</span>
+                <h2>Program profile and rules</h2>
+              </div>
+              <Settings size={20} />
+            </div>
+            {programs.length > 1 && (
+              <label className="settings-program-select">
+                Program workspace
+                <select value={program?.id || ''} onChange={(event) => onProgramSelect(event.target.value)}>
+                  <option value="">Select program</option>
+                  {programs.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                </select>
+              </label>
+            )}
+            {program ? (
+              <ProgramSettingsForm orgId={orgId} program={program} uid={uid} venueCatalog={venueCatalog} />
+            ) : (
+              <EmptyState title="Choose a program" body="Create or select a program before editing program artwork, entry rules, and result settings." />
+            )}
+          </section>
+        )}
       </div>
     </section>
   )
 }
 
-function ProgramSettingsForm({ orgId, uid, program, joinLinks, roles }: { orgId: string; uid: string; program: Program; joinLinks: ProgramJoinLink[]; roles: Role[] }) {
+function ProgramSettingsForm({
+  orgId,
+  uid,
+  program,
+  venueCatalog,
+}: {
+  orgId: string
+  uid: string
+  program: Program
+  venueCatalog?: ProgramVenueCatalog | null
+}) {
+  const savedVenues = useMemo(() => [...(venueCatalog?.venues || [])].sort((a, b) => a.name.localeCompare(b.name)), [venueCatalog])
   const [name, setName] = useState(program.name)
+  const [tagline, setTagline] = useState(program.tagline || '')
   const [mode, setMode] = useState<ProgramMode>(program.mode)
   const [programType, setProgramType] = useState(selectValueOrCustom(programTypeOptions, program.programType, 'college_fest'))
   const [customProgramType, setCustomProgramType] = useState(isKnownOption(programTypeOptions, program.programType) ? '' : program.programType || '')
@@ -2879,6 +4167,7 @@ function ProgramSettingsForm({ orgId, uid, program, joinLinks, roles }: { orgId:
   const [startDate, setStartDate] = useState(program.startDate)
   const [endDate, setEndDate] = useState(program.endDate)
   const [venueName, setVenueName] = useState(program.venueName || '')
+  const [venueAddress, setVenueAddress] = useState(program.address || program.venueName || '')
   const [city, setCity] = useState(program.city || '')
   const [logoUrl, setLogoUrl] = useState(program.logoUrl || '')
   const [bannerUrl, setBannerUrl] = useState(program.bannerUrl || '')
@@ -2886,14 +4175,17 @@ function ProgramSettingsForm({ orgId, uid, program, joinLinks, roles }: { orgId:
   const [latitude, setLatitude] = useState<number | undefined>(program.latitude)
   const [longitude, setLongitude] = useState<number | undefined>(program.longitude)
   const [description, setDescription] = useState(program.description || '')
+  const [directionsNote, setDirectionsNote] = useState(program.directionsNote || '')
   const [entryScope, setEntryScope] = useState<EntryScope>(program.entryScope || 'program')
   const [competitive, setCompetitive] = useState(Boolean(program.competitive))
   const [resultsEnabled, setResultsEnabled] = useState(Boolean(program.resultsEnabled))
-  const [joinQrEnabled, setJoinQrEnabled] = useState(program.joinQrEnabled !== false)
+  const [venueModalOpen, setVenueModalOpen] = useState(false)
   const [busy, setBusy] = useState(false)
+  const selectedProgramVenueId = findVenueId(savedVenues, { name: venueName, latitude, longitude })
 
   useEffect(() => {
     setName(program.name)
+    setTagline(program.tagline || '')
     setMode(program.mode)
     setProgramType(selectValueOrCustom(programTypeOptions, program.programType, 'college_fest'))
     setCustomProgramType(isKnownOption(programTypeOptions, program.programType) ? '' : program.programType || '')
@@ -2901,6 +4193,7 @@ function ProgramSettingsForm({ orgId, uid, program, joinLinks, roles }: { orgId:
     setStartDate(program.startDate)
     setEndDate(program.endDate)
     setVenueName(program.venueName || '')
+    setVenueAddress(program.address || program.venueName || '')
     setCity(program.city || '')
     setLogoUrl(program.logoUrl || '')
     setBannerUrl(program.bannerUrl || '')
@@ -2908,10 +4201,10 @@ function ProgramSettingsForm({ orgId, uid, program, joinLinks, roles }: { orgId:
     setLatitude(program.latitude)
     setLongitude(program.longitude)
     setDescription(program.description || '')
+    setDirectionsNote(program.directionsNote || '')
     setEntryScope(program.entryScope || 'program')
     setCompetitive(Boolean(program.competitive))
     setResultsEnabled(Boolean(program.resultsEnabled))
-    setJoinQrEnabled(program.joinQrEnabled !== false)
   }, [program])
 
   async function saveProgram(event: FormEvent) {
@@ -2922,6 +4215,7 @@ function ProgramSettingsForm({ orgId, uid, program, joinLinks, roles }: { orgId:
         orgId,
         programId: program.id,
         name: name.trim(),
+        tagline: tagline.trim(),
         mode,
         programType: programType === 'custom' ? customProgramType.trim() || 'custom' : programType,
         status,
@@ -2934,13 +4228,13 @@ function ProgramSettingsForm({ orgId, uid, program, joinLinks, roles }: { orgId:
         posterUrl: posterUrl.trim(),
         latitude,
         longitude,
-        address: venueName.trim(),
+        address: venueAddress.trim() || venueName.trim(),
+        directionsNote: directionsNote.trim(),
         timezone: program.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
         description: description.trim(),
         entryScope,
         competitive,
         resultsEnabled: competitive ? resultsEnabled : false,
-        joinQrEnabled,
       })
     } finally {
       setBusy(false)
@@ -2960,6 +4254,10 @@ function ProgramSettingsForm({ orgId, uid, program, joinLinks, roles }: { orgId:
           <label>
             Program name
             <input value={name} onChange={(event) => setName(event.target.value)} required />
+          </label>
+          <label>
+            Short subtitle
+            <input maxLength={120} placeholder="One line attendees will see in the Sang app" value={tagline} onChange={(event) => setTagline(event.target.value)} />
           </label>
           <label>
             Program type
@@ -2996,10 +4294,6 @@ function ProgramSettingsForm({ orgId, uid, program, joinLinks, roles }: { orgId:
             End date
             <input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} required />
           </label>
-          <label>
-            City
-            <input value={city} onChange={(event) => setCity(event.target.value)} />
-          </label>
         </div>
 
         <div className="form-grid three">
@@ -3008,22 +4302,24 @@ function ProgramSettingsForm({ orgId, uid, program, joinLinks, roles }: { orgId:
           <ImageUploader folder="program-posters" label="Program poster" onChange={setPosterUrl} uid={uid} value={posterUrl} />
         </div>
 
-        <MapPicker
-          label="Primary venue"
-          lat={latitude}
-          lng={longitude}
-          onPick={(point) => { setLatitude(point.latitude); setLongitude(point.longitude) }}
-          onVenueChange={setVenueName}
-          venue={venueName}
+        <ProgramVenueSelector
+          helper={venueName && !selectedProgramVenueId ? 'This saved program venue is not in the venue library yet. Add it from the dropdown, then select it here.' : 'Choose the broad program venue. Halls and rooms stay optional for schedule-level planning.'}
+          label="Program venue"
+          onAddVenue={() => setVenueModalOpen(true)}
+          onChoose={(selection) => {
+            setVenueName(selection.venueName)
+            setVenueAddress(selection.address)
+            setDirectionsNote(selection.directionsNote || '')
+            setLatitude(selection.latitude)
+            setLongitude(selection.longitude)
+          }}
+          value={selectedProgramVenueId}
+          venues={savedVenues}
         />
 
         <div className="assignment-box">
           <span>Competition and access</span>
           <div className="form-grid two">
-            <label className="check-row">
-              <input checked={joinQrEnabled} onChange={(event) => setJoinQrEnabled(event.target.checked)} type="checkbox" />
-              <span>Program QR can be generated for Sang Scan-to-Join</span>
-            </label>
             <label className="check-row">
               <input checked={competitive} onChange={(event) => { setCompetitive(event.target.checked); if (!event.target.checked) setResultsEnabled(false) }} type="checkbox" />
               <span>This program has competition/results</span>
@@ -3038,6 +4334,7 @@ function ProgramSettingsForm({ orgId, uid, program, joinLinks, roles }: { orgId:
         </div>
 
         <RichTextEditor label="About this program" onChange={setDescription} placeholder="Write a polished program overview with headings, bullets, and highlights." value={description} />
+        <RichTextEditor label="How to reach this program" onChange={setDirectionsNote} placeholder="Gate instructions, parking, metro, hall route, entry desk notes..." value={directionsNote} />
 
         <div className="action-row">
           <button className="danger-button" onClick={archiveProgram} type="button">
@@ -3051,103 +4348,15 @@ function ProgramSettingsForm({ orgId, uid, program, joinLinks, roles }: { orgId:
         </div>
       </form>
 
-      <ProgramJoinQrPanel joinLinks={joinLinks} orgId={orgId} program={program} roles={roles} />
+      <VenueLibraryModal
+        orgId={orgId}
+        onClose={() => setVenueModalOpen(false)}
+        open={venueModalOpen}
+        program={program}
+        seedName={venueName}
+        venueCatalog={venueCatalog}
+      />
     </div>
-  )
-}
-
-function ProgramJoinQrPanel({ orgId, program, joinLinks, roles }: { orgId: string; program: Program; joinLinks: ProgramJoinLink[]; roles: Role[] }) {
-  const audienceRoles = useMemo(() => getAudienceRoles(roles), [roles])
-  const [mode, setMode] = useState<JoinMode>('request_approval')
-  const [allowedCategory, setAllowedCategory] = useState<PersonKind>(audienceRoles[0]?.id || 'attendee')
-  const [maxUses, setMaxUses] = useState(5000)
-  const [campaignName, setCampaignName] = useState('Main program QR')
-  const [qrPayload, setQrPayload] = useState(joinLinks.find((link) => link.qrPayload)?.qrPayload || '')
-  const [busy, setBusy] = useState(false)
-
-  useEffect(() => {
-    setQrPayload(joinLinks.find((link) => link.qrPayload)?.qrPayload || '')
-  }, [joinLinks])
-
-  useEffect(() => {
-    if (!audienceRoles.some((role) => role.id === allowedCategory)) {
-      setAllowedCategory(audienceRoles[0]?.id || 'attendee')
-    }
-  }, [allowedCategory, audienceRoles])
-
-  async function generateQr() {
-    setBusy(true)
-    try {
-      const response = await createProgramJoinLinkCallable({
-        orgId,
-        programId: program.id,
-        mode,
-        allowedCategory,
-        customAllowedCategory: '',
-        allowedEventIds: [],
-        maxUses,
-        expiresAt: '',
-        campaignName: campaignName.trim() || 'Main program QR',
-      })
-      setQrPayload(response.data.qrPayload)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function copyPayload() {
-    if (!qrPayload) return
-    await navigator.clipboard?.writeText(qrPayload)
-  }
-
-  return (
-    <section className="join-qr-panel">
-      <div>
-        <span className="eyebrow">Sang app adoption</span>
-        <h2>Program Scan-to-Join QR</h2>
-        <p>Use this on posters, entry desks, emails, or venue standees. Sang users scan it to join/request access to this program.</p>
-      </div>
-      <div className="join-qr-grid">
-        <div className="assignment-box">
-          <span>QR controls</span>
-          <label>
-            Join mode
-            <select value={mode} onChange={(event) => setMode(event.target.value as JoinMode)}>
-              <option value="direct_join">Direct join</option>
-              <option value="request_approval">Request approval</option>
-              <option value="invite_only">Invite only</option>
-            </select>
-          </label>
-          <label>
-            Default category
-            <select value={allowedCategory} onChange={(event) => setAllowedCategory(event.target.value)}>
-              {audienceRoles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
-            </select>
-          </label>
-          <label>
-            Max uses
-            <input min={1} type="number" value={maxUses} onChange={(event) => setMaxUses(Number(event.target.value) || 1)} />
-          </label>
-          <label>
-            Campaign name
-            <input value={campaignName} onChange={(event) => setCampaignName(event.target.value)} />
-          </label>
-          <button className="primary-button" disabled={busy || program.joinQrEnabled === false} onClick={generateQr} type="button">
-            {busy ? <Loader2 className="spin" size={17} /> : <QrCode size={17} />}
-            Generate QR
-          </button>
-        </div>
-        <div className="qr-display">
-          {qrPayload ? <PassPreview payload={qrPayload} /> : <QrCode size={48} />}
-          <strong>{qrPayload ? 'QR ready' : 'No QR generated yet'}</strong>
-          <p>{qrPayload || 'Generate a secure Sang program join token.'}</p>
-          <button className="secondary-button" disabled={!qrPayload} onClick={copyPayload} type="button">
-            <Copy size={16} />
-            Copy payload
-          </button>
-        </div>
-      </div>
-    </section>
   )
 }
 
@@ -3184,7 +4393,7 @@ function RolesPage({ orgId, roles }: { orgId: string; roles: Role[] }) {
   }
 
   async function deleteRole(roleId: string, roleName: string) {
-    const confirmed = window.confirm(`Delete "${roleName}"? You can recreate it later, but it must not be in active use.`)
+    const confirmed = window.confirm(`Delete "${roleName}"? Team roles must be unassigned first. Audience roles will be removed from event allow-lists.`)
     if (!confirmed) return
     setError('')
     setDeletingRoleId(roleId)
@@ -3299,13 +4508,23 @@ function RolesPage({ orgId, roles }: { orgId: string; roles: Role[] }) {
 }
 
 function TeamPage({ orgId, roles, programs, events, members }: { orgId: string; roles: Role[]; programs: Program[]; events: ProgramEvent[]; members: TeamMember[] }) {
-  const teamRoles = useMemo(() => roles.filter((role) => roleCategory(role) === 'team'), [roles])
+  const teamRoles = useMemo(() => roles.filter((role) => roleCategory(role) === 'team' && !isDeletedRole(role)), [roles])
+  const visibleMembers = members.filter((member) => member.status !== 'deleted' && member.status !== 'claimed')
   const [email, setEmail] = useState('')
   const [displayName, setDisplayName] = useState('')
   const [roleId, setRoleId] = useState(teamRoles[0]?.id || 'gate-staff')
   const [scope, setScope] = useState<TeamScope>('organization')
   const [programId, setProgramId] = useState('')
   const [eventId, setEventId] = useState('')
+  const [error, setError] = useState('')
+  const [busyMemberId, setBusyMemberId] = useState('')
+  const [editingMember, setEditingMember] = useState<TeamMember | null>(null)
+  const [editDisplayName, setEditDisplayName] = useState('')
+  const [editRoleId, setEditRoleId] = useState(teamRoles[0]?.id || 'gate-staff')
+  const [editScope, setEditScope] = useState<TeamScope>('organization')
+  const [editProgramId, setEditProgramId] = useState('')
+  const [editEventId, setEditEventId] = useState('')
+  const [editStatus, setEditStatus] = useState<'active' | 'invited' | 'disabled'>('active')
 
   useEffect(() => {
     if (!teamRoles.some((role) => role.id === roleId)) {
@@ -3313,22 +4532,84 @@ function TeamPage({ orgId, roles, programs, events, members }: { orgId: string; 
     }
   }, [roleId, teamRoles])
 
+  useEffect(() => {
+    if (!editingMember) return
+    setEditDisplayName(editingMember.displayName || '')
+    setEditRoleId(teamRoles.some((role) => role.id === editingMember.roleId) ? editingMember.roleId : teamRoles[0]?.id || 'gate-staff')
+    setEditScope(editingMember.scope || 'organization')
+    setEditProgramId(editingMember.programId || '')
+    setEditEventId(editingMember.eventId || '')
+    setEditStatus(editingMember.status === 'invited' ? 'invited' : editingMember.status === 'disabled' ? 'disabled' : 'active')
+  }, [editingMember, teamRoles])
+
+  function memberScopeLabel(member: TeamMember) {
+    if (member.scope === 'organization') return 'Whole organization'
+    const program = programs.find((item) => item.id === member.programId)
+    if (member.scope === 'program') return program?.name || 'Program scope'
+    const programEvent = events.find((item) => item.id === member.eventId)
+    return programEvent ? `${programEvent.name}` : 'Event scope'
+  }
+
   async function inviteMember(event: FormEvent) {
     event.preventDefault()
-    await inviteTeamMemberCallable({
-      orgId,
-      email: email.trim().toLowerCase(),
-      displayName: displayName.trim(),
-      roleId,
-      scope,
-      programId: scope !== 'organization' ? programId : '',
-      eventId: scope === 'event' ? eventId : '',
-    })
-    setEmail('')
-    setDisplayName('')
+    setError('')
+    try {
+      await inviteTeamMemberCallable({
+        orgId,
+        email: email.trim().toLowerCase(),
+        displayName: displayName.trim(),
+        roleId,
+        scope,
+        programId: scope !== 'organization' ? programId : '',
+        eventId: scope === 'event' ? eventId : '',
+      })
+      setEmail('')
+      setDisplayName('')
+    } catch (inviteError) {
+      setError(inviteError instanceof Error ? inviteError.message : 'Unable to add member.')
+    }
+  }
+
+  async function saveMember(event: FormEvent) {
+    event.preventDefault()
+    if (!editingMember) return
+    setError('')
+    setBusyMemberId(editingMember.id)
+    try {
+      await updateTeamMemberCallable({
+        orgId,
+        teamMemberId: editingMember.id,
+        displayName: editDisplayName.trim(),
+        roleId: editRoleId,
+        scope: editScope,
+        programId: editScope !== 'organization' ? editProgramId : '',
+        eventId: editScope === 'event' ? editEventId : '',
+        status: editStatus,
+      })
+      setEditingMember(null)
+    } catch (updateError) {
+      setError(updateError instanceof Error ? updateError.message : 'Unable to update member.')
+    } finally {
+      setBusyMemberId('')
+    }
+  }
+
+  async function removeMember(member: TeamMember) {
+    const confirmed = window.confirm(`Delete ${member.displayName || member.email} from this CRM team?`)
+    if (!confirmed) return
+    setError('')
+    setBusyMemberId(member.id)
+    try {
+      await deleteTeamMemberCallable({ orgId, teamMemberId: member.id })
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : 'Unable to delete member.')
+    } finally {
+      setBusyMemberId('')
+    }
   }
 
   return (
+    <>
     <section className="page-grid">
       <form className="panel form-panel" onSubmit={inviteMember}>
         <div className="panel-heading">
@@ -3338,6 +4619,7 @@ function TeamPage({ orgId, roles, programs, events, members }: { orgId: string; 
           </div>
           <Users size={20} />
         </div>
+        {error && !editingMember && <p className="form-error">{error}</p>}
         <label>
           Member email
           <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required />
@@ -3348,7 +4630,7 @@ function TeamPage({ orgId, roles, programs, events, members }: { orgId: string; 
         </label>
         <label>
           Role
-          <select value={roleId} onChange={(event) => setRoleId(event.target.value)}>
+          <select value={roleId} onChange={(event) => setRoleId(event.target.value)} required>
             {teamRoles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
           </select>
         </label>
@@ -3394,23 +4676,97 @@ function TeamPage({ orgId, roles, programs, events, members }: { orgId: string; 
         <div className="table-wrap">
           <table>
             <thead>
-              <tr><th>Name</th><th>Email</th><th>Role</th><th>Scope</th><th>Status</th></tr>
+              <tr><th>Name</th><th>Email</th><th>Role</th><th>Scope</th><th>Status</th><th>Actions</th></tr>
             </thead>
             <tbody>
-              {members.map((member) => (
+              {visibleMembers.map((member) => (
                 <tr key={member.id}>
                   <td>{member.displayName}</td>
                   <td>{member.email}</td>
                   <td>{teamRoles.find((role) => role.id === member.roleId)?.name || member.roleId}</td>
-                  <td>{member.scope}</td>
+                  <td>{memberScopeLabel(member)}</td>
                   <td><span className={`status ${member.status}`}>{member.status}</span></td>
+                  <td>
+                    <div className="table-actions">
+                      <button className="icon-button" disabled={busyMemberId === member.id} onClick={() => setEditingMember(member)} title="Edit member" type="button">
+                        <Pencil size={16} />
+                      </button>
+                      <button className="icon-button danger-icon" disabled={busyMemberId === member.id} onClick={() => removeMember(member)} title="Delete member" type="button">
+                        {busyMemberId === member.id ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />}
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               ))}
+              {visibleMembers.length === 0 && (
+                <tr>
+                  <td colSpan={6}>No team members yet.</td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
       </section>
     </section>
+
+    <Modal eyebrow="Team access" onClose={() => setEditingMember(null)} open={Boolean(editingMember)} title="Edit team member">
+      <form className="settings-form" onSubmit={saveMember}>
+        {error && editingMember && <p className="form-error">{error}</p>}
+        <label>
+          Name
+          <input value={editDisplayName} onChange={(event) => setEditDisplayName(event.target.value)} required />
+        </label>
+        <label>
+          Role
+          <select value={editRoleId} onChange={(event) => setEditRoleId(event.target.value)} required>
+            {teamRoles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
+          </select>
+        </label>
+        <label>
+          Scope
+          <select value={editScope} onChange={(event) => { setEditScope(event.target.value as TeamScope); setEditProgramId(''); setEditEventId('') }}>
+            <option value="organization">Whole organization</option>
+            <option value="program">Specific program</option>
+            <option value="event">Specific event</option>
+          </select>
+        </label>
+        {editScope !== 'organization' && (
+          <label>
+            Program
+            <select value={editProgramId} onChange={(event) => { setEditProgramId(event.target.value); setEditEventId('') }} required>
+              <option value="">Select program</option>
+              {programs.map((program) => <option key={program.id} value={program.id}>{program.name}</option>)}
+            </select>
+          </label>
+        )}
+        {editScope === 'event' && (
+          <label>
+            Event
+            <select value={editEventId} onChange={(event) => setEditEventId(event.target.value)} required>
+              <option value="">Select event</option>
+              {events.filter((programEvent) => !editProgramId || programEvent.programId === editProgramId).map((programEvent) => (
+                <option key={programEvent.id} value={programEvent.id}>{programEvent.name}</option>
+              ))}
+            </select>
+          </label>
+        )}
+        <label>
+          Status
+          <select value={editStatus} onChange={(event) => setEditStatus(event.target.value as 'active' | 'invited' | 'disabled')}>
+            {editingMember?.uid ? <option value="active">Active</option> : <option value="invited">Invited</option>}
+            <option value="disabled">Disabled</option>
+          </select>
+        </label>
+        <div className="action-row">
+          <button className="secondary-button" onClick={() => setEditingMember(null)} type="button">Cancel</button>
+          <button className="primary-button" disabled={!editingMember || busyMemberId === editingMember.id} type="submit">
+            {editingMember && busyMemberId === editingMember.id ? <Loader2 className="spin" size={17} /> : <Save size={17} />}
+            Save member
+          </button>
+        </div>
+      </form>
+    </Modal>
+    </>
   )
 }
 
@@ -3424,7 +4780,13 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
   const [manualEmail, setManualEmail] = useState('')
   const [manualPhone, setManualPhone] = useState('')
   const [manualCompany, setManualCompany] = useState('')
-  const selectedPeople = people.filter((person) => !programId || person.programId === programId)
+  const [manualDesignation, setManualDesignation] = useState('')
+  const [peopleError, setPeopleError] = useState('')
+  const [peopleNotice, setPeopleNotice] = useState('')
+  const [passBusyPersonId, setPassBusyPersonId] = useState('')
+  const [personActionBusyId, setPersonActionBusyId] = useState('')
+  const [publishBusy, setPublishBusy] = useState(false)
+  const selectedPeople = people.filter((person) => (!programId || person.programId === programId) && personAccessState(person) !== 'removed')
   const availableEvents = events.filter((programEvent) => programEvent.programId === programId)
 
   useEffect(() => {
@@ -3478,7 +4840,97 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
   }
 
   async function createPerson(input: ProgramPersonInput) {
+    setPeopleError('')
     await createProgramPersonAndPassCallable(input)
+  }
+
+  async function rotatePass(person: ProgramPerson) {
+    if (personAccessState(person) !== 'active') {
+      setPeopleError('Blocked or removed people cannot receive a new pass. Add the person again to reactivate access.')
+      return
+    }
+    const hasPass = Boolean(person.passId)
+    if (hasPass) {
+      const confirmed = window.confirm(`Rotate QR for ${person.fullName}? The old QR will stop working immediately.`)
+      if (!confirmed) return
+    }
+    setPeopleError('')
+    setPassBusyPersonId(person.id)
+    try {
+      await issuePassForProgramPersonCallable({ orgId, programPersonId: person.id })
+    } catch (passError) {
+      setPeopleError(passError instanceof Error ? passError.message : 'Unable to update pass.')
+    } finally {
+      setPassBusyPersonId('')
+    }
+  }
+
+  async function blockPerson(person: ProgramPerson) {
+    if (personAccessState(person) === 'blocked') return
+    const confirmed = window.confirm(`Block Sang access for ${person.fullName}? Their current QR/pass will stop working.`)
+    if (!confirmed) return
+    setPeopleError('')
+    setPeopleNotice('')
+    setPersonActionBusyId(person.id)
+    try {
+      await blockProgramPersonAccessCallable({ orgId, programPersonId: person.id, reason: 'blocked-from-crm' })
+      setPeopleNotice(`${person.fullName} has been blocked. Their Sang access and QR pass are no longer active.`)
+    } catch (blockError) {
+      setPeopleError(blockError instanceof Error ? blockError.message : 'Unable to block this person.')
+    } finally {
+      setPersonActionBusyId('')
+    }
+  }
+
+  async function unblockPerson(person: ProgramPerson) {
+    if (personAccessState(person) !== 'blocked') return
+    const confirmed = window.confirm(`Unblock Sang access for ${person.fullName}? A fresh QR pass will be issued and the old blocked QR will stay disabled.`)
+    if (!confirmed) return
+    setPeopleError('')
+    setPeopleNotice('')
+    setPersonActionBusyId(person.id)
+    try {
+      await unblockProgramPersonAccessCallable({ orgId, programPersonId: person.id, reason: 'unblocked-from-crm' })
+      setPeopleNotice(`${person.fullName} has been unblocked and a fresh QR pass has been issued.`)
+    } catch (unblockError) {
+      setPeopleError(unblockError instanceof Error ? unblockError.message : 'Unable to unblock this person.')
+    } finally {
+      setPersonActionBusyId('')
+    }
+  }
+
+  async function removePerson(person: ProgramPerson) {
+    const confirmed = window.confirm(`Remove ${person.fullName} from this program roster? Their Sang app access will be removed and the QR/pass will stop working.`)
+    if (!confirmed) return
+    setPeopleError('')
+    setPeopleNotice('')
+    setPersonActionBusyId(person.id)
+    try {
+      await removeProgramPersonAccessCallable({ orgId, programPersonId: person.id, reason: 'removed-from-crm' })
+      setPeopleNotice(`${person.fullName} has been removed from the active roster.`)
+    } catch (removeError) {
+      setPeopleError(removeError instanceof Error ? removeError.message : 'Unable to remove this person.')
+    } finally {
+      setPersonActionBusyId('')
+    }
+  }
+
+  async function publishPeopleAccess() {
+    if (!programId) return
+    const confirmed = window.confirm('Publish this roster to Sang app users? Matching verified users will see this program in the Sang app.')
+    if (!confirmed) return
+    setPeopleError('')
+    setPeopleNotice('')
+    setPublishBusy(true)
+    try {
+      const response = await publishProgramPeopleAccessCallable({ orgId, programId, notify: true })
+      const result = response.data
+      setPeopleNotice(`Published ${result.peopleCount} people. Linked ${result.linkedCount} new, refreshed ${result.alreadyLinkedCount}, pending ${result.pendingCount}, review ${result.manualReviewCount}, blocked/removed skipped ${result.skippedCount || 0}. Notifications sent: ${result.notificationSentCount}.`)
+    } catch (publishError) {
+      setPeopleError(publishError instanceof Error ? publishError.message : 'Unable to publish roster to Sang.')
+    } finally {
+      setPublishBusy(false)
+    }
   }
 
   async function addManual(event: FormEvent) {
@@ -3494,6 +4946,7 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
       programRoleName: roleName(programRoleId),
       company: manualCompany.trim(),
       organization: manualCompany.trim(),
+      designation: manualDesignation.trim(),
       eventIds,
       eventAccess: buildManualEventAccess(),
     })
@@ -3501,6 +4954,7 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
     setManualEmail('')
     setManualPhone('')
     setManualCompany('')
+    setManualDesignation('')
   }
 
   function importCsv(file: File) {
@@ -3608,6 +5062,7 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
           })
         })
 
+        const importedEventIds = Array.from(new Set(Array.from(grouped.values()).flatMap((person) => Array.from(person.eventAccess.keys()))))
         for (const person of grouped.values()) {
           await createPerson({
             orgId,
@@ -3628,6 +5083,7 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
         await addDoc(collection(db, 'peImports'), {
           orgId,
           programId,
+          eventIds: importedEventIds,
           fileName: file.name,
           rowCount: grouped.size,
           status: 'completed',
@@ -3704,6 +5160,10 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
           Organization / college / company
           <input value={manualCompany} onChange={(event) => setManualCompany(event.target.value)} />
         </label>
+        <label>
+          Designation
+          <input placeholder="Founder, delegate, student, manager..." value={manualDesignation} onChange={(event) => setManualDesignation(event.target.value)} />
+        </label>
         <button className="primary-button" disabled={!programId} type="submit"><Plus size={17} />Add and issue pass</button>
         <label className="file-drop">
           <Upload size={18} />
@@ -3718,32 +5178,48 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
             <span className="eyebrow">Roster</span>
             <h2>Program people</h2>
           </div>
-          <button
-            className="icon-button"
-            onClick={() => downloadCsv('sang-program-people.csv', selectedPeople.map((person) => ({
-              name: person.fullName,
-              email: person.email,
-              phone: person.phone || '',
-              programRole: person.programRoleName || person.kind,
-              organization: person.organization || person.company || '',
-              eventAccess: Object.entries(person.eventAccess || {}).map(([eventId, access]) => `${events.find((item) => item.id === eventId)?.name || eventId}:${access.roleName || access.roleId}`).join('; '),
-              passStatus: person.passStatus || 'notIssued',
-            })))}
-            title="Download roster CSV"
-            type="button"
-          >
-            <Download size={18} />
-          </button>
+          <div className="table-actions">
+            <button
+              className="secondary-button compact-button"
+              disabled={!programId || selectedPeople.length === 0 || publishBusy}
+              onClick={publishPeopleAccess}
+              type="button"
+            >
+              {publishBusy ? <Loader2 className="spin" size={16} /> : <BadgeCheck size={16} />}
+              Publish to Sang
+            </button>
+            <button
+              className="icon-button"
+              onClick={() => downloadCsv('sang-program-people.csv', selectedPeople.map((person) => ({
+                name: person.fullName,
+                email: person.email,
+                phone: person.phone || '',
+                programRole: person.programRoleName || person.kind,
+                organization: person.organization || person.company || '',
+                designation: person.designation || '',
+                eventAccess: Object.entries(person.eventAccess || {}).map(([eventId, access]) => `${events.find((item) => item.id === eventId)?.name || access.eventNameSnapshot || eventId}:${access.roleName || access.roleId}`).join('; '),
+                accessStatus: personAccessState(person),
+                passStatus: person.passStatus || 'notIssued',
+              })))}
+              title="Download roster CSV"
+              type="button"
+            >
+              <Download size={18} />
+            </button>
+          </div>
         </div>
         <div className="table-wrap">
+          {peopleError && <p className="form-error">{peopleError}</p>}
+          {peopleNotice && <p className="form-success">{peopleNotice}</p>}
           <table>
             <thead>
-              <tr><th>Name</th><th>Contact</th><th>Organization</th><th>Program role</th><th>Event access</th><th>Pass</th><th>QR</th></tr>
+              <tr><th>Name</th><th>Contact</th><th>Organization</th><th>Program role</th><th>Event access</th><th>Sang link</th><th>Status</th><th>Pass</th><th>QR</th><th>Actions</th></tr>
             </thead>
             <tbody>
               {selectedPeople.map((person) => {
                 const pass = passes.find((item) => item.id === person.passId)
                 const accessEntries = Object.entries(person.eventAccess || {})
+                const accessState = personAccessState(person)
                 return (
                   <tr key={person.id}>
                     <td>{person.fullName}</td>
@@ -3755,14 +5231,70 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
                         {accessEntries.length === 0 && <span className="chip">Program only</span>}
                         {accessEntries.slice(0, 3).map(([eventId, access]) => (
                           <span className="chip" key={eventId}>
-                            {events.find((item) => item.id === eventId)?.name || eventId}: {access.roleName || access.roleId}
+                            {events.find((item) => item.id === eventId)?.name || access.eventNameSnapshot || eventId}: {access.roleName || access.roleId}
                           </span>
                         ))}
                         {accessEntries.length > 3 && <span className="chip">+{accessEntries.length - 3}</span>}
                       </div>
                     </td>
-                    <td><span className={`status ${person.passStatus || 'draft'}`}>{person.passStatus || 'notIssued'}</span></td>
-                    <td>{pass ? <PassPreview payload={pass.qrPayload} /> : 'Pending'}</td>
+                    <td>
+                      <span
+                        className={`status ${sangAppStatusClass(person)}`}
+                        title={person.sangAppConflictReason || person.linkConflictReason || person.sangAppMatchMethod || ''}
+                      >
+                        {sangAppStatusLabel(person)}
+                      </span>
+                    </td>
+                    <td><span className={`status ${accessState === 'active' ? 'active' : 'cancelled'}`}>{accessState}</span></td>
+                    <td><span className={`status ${passStatusClass(person)}`}>{person.passStatus || 'notIssued'}</span></td>
+                    <td>
+                      <div className="pass-cell">
+                        {pass ? <PassPreview payload={pass.qrPayload} /> : <span className="muted">Pending</span>}
+                        <button
+                          className="icon-button"
+                          disabled={passBusyPersonId === person.id || accessState !== 'active'}
+                          onClick={() => rotatePass(person)}
+                          title={accessState === 'active' ? pass ? 'Rotate QR' : 'Issue pass' : 'Access is not active'}
+                          type="button"
+                        >
+                          {passBusyPersonId === person.id ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
+                        </button>
+                      </div>
+                    </td>
+                    <td>
+                      <div className="table-actions">
+                        {accessState === 'blocked' ? (
+                          <button
+                            className="icon-button"
+                            disabled={personActionBusyId === person.id}
+                            onClick={() => unblockPerson(person)}
+                            title="Unblock Sang access and issue a fresh QR"
+                            type="button"
+                          >
+                            {personActionBusyId === person.id ? <Loader2 className="spin" size={16} /> : <Unlock size={16} />}
+                          </button>
+                        ) : (
+                          <button
+                            className="icon-button"
+                            disabled={personActionBusyId === person.id || accessState !== 'active'}
+                            onClick={() => blockPerson(person)}
+                            title={accessState === 'active' ? 'Block Sang access' : 'Access is not active'}
+                            type="button"
+                          >
+                            {personActionBusyId === person.id ? <Loader2 className="spin" size={16} /> : <Lock size={16} />}
+                          </button>
+                        )}
+                        <button
+                          className="icon-button danger-icon"
+                          disabled={personActionBusyId === person.id}
+                          onClick={() => removePerson(person)}
+                          title="Remove from active roster"
+                          type="button"
+                        >
+                          {personActionBusyId === person.id ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />}
+                        </button>
+                      </div>
+                    </td>
                   </tr>
                 )
               })}
@@ -3784,178 +5316,96 @@ function PassPreview({ payload }: { payload: string }) {
   return src ? <img alt="Pass QR" className="qr-thumb" src={src} /> : <QrCode size={24} />
 }
 
-function CheckInPage({ programs, events, orgId }: { programs: Program[]; events: ProgramEvent[]; orgId: string }) {
-  const [payload, setPayload] = useState('')
-  const [programId, setProgramId] = useState('')
-  const [eventId, setEventId] = useState('')
-  const [gateName, setGateName] = useState('Main gate')
-  const [session, setSession] = useState<{ scannerSessionId: string; scannerToken: string } | null>(null)
-  const [message, setMessage] = useState('')
-  const [busy, setBusy] = useState(false)
-
-  useEffect(() => {
-    if (!programId && programs[0]) {
-      setProgramId(programs[0].id)
-    }
-  }, [programId, programs])
-
-  async function startSession() {
-    setBusy(true)
-    setMessage('')
-    try {
-      const response = await createScannerSession({ orgId, programId, eventId, gateName })
-      setSession(response.data)
-      setMessage('Scanner session active for this gate.')
-    } catch (scannerError) {
-      setMessage(scannerError instanceof Error ? scannerError.message : 'Could not create scanner session.')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function checkIn(event: FormEvent) {
-    event.preventDefault()
-    if (!session) {
-      setMessage('Start a scanner session first.')
-      return
-    }
-
-    setBusy(true)
-    setMessage('')
-    try {
-      const response = await scanPassToken({
-        scannerSessionId: session.scannerSessionId,
-        scannerToken: session.scannerToken,
-        payload: payload.trim(),
-        deviceScanId: crypto.randomUUID(),
-      })
-      setMessage(`${response.data.result}: ${response.data.programPersonId}`)
-      setPayload('')
-    } catch (scanError) {
-      setMessage(scanError instanceof Error ? scanError.message : 'Pass validation failed.')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <section className="scanner-layout">
-      <form className="scanner-panel" onSubmit={checkIn}>
-        <div className="scan-frame">
-          <ScanLine size={64} />
-        </div>
-        <h2>Gate scanner</h2>
-        <p>Phase 1 mobile-web scanner. Paste or scan `SANGPASS1:{'{token}'}` payload from a Sang-issued pass.</p>
-        <label>
-          Program
-          <select value={programId} onChange={(event) => { setProgramId(event.target.value); setSession(null) }} required>
-            <option value="">Select program</option>
-            {programs.map((program) => <option key={program.id} value={program.id}>{program.name}</option>)}
-          </select>
-        </label>
-        <label>
-          Event
-          <select value={eventId} onChange={(event) => { setEventId(event.target.value); setSession(null) }}>
-            <option value="">Program-level gate</option>
-            {events.filter((programEvent) => !programId || programEvent.programId === programId).map((programEvent) => (
-              <option key={programEvent.id} value={programEvent.id}>{programEvent.name}</option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Gate name
-          <input value={gateName} onChange={(event) => { setGateName(event.target.value); setSession(null) }} />
-        </label>
-        <button className="secondary-button" disabled={!programId || busy} onClick={startSession} type="button">
-          {busy ? <Loader2 className="spin" size={17} /> : <ShieldCheck size={17} />}
-          {session ? 'Session active' : 'Start scanner session'}
-        </button>
-        <input autoCapitalize="none" placeholder="SANGPASS1:..." value={payload} onChange={(event) => setPayload(event.target.value)} required />
-        <button className="primary-button" disabled={!session || busy} type="submit"><ScanLine size={17} />Validate pass</button>
-        {message && <div className="scan-result">{message}</div>}
-      </form>
-    </section>
-  )
-}
-
-function AnalyticsPage({ programs, people, checkIns }: { programs: Program[]; people: ProgramPerson[]; checkIns: CheckIn[] }) {
-  const summaryRows = programs.map((program) => {
-    const programPeople = people.filter((person) => person.programId === program.id)
-    const checked = programPeople.filter((person) => person.passStatus === 'checkedIn').length
-    return {
-      program: program.name,
-      totalPeople: programPeople.length,
-      checkedIn: checked,
-      checkInRate: programPeople.length ? `${Math.round((checked / programPeople.length) * 100)}%` : '0%',
-    }
-  })
-
-  return (
-    <section className="page-stack">
-      <div className="stats-grid">
-        <Stat icon={Users} label="Total people" value={formatCount(people.length)} detail="Imported or manually added" />
-        <Stat icon={BadgeCheck} label="Checked in" value={formatCount(people.filter((person) => person.passStatus === 'checkedIn').length)} detail="Unique pass status" />
-        <Stat icon={Activity} label="Scan records" value={formatCount(checkIns.length)} detail="Includes duplicates and denied scans" />
-        <Stat icon={CalendarDays} label="Programs" value={formatCount(programs.length)} detail="Current organization" />
-      </div>
-      <section className="panel">
-        <div className="panel-heading">
-          <div>
-            <span className="eyebrow">Program health</span>
-            <h2>Analytics summary</h2>
-          </div>
-          <button className="icon-button" onClick={() => downloadCsv('sang-analytics-summary.csv', summaryRows)} title="Download analytics CSV" type="button">
-            <Download size={18} />
-          </button>
-        </div>
-        <div className="analytics-bars">
-          {summaryRows.map((summary) => {
-            const width = Number.parseInt(summary.checkInRate, 10)
-            return (
-              <div className="bar-row" key={summary.program}>
-                <span>{summary.program}</span>
-                <div><i style={{ width: `${width}%` }} /></div>
-                <strong>{width}%</strong>
-              </div>
-            )
-          })}
-        </div>
-      </section>
-    </section>
-  )
-}
-
 function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; profile: PeUser; setProfile: (profile: PeUser) => void }) {
   const [route, setRouteState] = useState<RouteKey>(readHashRoute)
   const [selectedProgramId, setSelectedProgramId] = useState(() => window.localStorage.getItem('sang-crm-selected-program') || '')
   const [needsOrgChoice, setNeedsOrgChoice] = useState(() => profile.organizationIds.length > 1 && window.localStorage.getItem('sang-crm-org-choice-confirmed') !== profile.activeOrgId)
   const orgId = profile.activeOrgId || ''
-  const orgQuery = useMemo(() => (orgId ? doc(db, 'peOrganizations', orgId) : null), [orgId])
-  const programsQuery = useMemo(() => (orgId ? query(collection(db, 'pePrograms'), where('orgId', '==', orgId)) : null), [orgId])
-  const eventsQuery = useMemo(() => (orgId ? query(collection(db, 'peEvents'), where('orgId', '==', orgId)) : null), [orgId])
-  const scheduleItemsQuery = useMemo(() => (orgId ? query(collection(db, 'peEventScheduleItems'), where('orgId', '==', orgId)) : null), [orgId])
-  const joinLinksQuery = useMemo(() => (orgId ? query(collection(db, 'peProgramJoinLinks'), where('orgId', '==', orgId)) : null), [orgId])
-  const peopleQuery = useMemo(() => (orgId ? query(collection(db, 'peProgramPeople'), where('orgId', '==', orgId)) : null), [orgId])
-  const passesQuery = useMemo(() => (orgId ? query(collection(db, 'pePasses'), where('orgId', '==', orgId)) : null), [orgId])
-  const checkInsQuery = useMemo(() => (orgId ? query(collection(db, 'peCheckIns'), where('orgId', '==', orgId)) : null), [orgId])
-  const membersQuery = useMemo(() => (orgId ? query(collection(db, 'peTeamMembers'), where('orgId', '==', orgId)) : null), [orgId])
-  const rolesQuery = useMemo(() => (orgId ? collection(db, 'peOrganizations', orgId, 'roles') : null), [orgId])
-  const programs = useCollection<Program>(programsQuery)
-  const events = useCollection<ProgramEvent>(eventsQuery)
-  const scheduleItems = useCollection<ScheduleItem>(scheduleItemsQuery)
-  const joinLinks = useCollection<ProgramJoinLink>(joinLinksQuery)
-  const people = useCollection<ProgramPerson>(peopleQuery)
-  const passes = useCollection<PassRecord>(passesQuery)
-  const checkIns = useCollection<CheckIn>(checkInsQuery)
-  const members = useCollection<TeamMember>(membersQuery)
-  const roles = useCollection<Role>(rolesQuery)
+  const ownMemberQuery = useMemo(() => (orgId ? query(collection(db, 'peTeamMembers'), where('orgId', '==', orgId), where('uid', '==', firebaseUser.uid), where('status', '==', 'active')) : null), [firebaseUser.uid, orgId])
+  const ownMemberships = useCollection<TeamMember>(ownMemberQuery, 'CRM access')
+  const currentMember = ownMemberships.rows[0] || null
+  const orgQuery = useMemo(() => (orgId && currentMember ? doc(db, 'peOrganizations', orgId) : null), [currentMember, orgId])
+  const rolesQuery = useMemo(() => (orgId && currentMember ? collection(db, 'peOrganizations', orgId, 'roles') : null), [currentMember, orgId])
+  const roles = useCollection<Role>(rolesQuery, 'Roles')
+  const currentRole = currentMember ? roles.rows.find((role) => role.id === currentMember.roleId && !isDeletedRole(role)) : undefined
+  const isOrgScoped = currentMember?.scope === 'organization'
+  const scopedProgramId = currentMember?.scope === 'program' || currentMember?.scope === 'event' ? currentMember.programId || '' : ''
+  const scopedEventId = currentMember?.scope === 'event' ? currentMember.eventId || '' : ''
+  const visibleNavItems = navItems.filter((item) => canOpenRoute(item.key, currentRole, currentMember))
+  const canManageTeam = canOpenRoute('team', currentRole, currentMember)
+  const canCreateProgram = isOrgScoped && hasPermission(currentRole, 'program.write')
+  const canManageProgram = hasPermission(currentRole, 'program.write') && currentMember?.scope !== 'event'
+  const canManageOrganization = isOrgScoped && hasPermission(currentRole, 'team.write')
+  const canReadWorkspaceCatalog = ['program.read', 'program.write', 'event.write', 'team.write', 'people.import', 'passes.issue', 'analytics.read'].some((permission) => hasPermission(currentRole, permission))
+  // 'analytics.read' is still honoured here even though the Analytics route is hidden:
+  // existing Analyst roles rely on it for People access, and dropping it would silently
+  // revoke access for organizations created before this release.
+  const canReadPeople = hasPermission(currentRole, 'people.import') || hasPermission(currentRole, 'passes.issue') || hasPermission(currentRole, 'analytics.read')
+  const canReadPasses = hasPermission(currentRole, 'passes.issue')
+
+  const programsQuery = useMemo(() => {
+    if (!orgId || !currentMember || !canReadWorkspaceCatalog) return null
+    if (isOrgScoped) return query(collection(db, 'pePrograms'), where('orgId', '==', orgId))
+    return scopedProgramId ? query(collection(db, 'pePrograms'), where('orgId', '==', orgId), where(documentId(), '==', scopedProgramId)) : null
+  }, [canReadWorkspaceCatalog, currentMember, isOrgScoped, orgId, scopedProgramId])
+  const eventsQuery = useMemo(() => {
+    if (!orgId || !currentMember || !canReadWorkspaceCatalog) return null
+    if (isOrgScoped) return query(collection(db, 'peEvents'), where('orgId', '==', orgId))
+    if (scopedEventId) return query(collection(db, 'peEvents'), where('orgId', '==', orgId), where(documentId(), '==', scopedEventId))
+    return scopedProgramId ? query(collection(db, 'peEvents'), where('orgId', '==', orgId), where('programId', '==', scopedProgramId)) : null
+  }, [canReadWorkspaceCatalog, currentMember, isOrgScoped, orgId, scopedEventId, scopedProgramId])
+  const scheduleItemsQuery = useMemo(() => {
+    if (!orgId || !currentMember || !canReadWorkspaceCatalog) return null
+    if (isOrgScoped) return query(collection(db, 'peEventScheduleDashboard'), where('orgId', '==', orgId))
+    if (scopedEventId) return query(collection(db, 'peEventScheduleDashboard'), where('orgId', '==', orgId), where('eventId', '==', scopedEventId))
+    return scopedProgramId ? query(collection(db, 'peEventScheduleDashboard'), where('orgId', '==', orgId), where('programId', '==', scopedProgramId)) : null
+  }, [canReadWorkspaceCatalog, currentMember, isOrgScoped, orgId, scopedEventId, scopedProgramId])
+  const venueCatalogsQuery = useMemo(() => {
+    if (!orgId || !currentMember || !canReadWorkspaceCatalog) return null
+    if (isOrgScoped) return query(collection(db, 'peProgramVenues'), where('orgId', '==', orgId))
+    return scopedProgramId ? query(collection(db, 'peProgramVenues'), where('orgId', '==', orgId), where(documentId(), '==', scopedProgramId)) : null
+  }, [canReadWorkspaceCatalog, currentMember, isOrgScoped, orgId, scopedProgramId])
+  const partnersQuery = useMemo(() => {
+    if (!orgId || !currentMember || !canReadWorkspaceCatalog) return null
+    if (isOrgScoped) return query(collection(db, 'peProgramPartners'), where('orgId', '==', orgId))
+    return scopedProgramId ? query(collection(db, 'peProgramPartners'), where('orgId', '==', orgId), where('programId', '==', scopedProgramId)) : null
+  }, [canReadWorkspaceCatalog, currentMember, isOrgScoped, orgId, scopedProgramId])
+  const peopleQuery = useMemo(() => {
+    if (!orgId || !currentMember || !canReadPeople) return null
+    if (isOrgScoped) return query(collection(db, 'peProgramPeople'), where('orgId', '==', orgId))
+    if (scopedEventId) return query(collection(db, 'peProgramPeople'), where('orgId', '==', orgId), where('eventAccessIds', 'array-contains', scopedEventId))
+    return scopedProgramId ? query(collection(db, 'peProgramPeople'), where('orgId', '==', orgId), where('programId', '==', scopedProgramId)) : null
+  }, [canReadPeople, currentMember, isOrgScoped, orgId, scopedEventId, scopedProgramId])
+  const passesQuery = useMemo(() => {
+    if (!orgId || !currentMember || scopedEventId || !canReadPasses) return null
+    if (isOrgScoped) return query(collection(db, 'pePasses'), where('orgId', '==', orgId))
+    return scopedProgramId ? query(collection(db, 'pePasses'), where('orgId', '==', orgId), where('programId', '==', scopedProgramId)) : null
+  }, [canReadPasses, currentMember, isOrgScoped, orgId, scopedEventId, scopedProgramId])
+  const membersQuery = useMemo(() => (orgId && canManageTeam ? query(collection(db, 'peTeamMembers'), where('orgId', '==', orgId)) : null), [canManageTeam, orgId])
+  const programs = useCollection<Program>(programsQuery, 'Programs')
+  const events = useCollection<ProgramEvent>(eventsQuery, 'Events')
+  const scheduleItems = useCollection<ScheduleItem>(scheduleItemsQuery, 'Schedule')
+  const venueCatalogs = useCollection<ProgramVenueCatalog>(venueCatalogsQuery, 'Venues')
+  const partners = useCollection<ProgramPartner>(partnersQuery, 'Patrons')
+  const people = useCollection<ProgramPerson>(peopleQuery, 'People')
+  const passes = useCollection<PassRecord>(passesQuery, 'Passes')
+  const members = useCollection<TeamMember>(membersQuery, 'Team')
   const [organization, setOrganization] = useState<Organization | null>(null)
 
   useEffect(() => {
-    if (!orgQuery) return
-    return onSnapshot(orgQuery, (snapshot) => {
-      setOrganization(snapshot.exists() ? ({ id: snapshot.id, ...snapshot.data() } as Organization) : null)
-    })
+    if (!orgQuery) {
+      setOrganization(null)
+      return
+    }
+    return onSnapshot(
+      orgQuery,
+      (snapshot) => {
+        setOrganization(snapshot.exists() ? ({ id: snapshot.id, ...snapshot.data() } as Organization) : null)
+      },
+      () => {
+        setOrganization(null)
+      },
+    )
   }, [orgQuery])
 
   useEffect(() => {
@@ -3969,16 +5419,23 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
     setRouteState(nextRoute)
   }
 
+  useEffect(() => {
+    if (!currentMember || !currentRole || visibleNavItems.length === 0) return
+    if (!canOpenRoute(route, currentRole, currentMember)) {
+      setRoute(visibleNavItems[0].key)
+    }
+  }, [currentMember, currentRole, route, visibleNavItems])
+
   const sortedPrograms = [...programs.rows].sort((a, b) => a.startDate.localeCompare(b.startDate))
   const selectedProgram = sortedPrograms.find((program) => program.id === selectedProgramId) || null
   const shouldChooseProgram = !selectedProgram && sortedPrograms.length > 1 && route !== 'programs'
   const activeProgram = selectedProgram || (sortedPrograms.length === 1 ? sortedPrograms[0] : null)
   const activeEvents = activeProgram ? events.rows.filter((event) => event.programId === activeProgram.id) : []
   const activeScheduleItems = activeProgram ? scheduleItems.rows.filter((item) => item.programId === activeProgram.id) : []
-  const activeJoinLinks = activeProgram ? joinLinks.rows.filter((link) => link.programId === activeProgram.id) : []
-  const activePeople = activeProgram ? people.rows.filter((person) => person.programId === activeProgram.id) : []
+  const activePeople = activeProgram ? people.rows.filter((person) => person.programId === activeProgram.id && personAccessState(person) !== 'removed') : []
   const activePasses = activeProgram ? passes.rows.filter((pass) => pass.programId === activeProgram.id) : []
-  const activeCheckIns = activeProgram ? checkIns.rows.filter((checkIn) => checkIn.programId === activeProgram.id) : []
+  const activeVenueCatalog = activeProgram ? venueCatalogs.rows.find((catalog) => catalog.id === activeProgram.id || catalog.programId === activeProgram.id) || null : null
+  const activePartners = activeProgram ? partners.rows.filter((partner) => partner.programId === activeProgram.id) : []
 
   useEffect(() => {
     if (!orgId) return
@@ -4014,6 +5471,28 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
     return <OrganizationChooserPage onChoose={chooseOrganization} profile={profile} />
   }
 
+  if (ownMemberships.loading || roles.loading) {
+    return (
+      <main className="loading-screen">
+        <Loader2 className="spin" size={28} />
+        <span>Loading CRM access</span>
+      </main>
+    )
+  }
+
+  if (!currentMember) {
+    return <OnboardingPage user={firebaseUser} onComplete={setProfile} />
+  }
+
+  if (!currentRole || visibleNavItems.length === 0) {
+    return (
+      <main className="loading-screen">
+        <Lock size={28} />
+        <span>No active CRM access found for this account.</span>
+      </main>
+    )
+  }
+
   function chooseProgram(programId: string) {
     setSelectedProgramId(programId)
     window.localStorage.setItem('sang-crm-selected-program', programId)
@@ -4032,23 +5511,34 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
   }
 
   if (shouldChooseProgram) {
-    return <ProgramChooserPage events={events.rows} onChoose={chooseProgram} onCreate={() => setRoute('programs')} programs={sortedPrograms} />
+    return <ProgramChooserPage canCreate={canCreateProgram} events={events.rows} onChoose={chooseProgram} onCreate={() => setRoute('programs')} programs={sortedPrograms} />
+  }
+
+  if (!canOpenRoute(route, currentRole, currentMember)) {
+    return (
+      <main className="loading-screen">
+        <Loader2 className="spin" size={28} />
+        <span>Opening allowed workspace</span>
+      </main>
+    )
   }
 
   return (
-    <Shell onSwitchProgram={switchProgram} organization={organization} route={route} selectedProgram={activeProgram} setRoute={setRoute} user={firebaseUser}>
-      {programs.error || roles.error || people.error || scheduleItems.error ? <p className="form-error">{programs.error || roles.error || people.error || scheduleItems.error}</p> : null}
-      {route === 'dashboard' && activeProgram && <ProgramWorkspaceDashboard checkIns={activeCheckIns} events={activeEvents} joinLinks={activeJoinLinks} people={activePeople} program={activeProgram} setRoute={setRoute} />}
-      {route === 'dashboard' && !activeProgram && <DashboardPage checkIns={checkIns.rows} people={people.rows} programs={sortedPrograms} setRoute={setRoute} />}
-      {route === 'events' && activeProgram && <EventsPage events={activeEvents} orgId={orgId} program={activeProgram} roles={roles.rows} scheduleItems={activeScheduleItems} uid={firebaseUser.uid} />}
-      {route === 'events' && !activeProgram && <ProgramsPage events={events.rows} onChoose={chooseProgram} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} />}
-      {route === 'programs' && <ProgramsPage events={events.rows} onChoose={chooseProgram} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} />}
-      {route === 'settings' && <SettingsPage joinLinks={joinLinks.rows} onProgramSelect={chooseProgramInSettings} orgId={orgId} organization={organization} program={activeProgram} programs={sortedPrograms} roles={roles.rows} uid={firebaseUser.uid} />}
+    <Shell onSwitchProgram={switchProgram} organization={organization} route={route} selectedProgram={activeProgram} setRoute={setRoute} user={firebaseUser} visibleNavItems={visibleNavItems}>
+      {programs.error || roles.error || ownMemberships.error || people.error || scheduleItems.error || venueCatalogs.error || partners.error || passes.error || members.error ? <p className="form-error">{programs.error || roles.error || ownMemberships.error || people.error || scheduleItems.error || venueCatalogs.error || partners.error || passes.error || members.error}</p> : null}
+      {route === 'dashboard' && activeProgram && <ProgramWorkspaceDashboard events={activeEvents} people={activePeople} program={activeProgram} setRoute={setRoute} venueCatalog={activeVenueCatalog} />}
+      {route === 'dashboard' && !activeProgram && <DashboardPage people={people.rows} programs={sortedPrograms} setRoute={setRoute} />}
+      {route === 'events' && activeProgram && <EventsPage events={activeEvents} orgId={orgId} program={activeProgram} roles={roles.rows} scheduleItems={activeScheduleItems} uid={firebaseUser.uid} venueCatalog={activeVenueCatalog} />}
+      {route === 'events' && !activeProgram && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} />}
+      {route === 'venues' && activeProgram && <VenuesPage orgId={orgId} program={activeProgram} venueCatalog={activeVenueCatalog} />}
+      {route === 'venues' && !activeProgram && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} />}
+      {route === 'patrons' && activeProgram && <PatronsPage orgId={orgId} partners={activePartners} program={activeProgram} uid={firebaseUser.uid} />}
+      {route === 'patrons' && !activeProgram && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} />}
+      {route === 'programs' && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} />}
+      {route === 'settings' && <SettingsPage canManageOrganization={canManageOrganization} canManageProgram={canManageProgram} onProgramSelect={chooseProgramInSettings} orgId={orgId} organization={organization} program={activeProgram} programs={sortedPrograms} uid={firebaseUser.uid} venueCatalog={activeVenueCatalog} />}
       {route === 'roles' && <RolesPage orgId={orgId} roles={roles.rows} />}
       {route === 'team' && <TeamPage events={events.rows} members={members.rows} orgId={orgId} programs={sortedPrograms} roles={roles.rows} />}
       {route === 'people' && <PeoplePage events={activeProgram ? activeEvents : events.rows} orgId={orgId} passes={activeProgram ? activePasses : passes.rows} people={activeProgram ? activePeople : people.rows} programs={activeProgram ? [activeProgram] : sortedPrograms} roles={roles.rows} />}
-      {route === 'checkin' && <CheckInPage events={activeProgram ? activeEvents : events.rows} orgId={orgId} programs={activeProgram ? [activeProgram] : sortedPrograms} />}
-      {route === 'analytics' && <AnalyticsPage checkIns={activeProgram ? activeCheckIns : checkIns.rows} people={activeProgram ? activePeople : people.rows} programs={activeProgram ? [activeProgram] : sortedPrograms} />}
     </Shell>
   )
 }

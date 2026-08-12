@@ -429,22 +429,35 @@ th {
   transform: translateY(-1px);
 }
 
+.compact-button {
+  min-height: 36px;
+  padding: 0 12px;
+  white-space: nowrap;
+}
+
 .form-error {
   color: var(--red);
   font-size: 13px;
   font-weight: 700;
 }
 
+.form-success {
+  color: #166534;
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .app-shell {
-  min-height: 100svh;
+  height: 100svh;
+  min-height: 0;
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr);
+  overflow: hidden;
 }
 
 .sidebar {
-  position: sticky;
-  top: 0;
   height: 100svh;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 22px;
@@ -483,6 +496,10 @@ th {
 
 .main-surface {
   min-width: 0;
+  min-height: 0;
+  height: 100svh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 24px;
 }
 
@@ -820,7 +837,7 @@ th {
 }
 
 .modal-card.wide {
-  width: min(1040px, 100%);
+  width: min(1180px, 100%);
 }
 
 .modal-head {
@@ -855,7 +872,28 @@ th {
 }
 
 .rich-text-field {
+  display: grid;
   gap: 8px;
+}
+
+.rich-text-label-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.rich-text-label-row small {
+  border-radius: 999px;
+  background: #eef6f6;
+  color: #0f5962;
+  font-size: 11px;
+  font-weight: 850;
+  padding: 4px 8px;
+  text-transform: uppercase;
 }
 
 .rich-text-shell {
@@ -863,6 +901,15 @@ th {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #fff;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    background 160ms ease;
+}
+
+.rich-text-shell:focus-within {
+  border-color: #7aa78e;
+  box-shadow: 0 0 0 4px rgba(27, 122, 82, 0.12);
 }
 
 .rich-text-toolbar {
@@ -875,6 +922,9 @@ th {
 }
 
 .rich-text-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-width: 34px;
   min-height: 32px;
   border: 1px solid transparent;
@@ -890,18 +940,68 @@ th {
   background: #eef6f6;
 }
 
-.rich-text-editor {
-  min-height: 150px;
-  color: var(--ink);
-  font-size: 14px;
-  line-height: 1.55;
-  outline: none;
-  padding: 12px;
+.rich-text-toolbar button.active,
+.rich-text-toolbar button[aria-pressed="true"] {
+  border-color: #8fb9bd;
+  background: #dff0f1;
+  color: #0f5962;
 }
 
-.rich-text-editor:empty::before {
+.toolbar-separator {
+  width: 1px;
+  min-height: 24px;
+  align-self: center;
+  background: #d7e2e4;
+  margin: 0 2px;
+}
+
+.rich-text-editor {
+  min-height: 190px;
+  max-height: 360px;
+  overflow: auto;
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.6;
+  outline: none;
+  padding: 14px 15px;
+  word-break: break-word;
+}
+
+.rich-text-editor:empty::before,
+.rich-text-editor:has(br:only-child)::before {
   content: attr(data-placeholder);
   color: #8a948d;
+  pointer-events: none;
+}
+
+.rich-text-editor h2,
+.rich-text-editor h3,
+.rich-text-editor p,
+.rich-text-editor ul,
+.rich-text-editor ol,
+.rich-text-editor div {
+  margin: 0 0 10px;
+}
+
+.rich-text-editor h2 {
+  color: var(--ink);
+  font-size: 20px;
+  line-height: 1.25;
+}
+
+.rich-text-editor h3 {
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1.3;
+}
+
+.rich-text-editor ul,
+.rich-text-editor ol {
+  padding-left: 22px;
+}
+
+.rich-text-editor li {
+  margin: 4px 0;
 }
 
 .rich-text-preview {
@@ -1215,6 +1315,75 @@ th {
 
 .read-profiles {
   margin-top: 4px;
+}
+
+.patrons-hero {
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(245, 249, 249, 0.94)),
+    radial-gradient(circle at bottom right, rgba(19, 123, 134, 0.12), transparent 38%);
+}
+
+.partner-list {
+  display: grid;
+  gap: 10px;
+}
+
+.partner-card {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 12px;
+}
+
+.partner-logo {
+  width: 58px;
+  height: 58px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #eef3f4;
+  color: #0f5962;
+  font-weight: 900;
+}
+
+.partner-logo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.partner-body {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.partner-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.partner-topline strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.partner-body p {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .list-stack,
@@ -1545,14 +1714,12 @@ th {
 .settings-form,
 .schedule-manager,
 .schedule-form,
-.event-editor-form,
-.join-qr-panel {
+.event-editor-form {
   display: grid;
   gap: 14px;
 }
 
-.schedule-manager,
-.join-qr-panel {
+.schedule-manager {
   border: 1px solid var(--line);
   border-radius: 8px;
   background:
@@ -1596,6 +1763,68 @@ th {
   background: #fff;
   box-shadow: 0 14px 40px rgba(23, 32, 27, 0.06);
   padding: 14px;
+}
+
+.schedule-bulk-head,
+.schedule-bulk-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.1fr) minmax(130px, 0.72fr) minmax(170px, 0.88fr) minmax(170px, 0.88fr) minmax(120px, 0.62fr) minmax(260px, 1.35fr) minmax(150px, 0.9fr) 38px;
+  gap: 8px;
+  align-items: start;
+}
+
+.schedule-bulk-head {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  padding: 0 2px;
+  text-transform: uppercase;
+}
+
+.schedule-bulk-list {
+  display: grid;
+  gap: 10px;
+  overflow: visible;
+}
+
+.schedule-bulk-row {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfd;
+  padding: 10px;
+}
+
+.schedule-bulk-row label {
+  display: grid;
+  gap: 5px;
+}
+
+.schedule-bulk-row label > span {
+  display: none;
+}
+
+.schedule-venue-selector {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.schedule-venue-selector label {
+  display: grid;
+  gap: 5px;
+}
+
+.schedule-venue-selector select,
+.schedule-venue-selector input {
+  min-width: 0;
+}
+
+.schedule-custom-type {
+  grid-column: 2 / span 2;
+}
+
+.split-actions {
+  justify-content: space-between;
 }
 
 .schedule-form-grid {
@@ -1675,8 +1904,7 @@ th {
 }
 
 .schedule-item p,
-.schedule-item small,
-.join-qr-panel p {
+.schedule-item small {
   color: var(--muted);
   font-size: 13px;
   line-height: 1.45;
@@ -1735,6 +1963,22 @@ th {
   padding: 6px;
 }
 
+.venue-menu-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  border-bottom: 1px solid var(--line);
+  padding: 4px 4px 8px;
+}
+
+.venue-menu-label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  padding: 7px 8px 2px;
+  text-transform: uppercase;
+}
+
 .venue-suggestion {
   display: grid;
   grid-template-columns: 20px minmax(0, 1fr);
@@ -1775,30 +2019,177 @@ th {
   justify-content: start;
 }
 
-.join-qr-grid {
+.venue-library-layout {
   display: grid;
-  grid-template-columns: minmax(260px, 360px) minmax(220px, 1fr);
-  gap: 14px;
-  align-items: stretch;
+  grid-template-columns: minmax(260px, 360px) minmax(0, 1fr);
+  gap: 18px;
 }
 
-.qr-display {
-  min-height: 260px;
+.venue-library-list,
+.venue-library-form,
+.rooms-editor {
   display: grid;
-  place-items: center;
-  align-content: center;
+  align-content: start;
   gap: 10px;
-  border: 1px dashed #b9c8bd;
+}
+
+.venue-library-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+  border: 1px solid var(--line);
   border-radius: 8px;
   background: #fff;
-  padding: 18px;
-  text-align: center;
+  padding: 12px;
 }
 
-.qr-display .qr-thumb {
-  width: 150px;
-  height: 150px;
+.venue-library-card.active {
+  border-color: #93bfc4;
+  background: #f2fbfb;
+}
+
+.venue-library-card > div:first-child {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.venue-library-card strong,
+.venue-library-card span,
+.venue-library-card small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.venue-library-card span,
+.venue-library-card small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.venue-page-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 18px;
+  align-items: center;
+  border: 1px solid var(--line);
   border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(241, 248, 246, 0.96)),
+    radial-gradient(circle at top right, rgba(19, 123, 134, 0.13), transparent 36%);
+  box-shadow: var(--shadow);
+  padding: 22px;
+}
+
+.venue-page-hero h1 {
+  font-size: 34px;
+}
+
+.venue-page-hero p {
+  max-width: 760px;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.55;
+  margin-top: 8px;
+}
+
+.venue-page-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.venue-page-card {
+  display: grid;
+  gap: 9px;
+  align-content: start;
+  min-height: 210px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, #ffffff 0%, #fbfcfc 100%);
+  box-shadow: 0 14px 34px rgba(23, 32, 27, 0.06);
+  padding: 14px;
+}
+
+.venue-page-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.venue-page-card-head > span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: #e8f3f4;
+  color: #0f5962;
+}
+
+.venue-page-card strong {
+  color: var(--ink);
+  font-size: 16px;
+}
+
+.venue-page-card p,
+.venue-page-card small {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.venue-card-rooms {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: auto;
+}
+
+.muted-chip {
+  color: var(--muted);
+}
+
+.event-venue-selector {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, #ffffff 0%, #f8fbfb 100%);
+  box-shadow: 0 12px 34px rgba(23, 32, 27, 0.06);
+  padding: 14px;
+}
+
+.event-venue-selector p {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+  margin-top: 4px;
+}
+
+.event-venue-selector label {
+  display: grid;
+  gap: 6px;
+}
+
+.compact-heading {
+  margin-bottom: 4px;
+}
+
+.room-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.2fr) minmax(120px, 0.8fr) minmax(84px, 0.45fr) 38px;
+  gap: 8px;
+  align-items: center;
+}
+
+.flip-icon {
+  transform: rotate(180deg);
 }
 
 .events-command {
@@ -1877,6 +2268,15 @@ th {
 
 .event-detail-panel {
   align-content: start;
+}
+
+.event-full-page .event-detail-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.full-event-panel {
+  width: 100%;
 }
 
 .action-row {
@@ -2156,6 +2556,19 @@ th {
   overflow-x: auto;
 }
 
+.table-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pass-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 96px;
+}
+
 .file-drop {
   min-height: 46px;
   display: flex;
@@ -2254,8 +2667,19 @@ th {
   }
 
   .sidebar {
-    position: static;
     height: auto;
+  }
+
+  .app-shell {
+    height: auto;
+    min-height: 100svh;
+    overflow: visible;
+  }
+
+  .main-surface {
+    height: auto;
+    overflow: visible;
+    overscroll-behavior: auto;
   }
 
   .nav-list {
@@ -2274,8 +2698,30 @@ th {
   }
 
   .program-hero,
-  .event-card-grid {
+  .event-card-grid,
+  .venue-library-layout {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .venue-page-hero {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .schedule-bulk-head {
+    display: none;
+  }
+
+  .schedule-bulk-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .schedule-bulk-row label > span {
+    display: block;
+  }
+
+  .schedule-custom-type {
+    grid-column: auto;
   }
 }
 
@@ -2334,12 +2780,15 @@ th {
   .event-access-row,
   .schedule-form-grid,
   .permission-grid,
-  .join-qr-grid,
   .event-card-grid,
   .program-card-grid,
   .profile-list,
   .program-hero,
-  .event-card {
+  .venue-page-hero,
+  .event-card,
+  .venue-library-layout,
+  .room-row,
+  .schedule-bulk-row {
     grid-template-columns: 1fr;
   }
 
@@ -2356,7 +2805,8 @@ th {
 
   .program-card-premium .program-hero,
   .event-workspace,
-  .event-read-view {
+  .event-read-view,
+  .partner-card {
     grid-template-columns: 1fr;
   }
 
@@ -2371,6 +2821,10 @@ th {
 
   .event-compose-head {
     display: grid;
+  }
+
+  .venue-page-hero h1 {
+    font-size: 28px;
   }
 
   .nav-item {
