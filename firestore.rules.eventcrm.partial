@@ -125,16 +125,6 @@ function peMobileHasProgramAccess(programId) {
     && exists(/databases/$(database)/documents/users/$(request.auth.uid)/eventAccess/$(programId));
 }
 
-function peMobileEventAccess(programId) {
-  return get(/databases/$(database)/documents/users/$(request.auth.uid)/eventAccess/$(programId)).data;
-}
-
-function peMobileCanReadEvent(programId, eventId) {
-  return peMobileHasProgramAccess(programId)
-    && peMobileEventAccess(programId).allowedEventIds is list
-    && eventId in peMobileEventAccess(programId).allowedEventIds;
-}
-
 match /peUsers/{uid} {
   allow read, update: if request.auth != null && request.auth.uid == uid;
   allow create: if request.auth != null && request.auth.uid == uid;
@@ -179,9 +169,8 @@ match /pePrograms/{programId} {
 }
 
 match /peEvents/{eventId} {
-  allow read: if (peCanReadWorkspaceCatalog(resource.data.orgId)
-    && peCanAccessEvent(resource.data.orgId, resource.data.programId, eventId))
-    || peMobileCanReadEvent(resource.data.programId, eventId);
+  allow read: if peCanReadWorkspaceCatalog(resource.data.orgId)
+    && peCanAccessEvent(resource.data.orgId, resource.data.programId, eventId);
   allow create: if peHasPermission(request.resource.data.orgId, 'event.write')
     && peCanAccessProgramData(request.resource.data.orgId, request.resource.data.programId);
   allow update: if peHasPermission(resource.data.orgId, 'event.write')
@@ -191,16 +180,28 @@ match /peEvents/{eventId} {
   allow delete: if false;
 }
 
+match /peProgramMobileEvents/{programId} {
+  allow read: if (peCanReadWorkspaceCatalog(resource.data.orgId)
+    && peCanAccessProgram(resource.data.orgId, programId))
+    || peMobileHasProgramAccess(programId);
+  allow write: if false;
+}
+
 match /peEventScheduleDashboard/{scheduleItemId} {
   allow read: if peCanReadWorkspaceCatalog(resource.data.orgId)
     && peCanAccessEvent(resource.data.orgId, resource.data.programId, resource.data.eventId);
   allow write: if false;
 }
 
-match /peEventSchedule/{eventId} {
-  allow read: if (peCanReadWorkspaceCatalog(resource.data.orgId)
-    && peCanAccessEvent(resource.data.orgId, resource.data.programId, eventId))
-    || peMobileCanReadEvent(resource.data.programId, eventId);
+match /peProgramSchedule/{programId} {
+  allow read: if peCanReadWorkspaceCatalog(resource.data.orgId)
+    && peCanAccessProgram(resource.data.orgId, programId);
+  allow write: if false;
+}
+
+match /peProgramSchedulePages/{pageId} {
+  allow read: if peCanReadWorkspaceCatalog(resource.data.orgId)
+    && peCanAccessProgram(resource.data.orgId, resource.data.programId);
   allow write: if false;
 }
 
@@ -215,6 +216,10 @@ match /peProgramPartners/{partnerId} {
     && peCanAccessProgram(resource.data.orgId, resource.data.programId))
     || peMobileHasProgramAccess(resource.data.programId);
   allow write: if false;
+}
+
+match /pePrograms/{programId}/peoplePublic/{programPersonId} {
+  allow read, write: if false;
 }
 
 match /peProgramPeople/{programPersonId} {

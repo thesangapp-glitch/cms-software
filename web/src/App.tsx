@@ -21,6 +21,7 @@ import {
   Loader2,
   Lock,
   LogOut,
+  GitBranch,
   MapPin,
   Pencil,
   Pilcrow,
@@ -37,6 +38,7 @@ import {
   Underline,
   Unlock,
   Upload,
+  UploadCloud,
   UserRound,
   Users,
   X,
@@ -82,7 +84,7 @@ type TeamScope = 'organization' | 'program' | 'event'
 type EntryScope = 'program' | 'event' | 'both'
 type ScheduleType = 'session' | 'round' | 'break' | 'checkin' | 'performance' | 'result' | 'ceremony' | 'custom'
 type ScheduleStatus = 'draft' | 'scheduled' | 'delayed' | 'cancelled' | 'completed'
-type ScheduleVisibility = 'public' | 'staffOnly' | 'participantsOnly'
+type ScheduleVisibility = 'public' | 'rolesOnly' | 'staffOnly' | 'participantsOnly'
 type RoleCategory = 'team' | 'audience'
 
 type AudienceRoleOption = {
@@ -159,16 +161,13 @@ const scheduleTypeOptions: Array<{ value: ScheduleType; label: string }> = [
 ]
 
 const audienceRolePresets: AudienceRoleOption[] = [
-  { id: 'attendee', name: 'Attendee' },
-  { id: 'participant', name: 'Participant' },
-  { id: 'startup', name: 'Startup' },
-  { id: 'company', name: 'Company' },
-  { id: 'delegate', name: 'Delegate' },
-  { id: 'speaker', name: 'Speaker' },
-  { id: 'judge', name: 'Judge' },
-  { id: 'vip', name: 'VIP' },
-  { id: 'sponsor', name: 'Sponsor' },
-  { id: 'exhibitor', name: 'Exhibitor' },
+  { id: 'visitor', name: 'Visitor' },
+  { id: 'participants', name: 'Participants' },
+  { id: 'delegates', name: 'Delegates' },
+  { id: 'speakers', name: 'Speakers' },
+  { id: 'media', name: 'Media' },
+  { id: 'mentor', name: 'Mentor' },
+  { id: 'patrons', name: 'Patrons' },
 ]
 
 function isKnownOption(options: Array<{ value: string }>, value?: string) {
@@ -266,7 +265,7 @@ function getAudienceRoles(roles: Role[]): AudienceRoleOption[] {
   ]
 }
 
-function resolveAudienceRole(value: string | undefined, audienceRoles: AudienceRoleOption[], fallbackId = 'attendee') {
+function resolveAudienceRole(value: string | undefined, audienceRoles: AudienceRoleOption[], fallbackId = 'visitor') {
   const fallback = audienceRoles.find((role) => role.id === fallbackId) || audienceRoles[0] || audienceRolePresets[0]
   const normalized = (value || '').trim()
   if (!normalized) return fallback
@@ -285,6 +284,15 @@ function formatDateTime(value?: string) {
     dateStyle: 'medium',
     timeStyle: 'short',
   }).format(date)
+}
+
+function timestampMs(value: unknown) {
+  const date = firestoreDate(value)
+  return date ? date.getTime() : 0
+}
+
+function newestTimestamp(items: Array<{ updatedAt?: unknown }>) {
+  return items.reduce((latest, item) => Math.max(latest, timestampMs(item.updatedAt)), 0)
 }
 
 type PeUser = {
@@ -337,6 +345,8 @@ type Program = {
   status: 'draft' | 'live' | 'archived'
   startDate: string
   endDate: string
+  startTime?: string
+  endTime?: string
   venueName: string
   city: string
   logoUrl?: string
@@ -354,6 +364,10 @@ type Program = {
   entryScope?: EntryScope
   competitive?: boolean
   resultsEnabled?: boolean
+  eventsLastPublishedAt?: unknown
+  peopleLastPublishedAt?: unknown
+  scheduleLastPublishedAt?: unknown
+  updatedAt?: unknown
 }
 
 type ProgramEvent = {
@@ -382,7 +396,9 @@ type ProgramEvent = {
   profiles?: EventProfile[]
   allowedAudienceRoleIds?: string[]
   allowedAudienceRoleNames?: string[]
+  mobileVisible?: boolean
   status: 'draft' | 'live' | 'completed'
+  updatedAt?: unknown
 }
 
 type ProgramVenueCatalog = {
@@ -452,11 +468,19 @@ type ScheduleItem = {
   roomId?: string
   venueName?: string
   roomName?: string
+  address?: string
+  locationNote?: string
+  directionsNote?: string
   latitude?: number
   longitude?: number
   visibility: ScheduleVisibility
+  allowedRoleIds?: string[]
+  allowedRoleNames?: string[]
+  parentScheduleItemId?: string
+  groupLabel?: string
   status: ScheduleStatus
   sortOrder?: number
+  updatedAt?: unknown
 }
 
 type ScheduleDraftRow = {
@@ -470,11 +494,18 @@ type ScheduleDraftRow = {
   venueName: string
   roomId: string
   roomName: string
+  address: string
+  locationNote: string
+  directionsNote: string
   latitude?: number
   longitude?: number
   visibility: ScheduleVisibility
+  allowedRoleIds: string[]
+  parentScheduleItemId: string
+  groupLabel: string
   status: ScheduleStatus
   description: string
+  eventId: string
 }
 
 type ProgramPerson = {
@@ -505,15 +536,21 @@ type ProgramPerson = {
   sangAppConflictReason?: string
   passId?: string
   passStatus?: 'notIssued' | 'issued' | 'checkedIn' | 'blocked' | 'revoked'
+  passCode?: string
   rosterStatus?: 'active' | 'blocked' | 'removed'
   accessStatus?: 'active' | 'blocked' | 'removed'
   blockedReason?: string
   removedReason?: string
+  updatedAt?: unknown
 }
 
-type ProgramPersonInput = Omit<ProgramPerson, 'id' | 'passId' | 'passStatus' | 'sangUid' | 'eventAccess' | 'eventAccessIds'> & {
+type ProgramPersonInput = Omit<ProgramPerson, 'id' | 'passId' | 'passStatus' | 'passCode' | 'sangUid' | 'eventAccess' | 'eventAccessIds'> & {
   eventIds?: string[]
   eventAccess?: Array<EventAccess & { eventId: string }>
+}
+
+type ProgramPersonAccessUpdateInput = Pick<ProgramPersonInput, 'orgId' | 'fullName' | 'email' | 'phone' | 'kind' | 'programRoleId' | 'programRoleName' | 'company' | 'organization' | 'designation' | 'eventAccess'> & {
+  programPersonId: string
 }
 
 function sangAppStatusLabel(person: ProgramPerson) {
@@ -547,6 +584,7 @@ type PassRecord = {
   programId: string
   programPersonId: string
   qrPayload: string
+  passCode?: string
   status: 'issued' | 'checkedIn' | 'blocked' | 'revoked'
 }
 
@@ -808,12 +846,15 @@ const updateEventCallable = httpsCallable<Partial<Omit<ProgramEvent, 'id'>> & { 
 const deleteEventCallable = httpsCallable<{ orgId: string; eventId: string }, { eventId: string }>(functions, 'deleteEvent')
 const createScheduleItemCallable = httpsCallable<Omit<ScheduleItem, 'id'>, { scheduleItemId: string }>(functions, 'createScheduleItem')
 const deleteScheduleItemCallable = httpsCallable<{ orgId: string; scheduleItemId: string }, { scheduleItemId: string }>(functions, 'deleteScheduleItem')
-const createProgramPersonAndPassCallable = httpsCallable<ProgramPersonInput, { programPersonId: string; passId: string; qrPayload: string }>(functions, 'createProgramPersonAndPass')
-const issuePassForProgramPersonCallable = httpsCallable<{ orgId: string; programPersonId: string }, { passId: string; qrPayload: string; revokedPassId?: string }>(functions, 'issuePassForProgramPerson')
+const publishProgramScheduleCallable = httpsCallable<{ orgId: string; programId: string }, { itemCount: number; pageCount: number }>(functions, 'publishProgramSchedule')
+const publishProgramEventsCallable = httpsCallable<{ orgId: string; programId: string }, { itemCount: number }>(functions, 'publishProgramEvents')
+const createProgramPersonAndPassCallable = httpsCallable<ProgramPersonInput, { programPersonId: string; passId: string; qrPayload: string; passCode: string }>(functions, 'createProgramPersonAndPass')
+const issuePassForProgramPersonCallable = httpsCallable<{ orgId: string; programPersonId: string }, { passId: string; qrPayload: string; passCode: string; revokedPassId?: string }>(functions, 'issuePassForProgramPerson')
 const publishProgramPeopleAccessCallable = httpsCallable<{ orgId: string; programId: string; notify?: boolean; forceNotify?: boolean }, { peopleCount: number; linkedCount: number; alreadyLinkedCount: number; pendingCount: number; manualReviewCount: number; notificationSentCount: number; skippedCount?: number }>(functions, 'publishProgramPeopleAccess')
+const updateProgramPersonAccessCallable = httpsCallable<ProgramPersonAccessUpdateInput, { programPersonId: string; status: string; linked: boolean }>(functions, 'updateProgramPersonAccess')
 const blockProgramPersonAccessCallable = httpsCallable<{ orgId: string; programPersonId: string; reason?: string }, { programPersonId: string; status: string; passStatus: string }>(functions, 'blockProgramPersonAccess')
 const removeProgramPersonAccessCallable = httpsCallable<{ orgId: string; programPersonId: string; reason?: string }, { programPersonId: string; status: string; passStatus: string }>(functions, 'removeProgramPersonAccess')
-const unblockProgramPersonAccessCallable = httpsCallable<{ orgId: string; programPersonId: string; reason?: string }, { programPersonId: string; status: string; passStatus: string; passId: string; qrPayload: string; revokedPassId?: string }>(functions, 'unblockProgramPersonAccess')
+const unblockProgramPersonAccessCallable = httpsCallable<{ orgId: string; programPersonId: string; reason?: string }, { programPersonId: string; status: string; passStatus: string; passId: string; qrPayload: string; passCode: string; revokedPassId?: string }>(functions, 'unblockProgramPersonAccess')
 
 async function createOrganizationWithOwner(user: User, input: { displayName: string; orgName: string; industry: string; website: string; logoUrl: string }) {
   const response = await createOrganizationCallable({
@@ -2158,6 +2199,8 @@ function ScheduleVenueSelector({
         venueName: '',
         roomId: '',
         roomName: '',
+        address: '',
+        directionsNote: '',
         latitude: undefined,
         longitude: undefined,
       })
@@ -2168,6 +2211,8 @@ function ScheduleVenueSelector({
       venueName: venue.name,
       roomId: '',
       roomName: '',
+      address: venue.address || venue.name,
+      directionsNote: venue.directionsNote || '',
       latitude: venue.latitude,
       longitude: venue.longitude,
     })
@@ -2463,19 +2508,59 @@ function OrganizationChooserPage({
 }
 
 function ProgramWorkspaceDashboard({
+  orgId,
   program,
   events,
   people,
+  scheduleItems,
   venueCatalog,
   setRoute,
 }: {
+  orgId: string
   program: Program
   events: ProgramEvent[]
   people: ProgramPerson[]
+  scheduleItems: ScheduleItem[]
   venueCatalog?: ProgramVenueCatalog | null
   setRoute: (route: RouteKey) => void
 }) {
   const issuedPasses = people.filter((person) => person.passStatus === 'issued' || person.passStatus === 'checkedIn').length
+  const [publishing, setPublishing] = useState<'events' | 'people' | 'schedule' | ''>('')
+  const [publishNotice, setPublishNotice] = useState('')
+  const [publishError, setPublishError] = useState('')
+  const eventsPublishedAt = timestampMs(program.eventsLastPublishedAt)
+  const peoplePublishedAt = timestampMs(program.peopleLastPublishedAt)
+  const schedulePublishedAt = timestampMs(program.scheduleLastPublishedAt)
+  const eventsPublishPending = Boolean(events.length && (!eventsPublishedAt || newestTimestamp(events) > eventsPublishedAt))
+  const peoplePublishPending = Boolean(people.length && (!peoplePublishedAt || newestTimestamp(people) > peoplePublishedAt))
+  const schedulePublishPending = Boolean(scheduleItems.length && (!schedulePublishedAt || newestTimestamp(scheduleItems) > schedulePublishedAt))
+  const pendingMessages = [
+    eventsPublishPending ? 'Events changed after the last mobile publish.' : '',
+    peoplePublishPending ? 'People/pass access changed after the last mobile publish.' : '',
+    schedulePublishPending ? 'Schedule changed after the last mobile publish.' : '',
+  ].filter(Boolean)
+
+  async function runDashboardPublish(kind: 'events' | 'people' | 'schedule') {
+    setPublishing(kind)
+    setPublishNotice('')
+    setPublishError('')
+    try {
+      if (kind === 'events') {
+        const response = await publishProgramEventsCallable({ orgId, programId: program.id })
+        setPublishNotice(`Published ${formatCount(response.data.itemCount)} event${response.data.itemCount === 1 ? '' : 's'} to Sang app.`)
+      } else if (kind === 'people') {
+        const response = await publishProgramPeopleAccessCallable({ orgId, programId: program.id, notify: true })
+        setPublishNotice(`Published ${formatCount(response.data.peopleCount)} people. Linked ${formatCount(response.data.linkedCount + response.data.alreadyLinkedCount)}, pending ${formatCount(response.data.pendingCount)}, review ${formatCount(response.data.manualReviewCount)}.`)
+      } else {
+        const response = await publishProgramScheduleCallable({ orgId, programId: program.id })
+        setPublishNotice(`Published ${formatCount(response.data.itemCount)} schedule item${response.data.itemCount === 1 ? '' : 's'} in ${formatCount(response.data.pageCount)} page${response.data.pageCount === 1 ? '' : 's'}.`)
+      }
+    } catch (publishFailure) {
+      setPublishError(publishFailure instanceof Error ? publishFailure.message : 'Unable to publish right now.')
+    } finally {
+      setPublishing('')
+    }
+  }
 
   return (
     <section className="page-stack">
@@ -2494,6 +2579,39 @@ function ProgramWorkspaceDashboard({
           <CalendarDays size={17} />
           Open events
         </button>
+      </section>
+
+      <section className="dashboard-publish-panel">
+        <div className="dashboard-publish-copy">
+          <span className="eyebrow">Mobile app publishing</span>
+          <h2>Keep Sang app data live</h2>
+          <p>Publish after editing events, people access, or schedule so attendees see the latest version.</p>
+        </div>
+        <div className="dashboard-publish-actions">
+          <button className={`secondary-button ${eventsPublishPending ? 'publish-button-pending' : ''}`} disabled={publishing !== '' || events.length === 0} onClick={() => runDashboardPublish('events')} type="button">
+            {publishing === 'events' ? <Loader2 className="spin" size={16} /> : <UploadCloud size={16} />}
+            Publish events
+          </button>
+          <button className={`secondary-button ${peoplePublishPending ? 'publish-button-pending' : ''}`} disabled={publishing !== '' || people.length === 0} onClick={() => runDashboardPublish('people')} type="button">
+            {publishing === 'people' ? <Loader2 className="spin" size={16} /> : <BadgeCheck size={16} />}
+            Publish people
+          </button>
+          <button className={`secondary-button ${schedulePublishPending ? 'publish-button-pending' : ''}`} disabled={publishing !== '' || scheduleItems.length === 0} onClick={() => runDashboardPublish('schedule')} type="button">
+            {publishing === 'schedule' ? <Loader2 className="spin" size={16} /> : <Clock size={16} />}
+            Publish schedule
+          </button>
+        </div>
+        {pendingMessages.length ? (
+          <div className="publish-reminder">
+            <ShieldCheck size={17} />
+            <div>
+              <strong>Publish reminder</strong>
+              {pendingMessages.map((message) => <span key={message}>{message}</span>)}
+            </div>
+          </div>
+        ) : null}
+        {publishNotice ? <p className="form-success">{publishNotice}</p> : null}
+        {publishError ? <p className="form-error">{publishError}</p> : null}
       </section>
 
       <div className="stats-grid">
@@ -2988,6 +3106,7 @@ function ProgramsPage({
   uid,
   programs,
   events,
+  venueCatalogs,
   onChoose,
   canCreateProgram,
   canDeleteProgram,
@@ -2996,6 +3115,7 @@ function ProgramsPage({
   uid: string
   programs: Program[]
   events: ProgramEvent[]
+  venueCatalogs: ProgramVenueCatalog[]
   onChoose?: (programId: string) => void
   canCreateProgram: boolean
   canDeleteProgram: boolean
@@ -3007,6 +3127,8 @@ function ProgramsPage({
   const [customProgramType, setCustomProgramType] = useState('')
   const [startDate, setStartDate] = useState(nowDateInput())
   const [endDate, setEndDate] = useState(nowDateInput())
+  const [startTime, setStartTime] = useState('09:00')
+  const [endTime, setEndTime] = useState('17:00')
   const [draftVenues, setDraftVenues] = useState<ProgramVenue[]>([])
   const [selectedVenueId, setSelectedVenueId] = useState('')
   const [logoUrl, setLogoUrl] = useState('')
@@ -3017,17 +3139,28 @@ function ProgramsPage({
   const [resultsEnabled, setResultsEnabled] = useState(false)
   const [createOpen, setCreateOpen] = useState(programs.length === 0 && canCreateProgram)
   const [venueDraftOpen, setVenueDraftOpen] = useState(false)
+  const [editingProgramId, setEditingProgramId] = useState('')
   const [busy, setBusy] = useState(false)
   const [deletingProgramId, setDeletingProgramId] = useState('')
   const [error, setError] = useState('')
-  const visiblePrograms = programs.filter((program) => program.status !== 'archived')
+  const visiblePrograms = useMemo(() => programs.filter((program) => program.status !== 'archived'), [programs])
   const selectedDraftVenue = draftVenues.find((venue) => venue.id === selectedVenueId) || null
+  const editingProgram = visiblePrograms.find((program) => program.id === editingProgramId) || null
+  const editingVenueCatalog = editingProgram
+    ? venueCatalogs.find((catalog) => catalog.id === editingProgram.id || catalog.programId === editingProgram.id) || null
+    : null
 
   useEffect(() => {
     if (!canCreateProgram && createOpen) {
       setCreateOpen(false)
     }
   }, [canCreateProgram, createOpen])
+
+  useEffect(() => {
+    if (editingProgramId && !visiblePrograms.some((program) => program.id === editingProgramId)) {
+      setEditingProgramId('')
+    }
+  }, [editingProgramId, visiblePrograms])
 
   async function createProgram(event: FormEvent) {
     event.preventDefault()
@@ -3050,6 +3183,8 @@ function ProgramsPage({
         programType: programType === 'custom' ? customProgramType.trim() || 'custom' : programType,
         startDate,
         endDate,
+        startTime,
+        endTime,
         venueName: selectedDraftVenue.name.trim(),
         city: '',
         logoUrl: logoUrl.trim(),
@@ -3097,6 +3232,8 @@ function ProgramsPage({
       setCustomProgramType('')
       setStartDate(nowDateInput())
       setEndDate(nowDateInput())
+      setStartTime('09:00')
+      setEndTime('17:00')
       setDraftVenues([])
       setSelectedVenueId('')
       setLogoUrl('')
@@ -3162,6 +3299,7 @@ function ProgramsPage({
               events={events.filter((programEvent) => programEvent.programId === program.id)}
               key={program.id}
               onDelete={canDeleteProgram ? deleteProgramFromList : undefined}
+              onEdit={canDeleteProgram ? setEditingProgramId : undefined}
               onOpen={onChoose}
               program={program}
             />
@@ -3204,8 +3342,16 @@ function ProgramsPage({
               <input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} required />
             </label>
             <label>
+              Start time
+              <input type="time" value={startTime} onChange={(event) => setStartTime(event.target.value)} />
+            </label>
+            <label>
               End date
               <input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} required />
+            </label>
+            <label>
+              End time
+              <input type="time" value={endTime} onChange={(event) => setEndTime(event.target.value)} />
             </label>
           </div>
 
@@ -3265,6 +3411,22 @@ function ProgramsPage({
         open={venueDraftOpen && createOpen}
         venues={draftVenues}
       />
+      <Modal
+        eyebrow="Program editor"
+        onClose={() => setEditingProgramId('')}
+        open={Boolean(editingProgram) && canDeleteProgram}
+        title={editingProgram ? `Edit ${editingProgram.name}` : 'Edit program'}
+        wide
+      >
+        {editingProgram && (
+          <ProgramSettingsForm
+            orgId={orgId}
+            program={editingProgram}
+            uid={uid}
+            venueCatalog={editingVenueCatalog}
+          />
+        )}
+      </Modal>
     </section>
   )
 }
@@ -3273,12 +3435,14 @@ function ProgramBlock({
   program,
   events,
   onOpen,
+  onEdit,
   onDelete,
   deleting,
 }: {
   program: Program
   events: ProgramEvent[]
   onOpen?: (programId: string) => void
+  onEdit?: (programId: string) => void
   onDelete?: (program: Program) => void
   deleting?: boolean
 }) {
@@ -3320,18 +3484,26 @@ function ProgramBlock({
       )}
       <div className="program-card-footer">
         <span><QrCode size={14} /> One program QR/pass</span>
-        {onOpen && (
-          <button className="secondary-button" onClick={() => onOpen(program.id)} type="button">
-            Open workspace
-            <ChevronRight size={16} />
-          </button>
-        )}
-        {onDelete && (
-          <button className="danger-button subtle-button" disabled={deleting} onClick={() => onDelete(program)} type="button">
-            {deleting ? <Loader2 className="spin" size={15} /> : <Trash2 size={15} />}
-            Delete
-          </button>
-        )}
+        <div className="program-card-actions">
+          {onEdit && (
+            <button className="secondary-button" onClick={() => onEdit(program.id)} type="button">
+              <Pencil size={16} />
+              Edit
+            </button>
+          )}
+          {onOpen && (
+            <button className="secondary-button" onClick={() => onOpen(program.id)} type="button">
+              Open workspace
+              <ChevronRight size={16} />
+            </button>
+          )}
+          {onDelete && (
+            <button className="danger-button subtle-button" disabled={deleting} onClick={() => onDelete(program)} type="button">
+              {deleting ? <Loader2 className="spin" size={15} /> : <Trash2 size={15} />}
+              Delete
+            </button>
+          )}
+        </div>
       </div>
     </article>
   )
@@ -3374,14 +3546,17 @@ function EventsPage({
   const [longitude, setLongitude] = useState<number | undefined>(savedVenues[0]?.longitude)
   const [directionsNote, setDirectionsNote] = useState(savedVenues[0]?.directionsNote || '')
   const [entryScope, setEntryScope] = useState<EntryScope>(program.entryScope === 'both' ? 'both' : 'event')
+  const [mobileVisible, setMobileVisible] = useState(true)
   const [profiles, setProfiles] = useState<EventProfile[]>([])
   const [allowedAudienceRoleIds, setAllowedAudienceRoleIds] = useState<string[]>(audienceRoles.map((role) => role.id))
   const [competitive, setCompetitive] = useState(Boolean(program.competitive))
   const [resultsEnabled, setResultsEnabled] = useState(Boolean(program.resultsEnabled))
   const [busy, setBusy] = useState(false)
+  const [publishingEvents, setPublishingEvents] = useState(false)
   const [editing, setEditing] = useState(false)
   const [venueModalOpen, setVenueModalOpen] = useState(false)
   const [error, setError] = useState('')
+  const [publishNotice, setPublishNotice] = useState('')
 
   const matchEventVenueId = useCallback((name: string, latitude?: number, longitude?: number) => findVenueId(savedVenues, { name, latitude, longitude }), [savedVenues])
 
@@ -3410,6 +3585,7 @@ function EventsPage({
     setLatitude(selectedEvent.latitude)
     setLongitude(selectedEvent.longitude)
     setEntryScope(selectedEvent.entryScope || (program.entryScope === 'both' ? 'both' : 'event'))
+    setMobileVisible(selectedEvent.mobileVisible !== false)
     setProfiles(selectedEvent.profiles || [])
     setAllowedAudienceRoleIds(selectedEvent.allowedAudienceRoleIds?.length ? selectedEvent.allowedAudienceRoleIds.map(slugify) : audienceRoles.map((role) => role.id))
     setCompetitive(Boolean(selectedEvent.competitive ?? program.competitive))
@@ -3463,6 +3639,7 @@ function EventsPage({
         longitude,
         address: eventVenueAddress.trim() || venueName.trim(),
         entryScope,
+        mobileVisible,
         profiles,
         allowedAudienceRoleIds,
         allowedAudienceRoleNames: selectedAudienceRoleNames(),
@@ -3510,6 +3687,7 @@ function EventsPage({
         longitude,
         address: eventVenueAddress.trim() || venueName.trim(),
         entryScope,
+        mobileVisible,
         profiles,
         allowedAudienceRoleIds,
         allowedAudienceRoleNames: selectedAudienceRoleNames(),
@@ -3543,6 +3721,20 @@ function EventsPage({
     }
   }
 
+  async function publishEvents() {
+    setError('')
+    setPublishNotice('')
+    setPublishingEvents(true)
+    try {
+      const response = await publishProgramEventsCallable({ orgId, programId: program.id })
+      setPublishNotice(`Published ${formatCount(response.data.itemCount)} event${response.data.itemCount === 1 ? '' : 's'} to Sang app.`)
+    } catch (publishError) {
+      setError(publishError instanceof Error ? publishError.message : 'Unable to publish events to Sang app.')
+    } finally {
+      setPublishingEvents(false)
+    }
+  }
+
   function startCreate() {
     setSelectedEventId('')
     setEditing(true)
@@ -3563,6 +3755,7 @@ function EventsPage({
     setLatitude(defaultVenue?.latitude)
     setLongitude(defaultVenue?.longitude)
     setEntryScope(program.entryScope === 'both' ? 'both' : 'event')
+    setMobileVisible(true)
     setProfiles([])
     setAllowedAudienceRoleIds(audienceRoles.map((role) => role.id))
     setCompetitive(Boolean(program.competitive))
@@ -3643,8 +3836,10 @@ function EventsPage({
               )}
               <ScheduleManager
                 event={selectedEvent}
+                events={events}
                 orgId={orgId}
                 program={program}
+                roles={roles}
                 scheduleItems={scheduleItems.filter((item) => item.eventId === selectedEvent.id)}
                 venueCatalog={venueCatalog}
               />
@@ -3698,6 +3893,10 @@ function EventsPage({
                     <label className="check-row">
                       <input checked={multiDate} onChange={(event) => setMultiDate(event.target.checked)} type="checkbox" />
                       <span>This event has multiple dates/times. Add exact blocks in Schedule after saving.</span>
+                    </label>
+                    <label className="check-row">
+                      <input checked={mobileVisible} onChange={(event) => setMobileVisible(event.target.checked)} type="checkbox" />
+                      <span>Show this event in the Sang mobile app after publishing events.</span>
                     </label>
                   </div>
                   <div className="role-access-grid">
@@ -3759,11 +3958,18 @@ function EventsPage({
           <h1>Events</h1>
           <p>Manage sessions, competitions, talks, workshops, venue zones, and gate-specific activities inside this program.</p>
         </div>
-        <button className="primary-button" onClick={startCreate} type="button">
-          <Plus size={17} />
-          Add event
-        </button>
+        <div className="command-actions">
+          <button className="secondary-button" disabled={publishingEvents || events.length === 0} onClick={publishEvents} type="button">
+            {publishingEvents ? <Loader2 className="spin" size={17} /> : <UploadCloud size={17} />}
+            Publish events
+          </button>
+          <button className="primary-button" onClick={startCreate} type="button">
+            <Plus size={17} />
+            Add event
+          </button>
+        </div>
       </section>
+      {publishNotice ? <p className="form-success">{publishNotice}</p> : null}
 
       {events.length === 0 && !editing ? (
         <section className="panel">
@@ -3782,6 +3988,7 @@ function EventsPage({
                 <div>
                   <strong>{programEvent.name}</strong>
                   <span>{programEvent.venueName || program.venueName || 'Venue pending'}</span>
+                  <small>{programEvent.mobileVisible === false ? 'Hidden from Sang app' : 'Visible after publish'}</small>
                 </div>
                 <ChevronRight size={17} />
               </button>
@@ -3789,6 +3996,14 @@ function EventsPage({
           </div>
         </section>
       )}
+      <ScheduleManager
+        events={events}
+        orgId={orgId}
+        program={program}
+        roles={roles}
+        scheduleItems={scheduleItems}
+        venueCatalog={venueCatalog}
+      />
     </section>
   )
 }
@@ -3797,23 +4012,33 @@ function ScheduleManager({
   orgId,
   program,
   event,
+  events,
+  roles,
   scheduleItems,
   venueCatalog,
 }: {
   orgId: string
   program: Program
-  event: ProgramEvent
+  event?: ProgramEvent | null
+  events?: ProgramEvent[]
+  roles: Role[]
   scheduleItems: ScheduleItem[]
   venueCatalog?: ProgramVenueCatalog | null
 }) {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [publishing, setPublishing] = useState(false)
   const [venueModalOpen, setVenueModalOpen] = useState(false)
   const [venueModalSeed, setVenueModalSeed] = useState('')
   const sortedItems = [...scheduleItems].sort((a, b) => (a.startsAt || '').localeCompare(b.startsAt || ''))
   const savedVenues = useMemo(() => [...(venueCatalog?.venues || [])].sort((a, b) => a.name.localeCompare(b.name)), [venueCatalog])
+  const audienceRoles = useMemo(() => getAudienceRoles(roles), [roles])
+  const availableParentItems = sortedItems.filter((item) => !item.parentScheduleItemId && !['draft', 'cancelled'].includes(item.status))
+  const programEvents = events || (event ? [event] : [])
+  const fixedEventId = event?.id || ''
 
   const createDraftRow = useCallback((): ScheduleDraftRow => {
+    const defaultVenue = savedVenues[0]
     return {
       id: makeLocalId(),
       title: '',
@@ -3821,23 +4046,30 @@ function ScheduleManager({
       customTypeLabel: '',
       startsAt: '',
       endsAt: '',
-      venueId: '',
-      venueName: '',
+      venueId: defaultVenue?.id || '',
+      venueName: defaultVenue?.name || '',
       roomId: '',
       roomName: '',
-      latitude: undefined,
-      longitude: undefined,
+      address: defaultVenue?.address || '',
+      locationNote: '',
+      directionsNote: defaultVenue?.directionsNote || '',
+      latitude: defaultVenue?.latitude,
+      longitude: defaultVenue?.longitude,
       visibility: 'public',
+      allowedRoleIds: [],
+      parentScheduleItemId: '',
+      groupLabel: '',
       status: 'scheduled',
       description: '',
+      eventId: fixedEventId,
     }
-  }, [])
+  }, [fixedEventId, savedVenues])
 
   const [rows, setRows] = useState<ScheduleDraftRow[]>(() => [createDraftRow()])
 
   useEffect(() => {
     setRows([createDraftRow()])
-  }, [createDraftRow, event.id])
+  }, [createDraftRow])
 
   function updateRow(rowId: string, changes: Partial<ScheduleDraftRow>) {
     setRows((current) => current.map((row) => row.id === rowId ? { ...row, ...changes } : row))
@@ -3856,6 +4088,32 @@ function ScheduleManager({
     setRows((current) => current.length === 1 ? [createDraftRow()] : current.filter((row) => row.id !== rowId))
   }
 
+  function selectedAudienceRoleNames(roleIds: string[]) {
+    return roleIds.map((roleId) => audienceRoles.find((role) => role.id === roleId)?.name || roleId)
+  }
+
+  function toggleScheduleRole(row: ScheduleDraftRow, roleId: string, checked: boolean) {
+    const nextRoleIds = checked
+      ? Array.from(new Set([...row.allowedRoleIds, roleId]))
+      : row.allowedRoleIds.filter((id) => id !== roleId)
+    updateRow(row.id, { allowedRoleIds: nextRoleIds })
+  }
+
+  async function publishSchedule() {
+    const confirmed = window.confirm('Publish the current schedule to Sang mobile app? Draft, cancelled, and staff-only rows will not be shown.')
+    if (!confirmed) return
+    setError('')
+    setPublishing(true)
+    try {
+      const response = await publishProgramScheduleCallable({ orgId, programId: program.id })
+      window.alert(`Schedule published. ${formatCount(response.data.itemCount)} mobile items, ${formatCount(response.data.pageCount)} page${response.data.pageCount === 1 ? '' : 's'}.`)
+    } catch (publishError) {
+      setError(publishError instanceof Error ? publishError.message : 'Unable to publish schedule.')
+    } finally {
+      setPublishing(false)
+    }
+  }
+
   async function addScheduleItems(eventSubmit: FormEvent) {
     eventSubmit.preventDefault()
     setError('')
@@ -3869,13 +4127,18 @@ function ScheduleManager({
       setError('Every schedule row needs a title and start time.')
       return
     }
+    const roleIssue = dirtyRows.find((row) => row.visibility === 'rolesOnly' && row.allowedRoleIds.length === 0)
+    if (roleIssue) {
+      setError('Select at least one role for role-based schedule rows.')
+      return
+    }
     setBusy(true)
     try {
       for (const [index, row] of dirtyRows.entries()) {
         await createScheduleItemCallable({
           orgId,
           programId: program.id,
-          eventId: event.id,
+          eventId: fixedEventId || row.eventId,
           title: row.title.trim(),
           type: row.type,
           customTypeLabel: row.type === 'custom' ? row.customTypeLabel.trim() : '',
@@ -3887,9 +4150,16 @@ function ScheduleManager({
           venueName: row.venueName.trim(),
           roomId: row.roomId,
           roomName: row.roomName.trim(),
+          address: row.address.trim(),
+          locationNote: row.locationNote.trim(),
+          directionsNote: row.directionsNote.trim(),
           latitude: row.latitude,
           longitude: row.longitude,
           visibility: row.visibility,
+          allowedRoleIds: row.visibility === 'rolesOnly' || row.visibility === 'participantsOnly' ? row.allowedRoleIds : [],
+          allowedRoleNames: row.visibility === 'rolesOnly' || row.visibility === 'participantsOnly' ? selectedAudienceRoleNames(row.allowedRoleIds) : [],
+          parentScheduleItemId: row.parentScheduleItemId,
+          groupLabel: row.groupLabel.trim(),
           status: row.status,
           sortOrder: sortedItems.length + index + 1,
         })
@@ -3913,10 +4183,16 @@ function ScheduleManager({
       <div className="schedule-manager-head">
         <div>
           <span className="eyebrow">Schedule</span>
-          <h2>Time blocks for this event</h2>
+          <h2>{event ? 'Time blocks for this event' : 'Program schedule'}</h2>
           <p>{sortedItems.length ? `${sortedItems.length} schedule blocks added` : 'Build the exact event timeline: sessions, rounds, breaks, check-in windows, and result slots.'}</p>
         </div>
-        <span className="schedule-count"><Clock size={16} /> {sortedItems.length}</span>
+        <div className="schedule-head-actions">
+          <span className="schedule-count"><Clock size={16} /> {sortedItems.length}</span>
+          <button className="primary-button" disabled={publishing} onClick={publishSchedule} type="button">
+            {publishing ? <Loader2 className="spin" size={17} /> : <UploadCloud size={17} />}
+            Publish schedule
+          </button>
+        </div>
       </div>
 
       <form className="schedule-form schedule-form-card" onSubmit={addScheduleItems}>
@@ -3927,6 +4203,7 @@ function ScheduleManager({
           <span>Start</span>
           <span>End</span>
           <span>Visibility</span>
+          <span>{event ? 'Workshop / group' : 'Event / group'}</span>
           <span>Venue / hall</span>
           <span>Note</span>
           <span />
@@ -3956,10 +4233,30 @@ function ScheduleManager({
                 <span>Visibility</span>
                 <select value={row.visibility} onChange={(eventChange) => updateRow(row.id, { visibility: eventChange.target.value as ScheduleVisibility })}>
                   <option value="public">Public</option>
+                  <option value="rolesOnly">Roles only</option>
                   <option value="participantsOnly">Participants</option>
                   <option value="staffOnly">Staff only</option>
                 </select>
               </label>
+              <div className="schedule-group-fields">
+                {!fixedEventId && (
+                  <label>
+                    <span>Event</span>
+                    <select value={row.eventId} onChange={(eventChange) => updateRow(row.id, { eventId: eventChange.target.value })}>
+                      <option value="">Program-level</option>
+                      {programEvents.map((programEvent) => <option key={programEvent.id} value={programEvent.id}>{programEvent.name}</option>)}
+                    </select>
+                  </label>
+                )}
+                <label>
+                  <span>Workshop under</span>
+                  <select value={row.parentScheduleItemId} onChange={(eventChange) => updateRow(row.id, { parentScheduleItemId: eventChange.target.value })}>
+                    <option value="">Main schedule item</option>
+                    {availableParentItems.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
+                  </select>
+                </label>
+                <input placeholder="Group label" value={row.groupLabel} onChange={(eventChange) => updateRow(row.id, { groupLabel: eventChange.target.value })} />
+              </div>
               <ScheduleVenueSelector
                 onAddVenue={() => openVenueModal()}
                 onChange={(changes) => updateRow(row.id, changes)}
@@ -3978,6 +4275,16 @@ function ScheduleManager({
                   <span>Custom type</span>
                   <input placeholder="Poster viewing, rehearsal..." value={row.customTypeLabel} onChange={(eventChange) => updateRow(row.id, { customTypeLabel: eventChange.target.value })} />
                 </label>
+              )}
+              {(row.visibility === 'rolesOnly' || row.visibility === 'participantsOnly') && (
+                <div className="schedule-role-picker">
+                  {audienceRoles.map((role) => (
+                    <label className="check-chip" key={role.id}>
+                      <input checked={row.allowedRoleIds.includes(role.id)} onChange={(eventChange) => toggleScheduleRole(row, role.id, eventChange.target.checked)} type="checkbox" />
+                      <span>{role.name}</span>
+                    </label>
+                  ))}
+                </div>
               )}
             </div>
           ))}
@@ -4008,7 +4315,10 @@ function ScheduleManager({
                 </div>
                 <strong>{item.title}</strong>
                 <p>{formatDateTime(item.startsAt)} {item.endsAt ? `to ${formatDateTime(item.endsAt)}` : ''}</p>
-                <small><MapPin size={13} /> {item.venueName || event.venueName || program.venueName || 'Venue pending'} {item.roomName ? `- ${item.roomName}` : ''}</small>
+                <small><MapPin size={13} /> {item.venueName || event?.venueName || program.venueName || 'Venue pending'} {item.roomName ? `- ${item.roomName}` : ''}</small>
+                {item.eventId && !event ? <small><CalendarDays size={13} /> {programEvents.find((programEvent) => programEvent.id === item.eventId)?.name || 'Event schedule'}</small> : null}
+                {item.parentScheduleItemId ? <small><GitBranch size={13} /> Workshop under {availableParentItems.find((parent) => parent.id === item.parentScheduleItemId)?.title || 'schedule group'}</small> : null}
+                {item.visibility === 'rolesOnly' || item.visibility === 'participantsOnly' ? <small><ShieldCheck size={13} /> {(item.allowedRoleNames?.length ? item.allowedRoleNames : item.allowedRoleIds || []).join(', ') || 'Role-based'}</small> : null}
                 {item.description && <p>{item.description}</p>}
               </div>
               <button className="icon-button" onClick={() => removeScheduleItem(item)} title="Delete schedule item" type="button">
@@ -4166,6 +4476,8 @@ function ProgramSettingsForm({
   const [status, setStatus] = useState<Program['status']>(program.status)
   const [startDate, setStartDate] = useState(program.startDate)
   const [endDate, setEndDate] = useState(program.endDate)
+  const [startTime, setStartTime] = useState(program.startTime || '')
+  const [endTime, setEndTime] = useState(program.endTime || '')
   const [venueName, setVenueName] = useState(program.venueName || '')
   const [venueAddress, setVenueAddress] = useState(program.address || program.venueName || '')
   const [city, setCity] = useState(program.city || '')
@@ -4192,6 +4504,8 @@ function ProgramSettingsForm({
     setStatus(program.status)
     setStartDate(program.startDate)
     setEndDate(program.endDate)
+    setStartTime(program.startTime || '')
+    setEndTime(program.endTime || '')
     setVenueName(program.venueName || '')
     setVenueAddress(program.address || program.venueName || '')
     setCity(program.city || '')
@@ -4221,6 +4535,8 @@ function ProgramSettingsForm({
         status,
         startDate,
         endDate,
+        startTime,
+        endTime,
         venueName: venueName.trim(),
         city: city.trim(),
         logoUrl: logoUrl.trim(),
@@ -4291,8 +4607,16 @@ function ProgramSettingsForm({
             <input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} required />
           </label>
           <label>
+            Start time
+            <input type="time" value={startTime} onChange={(event) => setStartTime(event.target.value)} />
+          </label>
+          <label>
             End date
             <input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} required />
+          </label>
+          <label>
+            End time
+            <input type="time" value={endTime} onChange={(event) => setEndTime(event.target.value)} />
           </label>
         </div>
 
@@ -4512,7 +4836,7 @@ function TeamPage({ orgId, roles, programs, events, members }: { orgId: string; 
   const visibleMembers = members.filter((member) => member.status !== 'deleted' && member.status !== 'claimed')
   const [email, setEmail] = useState('')
   const [displayName, setDisplayName] = useState('')
-  const [roleId, setRoleId] = useState(teamRoles[0]?.id || 'gate-staff')
+  const [roleId, setRoleId] = useState(teamRoles[0]?.id || 'gate-executive')
   const [scope, setScope] = useState<TeamScope>('organization')
   const [programId, setProgramId] = useState('')
   const [eventId, setEventId] = useState('')
@@ -4520,7 +4844,7 @@ function TeamPage({ orgId, roles, programs, events, members }: { orgId: string; 
   const [busyMemberId, setBusyMemberId] = useState('')
   const [editingMember, setEditingMember] = useState<TeamMember | null>(null)
   const [editDisplayName, setEditDisplayName] = useState('')
-  const [editRoleId, setEditRoleId] = useState(teamRoles[0]?.id || 'gate-staff')
+  const [editRoleId, setEditRoleId] = useState(teamRoles[0]?.id || 'gate-executive')
   const [editScope, setEditScope] = useState<TeamScope>('organization')
   const [editProgramId, setEditProgramId] = useState('')
   const [editEventId, setEditEventId] = useState('')
@@ -4528,14 +4852,14 @@ function TeamPage({ orgId, roles, programs, events, members }: { orgId: string; 
 
   useEffect(() => {
     if (!teamRoles.some((role) => role.id === roleId)) {
-      setRoleId(teamRoles[0]?.id || 'gate-staff')
+      setRoleId(teamRoles[0]?.id || 'gate-executive')
     }
   }, [roleId, teamRoles])
 
   useEffect(() => {
     if (!editingMember) return
     setEditDisplayName(editingMember.displayName || '')
-    setEditRoleId(teamRoles.some((role) => role.id === editingMember.roleId) ? editingMember.roleId : teamRoles[0]?.id || 'gate-staff')
+    setEditRoleId(teamRoles.some((role) => role.id === editingMember.roleId) ? editingMember.roleId : teamRoles[0]?.id || 'gate-executive')
     setEditScope(editingMember.scope || 'organization')
     setEditProgramId(editingMember.programId || '')
     setEditEventId(editingMember.eventId || '')
@@ -4774,13 +5098,15 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
   const [programId, setProgramId] = useState('')
   const [eventIds, setEventIds] = useState<string[]>([])
   const audienceRoles = useMemo(() => getAudienceRoles(roles), [roles])
-  const [programRoleId, setProgramRoleId] = useState(audienceRoles[0]?.id || 'attendee')
+  const [programRoleId, setProgramRoleId] = useState(audienceRoles[0]?.id || 'visitor')
   const [eventRoleById, setEventRoleById] = useState<Record<string, string>>({})
   const [manualName, setManualName] = useState('')
   const [manualEmail, setManualEmail] = useState('')
   const [manualPhone, setManualPhone] = useState('')
   const [manualCompany, setManualCompany] = useState('')
   const [manualDesignation, setManualDesignation] = useState('')
+  const [editingPerson, setEditingPerson] = useState<ProgramPerson | null>(null)
+  const [formBusy, setFormBusy] = useState(false)
   const [peopleError, setPeopleError] = useState('')
   const [peopleNotice, setPeopleNotice] = useState('')
   const [passBusyPersonId, setPassBusyPersonId] = useState('')
@@ -4797,7 +5123,7 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
 
   useEffect(() => {
     if (!audienceRoles.some((role) => role.id === programRoleId)) {
-      setProgramRoleId(audienceRoles[0]?.id || 'attendee')
+      setProgramRoleId(audienceRoles[0]?.id || 'visitor')
     }
   }, [audienceRoles, programRoleId])
 
@@ -4822,6 +5148,12 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
     if (checked) {
       const firstAllowedRole = rolesForEvent(programEvent)[0]?.id || programRoleId
       setEventRoleById((current) => ({ ...current, [programEvent.id]: current[programEvent.id] || firstAllowedRole }))
+    } else {
+      setEventRoleById((current) => {
+        const next = { ...current }
+        delete next[programEvent.id]
+        return next
+      })
     }
   }
 
@@ -4837,6 +5169,55 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
         status: 'allowed' as const,
       }
     })
+  }
+
+  function personEventAccessEntries(person: ProgramPerson) {
+    if (person.eventAccess && typeof person.eventAccess === 'object') {
+      return Object.entries(person.eventAccess).map(([eventId, access]) => ({
+        ...access,
+        eventId: access.eventId || eventId,
+      }))
+    }
+    return person.eventAccessList || []
+  }
+
+  function resetPersonForm() {
+    setEditingPerson(null)
+    setProgramRoleId(audienceRoles[0]?.id || 'visitor')
+    setEventIds([])
+    setEventRoleById({})
+    setManualName('')
+    setManualEmail('')
+    setManualPhone('')
+    setManualCompany('')
+    setManualDesignation('')
+  }
+
+  function startEditPerson(person: ProgramPerson) {
+    const nextProgramRole = resolveAudienceRole(person.programRoleId || person.kind, audienceRoles, programRoleId)
+    const accessEntries = personEventAccessEntries(person)
+      .filter((access) => !['revoked', 'cancelled', 'rejected'].includes(access.status || 'allowed'))
+      .filter((access) => events.some((programEvent) => programEvent.id === access.eventId && programEvent.programId === person.programId))
+    const nextEventRoleById = accessEntries.reduce<Record<string, string>>((current, access) => {
+      if (access.eventId) {
+        const programEvent = events.find((item) => item.id === access.eventId && item.programId === person.programId)
+        const resolvedRole = resolveAudienceRole(access.roleId || nextProgramRole.id, audienceRoles, nextProgramRole.id)
+        current[access.eventId] = programEvent ? fitRoleToEvent(programEvent, resolvedRole).id : resolvedRole.id
+      }
+      return current
+    }, {})
+    setPeopleError('')
+    setPeopleNotice('')
+    setEditingPerson(person)
+    setProgramId(person.programId)
+    setProgramRoleId(nextProgramRole.id)
+    setEventIds(accessEntries.map((access) => access.eventId || '').filter(Boolean))
+    setEventRoleById(nextEventRoleById)
+    setManualName(person.fullName || '')
+    setManualEmail(person.email || '')
+    setManualPhone(person.phone || '')
+    setManualCompany(person.organization || person.company || '')
+    setManualDesignation(person.designation || '')
   }
 
   async function createPerson(input: ProgramPersonInput) {
@@ -4935,10 +5316,14 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
 
   async function addManual(event: FormEvent) {
     event.preventDefault()
-    await createPerson({
+    setPeopleError('')
+    setPeopleNotice('')
+    setFormBusy(true)
+    const fullName = manualName.trim()
+    const payload = {
       orgId,
       programId,
-      fullName: manualName.trim(),
+      fullName,
       email: manualEmail.trim().toLowerCase(),
       phone: manualPhone.trim(),
       kind: programRoleId,
@@ -4949,12 +5334,34 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
       designation: manualDesignation.trim(),
       eventIds,
       eventAccess: buildManualEventAccess(),
-    })
-    setManualName('')
-    setManualEmail('')
-    setManualPhone('')
-    setManualCompany('')
-    setManualDesignation('')
+    }
+    try {
+      if (editingPerson) {
+        await updateProgramPersonAccessCallable({
+          orgId,
+          programPersonId: editingPerson.id,
+          fullName: payload.fullName,
+          email: payload.email,
+          phone: payload.phone,
+          kind: payload.kind,
+          programRoleId: payload.programRoleId,
+          programRoleName: payload.programRoleName,
+          company: payload.company,
+          organization: payload.organization,
+          designation: payload.designation,
+          eventAccess: payload.eventAccess,
+        })
+        setPeopleNotice(`${fullName} updated. Access changes are synced to Sang.`)
+      } else {
+        await createPerson(payload)
+        setPeopleNotice(`${fullName} added and pass issued.`)
+      }
+      resetPersonForm()
+    } catch (saveError) {
+      setPeopleError(saveError instanceof Error ? saveError.message : 'Unable to save this person.')
+    } finally {
+      setFormBusy(false)
+    }
   }
 
   function importCsv(file: File) {
@@ -5099,13 +5506,13 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
         <div className="panel-heading">
           <div>
             <span className="eyebrow">People</span>
-            <h2>Add or import</h2>
+            <h2>{editingPerson ? 'Edit person access' : 'Add or import'}</h2>
           </div>
-          <Upload size={20} />
+          {editingPerson ? <Pencil size={20} /> : <Upload size={20} />}
         </div>
         <label>
           Program
-          <select value={programId} onChange={(event) => { setProgramId(event.target.value); setEventIds([]); setEventRoleById({}) }} required>
+          <select disabled={Boolean(editingPerson)} value={programId} onChange={(event) => { setProgramId(event.target.value); setEventIds([]); setEventRoleById({}) }} required>
             <option value="">Select program</option>
             {programs.map((program) => <option key={program.id} value={program.id}>{program.name}</option>)}
           </select>
@@ -5164,11 +5571,22 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
           Designation
           <input placeholder="Founder, delegate, student, manager..." value={manualDesignation} onChange={(event) => setManualDesignation(event.target.value)} />
         </label>
-        <button className="primary-button" disabled={!programId} type="submit"><Plus size={17} />Add and issue pass</button>
+        <div className="person-form-actions">
+          <button className="primary-button" disabled={!programId || formBusy} type="submit">
+            {formBusy ? <Loader2 className="spin" size={17} /> : editingPerson ? <Save size={17} /> : <Plus size={17} />}
+            {editingPerson ? 'Save changes' : 'Add and issue pass'}
+          </button>
+          {editingPerson && (
+            <button className="secondary-button" disabled={formBusy} onClick={resetPersonForm} type="button">
+              <X size={17} />
+              Cancel edit
+            </button>
+          )}
+        </div>
         <label className="file-drop">
           <Upload size={18} />
           Upload CSV
-          <input accept=".csv" disabled={!programId} onChange={(event) => event.target.files?.[0] && importCsv(event.target.files[0])} type="file" />
+          <input accept=".csv" disabled={!programId || Boolean(editingPerson)} onChange={(event) => event.target.files?.[0] && importCsv(event.target.files[0])} type="file" />
         </label>
       </form>
 
@@ -5249,7 +5667,7 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
                     <td><span className={`status ${passStatusClass(person)}`}>{person.passStatus || 'notIssued'}</span></td>
                     <td>
                       <div className="pass-cell">
-                        {pass ? <PassPreview payload={pass.qrPayload} /> : <span className="muted">Pending</span>}
+                        {pass ? <PassPreview payload={pass.qrPayload} passCode={pass.passCode || person.passCode || ''} /> : <span className="muted">Pending</span>}
                         <button
                           className="icon-button"
                           disabled={passBusyPersonId === person.id || accessState !== 'active'}
@@ -5263,6 +5681,15 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
                     </td>
                     <td>
                       <div className="table-actions">
+                        <button
+                          className="icon-button"
+                          disabled={formBusy}
+                          onClick={() => startEditPerson(person)}
+                          title="Edit details and event access"
+                          type="button"
+                        >
+                          {editingPerson?.id === person.id ? <Check size={16} /> : <Pencil size={16} />}
+                        </button>
                         {accessState === 'blocked' ? (
                           <button
                             className="icon-button"
@@ -5306,14 +5733,19 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
   )
 }
 
-function PassPreview({ payload }: { payload: string }) {
+function PassPreview({ payload, passCode }: { payload: string; passCode?: string }) {
   const [src, setSrc] = useState('')
 
   useEffect(() => {
     QRCode.toDataURL(payload, { margin: 1, width: 96 }).then(setSrc)
   }, [payload])
 
-  return src ? <img alt="Pass QR" className="qr-thumb" src={src} /> : <QrCode size={24} />
+  return (
+    <span className="pass-preview">
+      {src ? <img alt="Pass QR" className="qr-thumb" src={src} /> : <QrCode size={24} />}
+      {passCode ? <span className="pass-code">{passCode}</span> : null}
+    </span>
+  )
 }
 
 function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; profile: PeUser; setProfile: (profile: PeUser) => void }) {
@@ -5526,15 +5958,15 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
   return (
     <Shell onSwitchProgram={switchProgram} organization={organization} route={route} selectedProgram={activeProgram} setRoute={setRoute} user={firebaseUser} visibleNavItems={visibleNavItems}>
       {programs.error || roles.error || ownMemberships.error || people.error || scheduleItems.error || venueCatalogs.error || partners.error || passes.error || members.error ? <p className="form-error">{programs.error || roles.error || ownMemberships.error || people.error || scheduleItems.error || venueCatalogs.error || partners.error || passes.error || members.error}</p> : null}
-      {route === 'dashboard' && activeProgram && <ProgramWorkspaceDashboard events={activeEvents} people={activePeople} program={activeProgram} setRoute={setRoute} venueCatalog={activeVenueCatalog} />}
+      {route === 'dashboard' && activeProgram && <ProgramWorkspaceDashboard events={activeEvents} orgId={orgId} people={activePeople} program={activeProgram} scheduleItems={activeScheduleItems} setRoute={setRoute} venueCatalog={activeVenueCatalog} />}
       {route === 'dashboard' && !activeProgram && <DashboardPage people={people.rows} programs={sortedPrograms} setRoute={setRoute} />}
       {route === 'events' && activeProgram && <EventsPage events={activeEvents} orgId={orgId} program={activeProgram} roles={roles.rows} scheduleItems={activeScheduleItems} uid={firebaseUser.uid} venueCatalog={activeVenueCatalog} />}
-      {route === 'events' && !activeProgram && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} />}
+      {route === 'events' && !activeProgram && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} venueCatalogs={venueCatalogs.rows} />}
       {route === 'venues' && activeProgram && <VenuesPage orgId={orgId} program={activeProgram} venueCatalog={activeVenueCatalog} />}
-      {route === 'venues' && !activeProgram && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} />}
+      {route === 'venues' && !activeProgram && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} venueCatalogs={venueCatalogs.rows} />}
       {route === 'patrons' && activeProgram && <PatronsPage orgId={orgId} partners={activePartners} program={activeProgram} uid={firebaseUser.uid} />}
-      {route === 'patrons' && !activeProgram && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} />}
-      {route === 'programs' && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} />}
+      {route === 'patrons' && !activeProgram && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} venueCatalogs={venueCatalogs.rows} />}
+      {route === 'programs' && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} venueCatalogs={venueCatalogs.rows} />}
       {route === 'settings' && <SettingsPage canManageOrganization={canManageOrganization} canManageProgram={canManageProgram} onProgramSelect={chooseProgramInSettings} orgId={orgId} organization={organization} program={activeProgram} programs={sortedPrograms} uid={firebaseUser.uid} venueCatalog={activeVenueCatalog} />}
       {route === 'roles' && <RolesPage orgId={orgId} roles={roles.rows} />}
       {route === 'team' && <TeamPage events={events.rows} members={members.rows} orgId={orgId} programs={sortedPrograms} roles={roles.rows} />}

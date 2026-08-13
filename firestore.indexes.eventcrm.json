@@ -90,22 +90,6 @@
       ]
     },
     {
-      "collectionGroup": "peEventSchedule",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "orgId", "order": "ASCENDING" },
-        { "fieldPath": "programId", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "peEventSchedule",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "programId", "order": "ASCENDING" },
-        { "fieldPath": "updatedAt", "order": "DESCENDING" }
-      ]
-    },
-    {
       "collectionGroup": "peProgramPeople",
       "queryScope": "COLLECTION",
       "fields": [
@@ -151,6 +135,25 @@
       "fields": [
         { "fieldPath": "orgId", "order": "ASCENDING" },
         { "fieldPath": "email", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "peoplePublic",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "sortName", "order": "ASCENDING" },
+        { "fieldPath": "programPersonId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "peoplePublic",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "roleKey", "order": "ASCENDING" },
+        { "fieldPath": "sortName", "order": "ASCENDING" },
+        { "fieldPath": "programPersonId", "order": "ASCENDING" }
       ]
     },
     {

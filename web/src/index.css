@@ -378,6 +378,18 @@ th {
   padding: 0 14px;
 }
 
+.secondary-button.publish-button-pending {
+  color: #5f3700;
+  background: #ffc857;
+  border-color: #d99100;
+  box-shadow: 0 10px 24px rgba(217, 145, 0, 0.22);
+}
+
+.secondary-button.publish-button-pending:hover {
+  background: #ffbb2f;
+  border-color: #b87500;
+}
+
 .danger-button {
   color: var(--red);
   background: #fff8f8;
@@ -649,6 +661,12 @@ th {
 .form-panel {
   display: grid;
   gap: 14px;
+}
+
+.person-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .panel-heading {
@@ -1183,6 +1201,14 @@ th {
   gap: 6px;
 }
 
+.program-card-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .more-card {
   min-height: 50px;
   display: grid;
@@ -1621,6 +1647,73 @@ th {
   align-self: end;
 }
 
+.dashboard-publish-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: var(--shadow);
+  padding: 16px;
+}
+
+.dashboard-publish-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.dashboard-publish-copy h2 {
+  font-size: 20px;
+  line-height: 1.15;
+}
+
+.dashboard-publish-copy p {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.dashboard-publish-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.publish-reminder {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  border: 1px solid #f4d79c;
+  border-radius: 8px;
+  background: #fff8e8;
+  color: #7c4a03;
+  padding: 12px;
+}
+
+.publish-reminder div {
+  display: grid;
+  gap: 3px;
+}
+
+.publish-reminder strong {
+  font-size: 13px;
+}
+
+.publish-reminder span {
+  color: #87580f;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.dashboard-publish-panel .form-success,
+.dashboard-publish-panel .form-error {
+  grid-column: 1 / -1;
+}
+
 .workspace-meta {
   display: flex;
   flex-wrap: wrap;
@@ -1768,7 +1861,7 @@ th {
 .schedule-bulk-head,
 .schedule-bulk-row {
   display: grid;
-  grid-template-columns: minmax(150px, 1.1fr) minmax(130px, 0.72fr) minmax(170px, 0.88fr) minmax(170px, 0.88fr) minmax(120px, 0.62fr) minmax(260px, 1.35fr) minmax(150px, 0.9fr) 38px;
+  grid-template-columns: minmax(150px, 1.05fr) minmax(120px, 0.65fr) minmax(160px, 0.78fr) minmax(160px, 0.78fr) minmax(120px, 0.6fr) minmax(180px, 0.9fr) minmax(230px, 1.2fr) minmax(145px, 0.8fr) 38px;
   gap: 8px;
   align-items: start;
 }
@@ -1809,6 +1902,12 @@ th {
   min-width: 0;
 }
 
+.schedule-group-fields {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
 .schedule-venue-selector label {
   display: grid;
   gap: 5px;
@@ -1821,6 +1920,21 @@ th {
 
 .schedule-custom-type {
   grid-column: 2 / span 2;
+}
+
+.schedule-role-picker {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.schedule-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .split-actions {
@@ -2196,6 +2310,13 @@ th {
   align-items: center;
 }
 
+.command-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
 .event-workspace {
   display: grid;
   grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
@@ -2264,6 +2385,12 @@ th {
   color: var(--muted);
   font-size: 12px;
   font-weight: 700;
+}
+
+.event-tile small {
+  color: #17746f;
+  font-size: 11px;
+  font-weight: 800;
 }
 
 .event-detail-panel {
@@ -2567,6 +2694,20 @@ th {
   align-items: center;
   gap: 8px;
   min-width: 96px;
+}
+
+.pass-preview {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pass-code {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: var(--green-ink);
+  font-variant-numeric: tabular-nums;
 }
 
 .file-drop {

@@ -137,7 +137,8 @@ Purpose: role definitions and permission sets for an organization.
 
 Document id:
 
-- Default ids: `owner`, `event-lead`, `gate-staff`, `analyst`
+- Default team role ids: `program-coordinator`, `event-coordinator`, `owner`, `gate-executive`
+- Default audience role ids: `visitor`, `participants`, `delegates`, `speakers`, `media`, `mentor`, `patrons`
 - Custom role ids are created by role editor.
 
 Main fields:
@@ -337,7 +338,7 @@ Important behavior:
 - `entryScope` controls whether entry pass should work at program gate, event gate, or both.
 - `competitive/resultsEnabled` are program-level controls; event-level result flag is relevant only if program supports competition/results.
 - `schedule`, `infoSections`, and `fieldDefinitions` are lightweight program-level content/config placeholders stored directly on `pePrograms`.
-- Detailed CRM schedule editing source lives in `peEventScheduleDashboard`; Sang mobile/audience reads the compact `peEventSchedule/{eventId}` snapshot.
+- Detailed CRM schedule editing source lives in `peEventScheduleDashboard`; Sang mobile/audience reads the manually published `peProgramSchedule/{programId}` index and `peProgramSchedulePages/{pageId}` rows.
 - Saved venue suggestions for one program live in `peProgramVenues/{programId}`. Audience-facing location data is copied into program/event/schedule docs where needed.
 
 Before changing:
@@ -419,12 +420,12 @@ Important behavior:
 - `updateEvent` validates that event belongs to program and org.
 - Event-scoped members can load/edit only their assigned event when their role has `event.write`.
 - Schedule summary fields are stored here for fast event list/card rendering.
-- Detailed CRM schedule lives in `peEventScheduleDashboard`; audience/mobile schedule lives in `peEventSchedule/{eventId}`.
+- Detailed CRM schedule lives in `peEventScheduleDashboard`; audience/mobile schedule is published manually into `peProgramSchedule/{programId}` plus `peProgramSchedulePages/{pageId}`.
 
 Before changing:
 
 - If delete behavior is changed, consider soft-delete instead of hard-delete because schedule items, people assignments, check-ins, and analytics can point to event ids.
-- If adding multi-day schedule, keep item-level times in `peEventScheduleDashboard` and rebuild the audience snapshot after every write.
+- If adding multi-day schedule, keep item-level times in `peEventScheduleDashboard` and rebuild the audience snapshot only when organizer clicks "Publish schedule".
 
 ### `peEventScheduleDashboard/{scheduleItemId}`
 
@@ -474,24 +475,24 @@ Rules:
 
 Important behavior:
 
-- On create/update/delete, function rebuilds `peEventSchedule/{eventId}` when `eventId` exists.
-- The same rebuild recalculates `peEvents/{eventId}.scheduleItemCount`, `nextScheduleTitle`, and `nextScheduleAt`.
+- On create/update/delete, the CRM source is updated only. It does not auto-publish to mobile.
+- Organizer must click "Publish schedule" to rebuild the mobile snapshot.
 - When organizer enters/selects a venue and optional room/hall, the function upserts that venue into `peProgramVenues/{programId}` for reuse.
 - CRM keeps schedule as separate documents so organizer edits, permissions, future audit trails, and large agendas stay manageable.
-- Audience/mobile reads the snapshot document instead of reading many CRM schedule documents.
+- Audience/mobile reads the published snapshot instead of reading many CRM schedule documents.
 
 Before changing:
 
 - Add assigned staff if schedule item ownership is required.
 - Add reorder logic carefully; do not overwrite unrelated items.
 
-### `peEventSchedule/{eventId}`
+### `peProgramSchedule/{programId}`
 
-Purpose: fast audience/mobile schedule snapshot for one event.
+Purpose: lightweight mobile schedule index for one program.
 
 Document id:
 
-- Same as `peEvents/{eventId}`
+- Same as `pePrograms/{programId}`
 
 Main fields:
 
@@ -499,11 +500,62 @@ Main fields:
 {
   orgId: string,
   programId: string,
-  eventId: string,
+  mode: "empty" | "paged",
+  pageSize: number,
   itemCount: number,
   version: number,
+  pages: Array<{
+    pageId: string,
+    pageNo: number,
+    itemCount: number,
+    dateKeys: string[]
+  }>,
+  days: Array<{
+    dateKey: string,
+    dateLabel: string,
+    itemCount: number,
+    pageIds: string[]
+  }>,
+  updatedAt: Timestamp
+}
+```
+
+Created/updated by:
+
+- `publishProgramSchedule`
+
+Rules:
+
+- Read: CRM member with workspace read permission and matching organization/program scope.
+- Write: false from client. Use Cloud Functions only.
+
+Important behavior:
+
+- This document stores schedule metadata and page pointers only.
+- Actual mobile schedule rows live in `peProgramSchedulePages`.
+- `items` is intentionally removed during publish to avoid duplicating the same schedule rows in two collections.
+- Mobile should normally call `getMyProgramSchedule`, which verifies `users/{uid}/eventAccess/{programId}` and returns only rows allowed for that user.
+
+### `peProgramSchedulePages/{pageId}`
+
+Purpose: paged mobile schedule item storage for one program.
+
+Document id:
+
+- `${programId}_p001`, `${programId}_p002`, etc.
+
+Main fields:
+
+```ts
+{
+  orgId: string,
+  programId: string,
+  pageNo: number,
+  itemCount: number,
+  dateKeys: string[],
   items: Array<{
     id: string,
+    eventId: string,
     title: string,
     type: string,
     customTypeLabel: string,
@@ -517,9 +569,12 @@ Main fields:
     roomName: string,
     latitude?: number,
     longitude?: number,
-    visibility: "public" | "participantsOnly",
+    visibility: "public" | "participantsOnly" | "rolesOnly",
+    allowedRoleIds: string[],
+    allowedRoleNames: string[],
     status: string,
-    sortOrder: number
+    sortOrder: number,
+    workshops?: Array<object>
   }>,
   updatedAt: Timestamp
 }
@@ -527,21 +582,19 @@ Main fields:
 
 Created/updated by:
 
-- `createScheduleItem`
-- `updateScheduleItem`
-- `deleteScheduleItem`
+- `publishProgramSchedule`
 
 Rules:
 
-- Read: CRM member with workspace read permission and matching organization/program/event scope.
+- Read: CRM member with workspace read permission and matching organization/program scope.
 - Write: false from client. Use Cloud Functions only.
-- Sang mobile attendee/participant read access must be added in the main Sang app rules using the user's event/program access document. This CRM partial alone does not grant non-CRM audience reads.
 
 Important behavior:
 
-- `staffOnly` schedule items are excluded from this snapshot.
-- Mobile should read this document for the agenda screen after it knows the event id.
-- Local mobile cache can use `version` and `updatedAt` to avoid unnecessary re-renders/refetch behavior.
+- `draft`, `cancelled`, and `staffOnly` schedule items are excluded before publishing.
+- Child rows with `parentScheduleItemId` are nested under the parent row as `workshops`.
+- Role-based rows remain in the page but `getMyProgramSchedule` filters them against the user's program/event role.
+- Manual publish keeps organizer control: five draft edits do not create five mobile snapshot versions.
 
 ### `peProgramVenues/{programId}`
 
@@ -783,11 +836,15 @@ Main fields:
   programPersonId: string,
   tokenHash: string,
   qrPayload: string, // SANGPASS1:{token}
+  passCode: string, // 8-digit display/support code, not used for scan validation
   status: "issued" | "checkedIn" | "revoked",
   delivery: {
     channel: "manual" | "email" | "sms" | "app",
     status: "notSent" | "sent" | "failed"
   },
+  qrUpdatedAt?: Timestamp,
+  qrUpdatedBy?: string,
+  qrRotationCount?: number,
   createdAt: Timestamp,
   updatedAt: Timestamp
 }
@@ -801,6 +858,7 @@ Created by:
 Updated by:
 
 - `scanPassToken`
+- `issuePassForProgramPerson` when organizer refreshes a QR. Existing pass docs are updated in place so `passId` stays stable.
 
 Rules:
 
@@ -1172,6 +1230,7 @@ users/{uid}/eventAccess/{programId}
   programPersonId: string,
   passId: string,
   passQrPayload: 'SANGPASS1:{token}',
+  passCode: '48291370',
   passStatus: string,
   programName: string,
   programType: string,
@@ -1358,7 +1417,7 @@ Before changing:
 
 `deleteEvent`
 
-- Hard-deletes event doc currently and deletes the `peEventSchedule/{eventId}` audience snapshot.
+- Hard-deletes event doc currently.
 - Requires `event.write` with organization, matching program, or matching event scope.
 - Writes audit log.
 
@@ -1370,7 +1429,7 @@ Before changing:
 - Validates program and optional event.
 - Requires `event.write` with organization, matching program, or matching event scope.
 - Upserts selected/typed venue and room into `peProgramVenues/{programId}`.
-- Rebuilds `peEventSchedule/{eventId}` and event schedule summary if `eventId` exists.
+- Does not publish to mobile automatically.
 - Writes audit log.
 
 `updateScheduleItem`
@@ -1378,14 +1437,25 @@ Before changing:
 - Updates schedule item.
 - Requires `event.write` with organization, matching program, or matching event scope.
 - Upserts selected/typed venue and room into `peProgramVenues/{programId}`.
-- Rebuilds `peEventSchedule/{eventId}` and, when moving between events, also rebuilds the previous event snapshot.
+- Does not publish to mobile automatically.
 - Writes audit log.
 
 `deleteScheduleItem`
 
 - Deletes schedule item.
 - Requires `event.write` with organization, matching program, or matching event scope.
-- Rebuilds `peEventSchedule/{eventId}` and event schedule summary.
+- Does not publish to mobile automatically.
+- Writes audit log.
+
+`publishProgramSchedule`
+
+- Reads `peEventScheduleDashboard` for the selected program.
+- Excludes draft, cancelled, and staff-only rows.
+- Nests child rows under their parent schedule item as `workshops`.
+- Writes metadata to `peProgramSchedule/{programId}`.
+- Writes actual schedule rows to `peProgramSchedulePages/{pageId}`.
+- Deletes the old `items` field from `peProgramSchedule/{programId}` to avoid duplicate storage.
+- Requires `event.write` with organization or matching program scope.
 - Writes audit log.
 
 ### People/Passes/Check-In
@@ -1413,8 +1483,9 @@ Before changing:
 
 `issuePassForProgramPerson`
 
-- Creates new pass for an existing program person.
-- Updates person `passId/passStatus`.
+- Creates a pass if the person does not have one.
+- If the person already has `passId`, updates the same `pePasses/{passId}` with a new token hash, QR payload, pass code, `qrUpdatedAt`, `qrUpdatedBy`, and `qrRotationCount`.
+- Keeps `passId` stable so `peProgramPeople` and `users/{uid}/eventAccess/{programId}` do not need a pass id replacement.
 - Requires `passes.issue` with organization, matching program, or matching event scope.
 - Writes audit log.
 
@@ -1449,8 +1520,6 @@ peEventScheduleDashboard: programId ASC, startsAt ASC
 peProgramVenues: orgId ASC, programId ASC
 peProgramPartners: orgId ASC, programId ASC
 peProgramPartners: programId ASC, sortOrder ASC
-peEventSchedule: orgId ASC, programId ASC
-peEventSchedule: programId ASC, updatedAt DESC
 peProgramPeople: orgId ASC, programId ASC
 peProgramPeople: orgId ASC, eventAccessIds ARRAY_CONTAINS
 peProgramPeople: programId ASC, kind ASC
@@ -1569,8 +1638,9 @@ Important:
 2. User creates schedule item and selects an existing venue/room or types a new one.
 3. `createScheduleItem` creates `peEventScheduleDashboard/{scheduleItemId}`.
 4. Function upserts reusable venue/room data in `peProgramVenues/{programId}`.
-5. Function rebuilds `peEventSchedule/{eventId}` for Sang mobile/audience reads.
-6. Function updates event summary fields.
+5. Organizer can keep adding/editing/deleting rows without affecting the Sang mobile schedule.
+6. Organizer clicks "Publish schedule".
+7. `publishProgramSchedule` rebuilds `peProgramSchedule/{programId}` and `peProgramSchedulePages/{pageId}` for Sang mobile/audience reads.
 
 ### Organizer Imports People
 

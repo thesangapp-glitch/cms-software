@@ -1,4 +1,4 @@
-import { randomBytes, createHash } from 'crypto'
+import { randomBytes, randomInt, createHash } from 'crypto'
 import { initializeApp } from 'firebase-admin/app'
 import { getAuth } from 'firebase-admin/auth'
 import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore'
@@ -12,8 +12,13 @@ const db = getFirestore()
 const region = 'us-central1'
 const callableOptions = { region, invoker: 'public' as const }
 const scheduleDashboardCollection = 'peEventScheduleDashboard'
-const scheduleSnapshotCollection = 'peEventSchedule'
+const programScheduleCollection = 'peProgramSchedule'
+const programSchedulePagesCollection = 'peProgramSchedulePages'
+const programMobileEventsCollection = 'peProgramMobileEvents'
 const programVenueCollection = 'peProgramVenues'
+const mobilePeoplePageSize = 15
+const mobileSchedulePageSize = 50
+const publicPeopleCollection = (programId: string) => db.collection('pePrograms').doc(programId).collection('peoplePublic')
 
 const permissions = {
   rolesWrite: 'roles.write',
@@ -27,44 +32,47 @@ const permissions = {
 
 const defaultRoles = [
   {
+    id: 'program-coordinator',
+    name: 'Program Coordinator',
+    category: 'team',
+    description: 'Can handle the entire assigned program: events, people, passes, check-in, team, and reports.',
+    permissions: ['program.read', permissions.programWrite, permissions.eventWrite, permissions.teamWrite, permissions.peopleImport, permissions.passesIssue, permissions.checkinScan, 'analytics.read', 'exports.create'],
+    isDefault: true,
+  },
+  {
+    id: 'event-coordinator',
+    name: 'Event Coordinator',
+    category: 'team',
+    description: 'Can handle the assigned event: event setup, people access, passes, check-in, and reports.',
+    permissions: ['program.read', permissions.eventWrite, permissions.peopleImport, permissions.passesIssue, permissions.checkinScan, 'analytics.read', 'exports.create'],
+    isDefault: true,
+  },
+  {
     id: 'owner',
     name: 'Owner',
     category: 'team',
-    description: 'Full organization control',
+    description: 'Full organization control.',
     permissions: Object.values(permissions).concat(['program.read', 'analytics.read', 'exports.create']),
     isDefault: true,
   },
   {
-    id: 'event-lead',
-    name: 'Event Lead',
+    id: 'gate-executive',
+    name: 'Gate Executive',
     category: 'team',
-    description: 'Manage programs, events, people, passes, and analytics',
-    permissions: ['program.read', permissions.programWrite, permissions.eventWrite, permissions.teamWrite, permissions.peopleImport, permissions.passesIssue, 'exports.create'],
-    isDefault: true,
-  },
-  // 'gate-staff' (scan-only) is not seeded while check-in is out of scope. Existing
-  // organizations keep their gate-staff role; it simply has no route to open.
-  {
-    id: 'analyst',
-    name: 'Analyst',
-    category: 'team',
-    description: 'View programs and export reports',
-    permissions: ['program.read', 'analytics.read', 'exports.create'],
+    description: 'Can scan/check-in participant entry only. No program, event, role, people, or pass editing access.',
+    permissions: ['program.read', permissions.checkinScan],
     isDefault: true,
   },
 ]
 
 const defaultAudienceRoles = [
-  { id: 'attendee', name: 'Attendee' },
-  { id: 'participant', name: 'Participant' },
-  { id: 'startup', name: 'Startup' },
-  { id: 'company', name: 'Company' },
-  { id: 'delegate', name: 'Delegate' },
-  { id: 'speaker', name: 'Speaker' },
-  { id: 'judge', name: 'Judge' },
-  { id: 'vip', name: 'VIP' },
-  { id: 'sponsor', name: 'Sponsor' },
-  { id: 'exhibitor', name: 'Exhibitor' },
+  { id: 'visitor', name: 'Visitor' },
+  { id: 'participants', name: 'Participants' },
+  { id: 'delegates', name: 'Delegates' },
+  { id: 'speakers', name: 'Speakers' },
+  { id: 'media', name: 'Media' },
+  { id: 'mentor', name: 'Mentor' },
+  { id: 'patrons', name: 'Patrons' },
 ]
 
 const eventProfileSchema = z.object({
@@ -113,9 +121,16 @@ const scheduleInputSchema = z.object({
   roomId: z.string().optional().default(''),
   venueName: z.string().optional().default(''),
   roomName: z.string().optional().default(''),
+  address: z.string().optional().default(''),
+  locationNote: z.string().optional().default(''),
+  directionsNote: z.string().optional().default(''),
   latitude: z.number().optional(),
   longitude: z.number().optional(),
-  visibility: z.enum(['public', 'staffOnly', 'participantsOnly']).optional().default('public'),
+  visibility: z.enum(['public', 'rolesOnly', 'staffOnly', 'participantsOnly']).optional().default('public'),
+  allowedRoleIds: z.array(z.string()).optional().default([]),
+  allowedRoleNames: z.array(z.string()).optional().default([]),
+  parentScheduleItemId: z.string().optional().default(''),
+  groupLabel: z.string().optional().default(''),
   status: z.enum(['draft', 'scheduled', 'delayed', 'cancelled', 'completed']).optional().default('scheduled'),
   sortOrder: z.number().optional().default(0),
 })
@@ -153,15 +168,64 @@ const programVenueDraftSchema = z.object({
 })
 
 function normalizeRoleId(value: string) {
-  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'attendee'
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'visitor'
 }
 
 function uniqueStrings(values: string[]) {
   return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)))
 }
 
+function roleFilterPayloadFromMap(roleMap: Map<string, { label: string; count: number }>) {
+  return Array.from(roleMap.entries())
+    .map(([key, value]) => ({ key, label: value.label || key, count: value.count }))
+    .sort((first, second) => first.label.localeCompare(second.label))
+}
+
 function isDefaultAudienceRole(roleId: string) {
   return defaultAudienceRoles.some((role) => role.id === roleId)
+}
+
+async function seedMissingDefaultRoles(input: {
+  batch: FirebaseFirestore.WriteBatch
+  orgRef: FirebaseFirestore.DocumentReference
+  onlyIfNoRoleDocs?: boolean
+}) {
+  const roleSnapshot = await input.orgRef.collection('roles').get()
+  if (input.onlyIfNoRoleDocs && !roleSnapshot.empty) return
+
+  const existingRoleIds = new Set(roleSnapshot.docs.map((roleDoc) => roleDoc.id))
+  const deletedRoleIds = new Set(
+    roleSnapshot.docs
+      .filter((roleDoc) => roleDoc.data()?.status === 'deleted')
+      .map((roleDoc) => roleDoc.id),
+  )
+  const now = FieldValue.serverTimestamp()
+
+  for (const role of defaultRoles) {
+    if (existingRoleIds.has(role.id) || deletedRoleIds.has(role.id)) continue
+    input.batch.set(input.orgRef.collection('roles').doc(role.id), {
+      ...role,
+      orgId: input.orgRef.id,
+      status: 'active',
+      createdAt: now,
+      updatedAt: now,
+    })
+  }
+
+  for (const role of defaultAudienceRoles) {
+    if (existingRoleIds.has(role.id) || deletedRoleIds.has(role.id)) continue
+    input.batch.set(input.orgRef.collection('roles').doc(role.id), {
+      ...role,
+      orgId: input.orgRef.id,
+      category: 'audience',
+      description: `${role.name} audience category`,
+      permissions: [],
+      isDefault: true,
+      status: 'active',
+      createdAt: now,
+      updatedAt: now,
+    })
+  }
 }
 
 function requireUid(context: { auth?: { uid: string } }) {
@@ -196,6 +260,32 @@ function makeToken() {
 
 function tokenHash(token: string) {
   return createHash('sha256').update(token).digest('hex')
+}
+
+function normalizePassCode(value: unknown) {
+  const passCode = String(value || '').trim()
+  return /^\d{8}$/.test(passCode) ? passCode : ''
+}
+
+async function makeUniquePassCode() {
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const passCode = String(randomInt(0, 100000000)).padStart(8, '0')
+    const existing = await db.collection('pePasses').where('passCode', '==', passCode).limit(1).get()
+    if (existing.empty) return passCode
+  }
+  throw new HttpsError('internal', 'Could not generate a unique pass code.')
+}
+
+async function ensurePassCodeForPass(
+  batch: FirebaseFirestore.WriteBatch,
+  passRef: FirebaseFirestore.DocumentReference,
+  pass: Record<string, unknown>,
+) {
+  const existingPassCode = normalizePassCode(pass.passCode)
+  if (existingPassCode) return { passCode: existingPassCode, writesAdded: 0 }
+  const passCode = await makeUniquePassCode()
+  batch.set(passRef, { passCode, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
+  return { passCode, writesAdded: 1 }
 }
 
 function dateFromFirestore(value: unknown) {
@@ -513,6 +603,112 @@ function eventAccessListFromMap(eventAccess: unknown) {
   }))
 }
 
+function initialsForName(value: unknown) {
+  return String(value || 'P')
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part.charAt(0).toUpperCase())
+    .join('') || 'P'
+}
+
+function publicPersonPayload(input: {
+  programId: string
+  programPersonId: string
+  person: Record<string, unknown>
+  status?: 'active' | 'inactive'
+}) {
+  const fullName = String(input.person.fullName || input.person.displayName || '').trim()
+  const organization = String(input.person.organization || input.person.company || '').trim()
+  const designation = String(input.person.designation || '').trim()
+  const roleKey = normalizeRoleId(String(input.person.programRoleId || input.person.kind || 'visitor'))
+  const roleName = String(input.person.programRoleName || input.person.kind || roleKey).trim()
+  const sangUid = String(input.person.sangUserId || input.person.sangUid || input.person.sangAppUserId || '').trim()
+  const selectedCardId = String(input.person.selectedCardId || input.person.eventSelectedCardId || '').trim()
+  const showCard = Boolean(input.person.showCard) && Boolean(sangUid && selectedCardId)
+
+  return {
+    programId: input.programId,
+    programPersonId: input.programPersonId,
+    sangUid,
+    selectedCardId,
+    displayName: fullName || 'Guest',
+    organization,
+    company: organization,
+    designation,
+    roleName: roleName || 'Attendee',
+    roleKey,
+    avatarUrl: String(input.person.avatarUrl || input.person.photoUrl || input.person.photoURL || ''),
+    initials: initialsForName(fullName || organization),
+    showCard,
+    status: input.status || (personAccessLifecycle(input.person) === 'active' ? 'active' : 'inactive'),
+    sortName: `${fullName || organization || 'guest'} ${input.programPersonId}`.trim().toLowerCase(),
+    updatedAt: FieldValue.serverTimestamp(),
+  }
+}
+
+function safePeopleDirectoryPerson(doc: FirebaseFirestore.QueryDocumentSnapshot | FirebaseFirestore.DocumentSnapshot) {
+  const data = doc.data() || {}
+  return {
+    programPersonId: String(data.programPersonId || doc.id),
+    displayName: String(data.displayName || 'Guest'),
+    organization: String(data.organization || data.company || ''),
+    company: String(data.company || data.organization || ''),
+    designation: String(data.designation || ''),
+    roleName: String(data.roleName || 'Attendee'),
+    roleKey: normalizeRoleId(String(data.roleKey || 'visitor')),
+    avatarUrl: String(data.avatarUrl || ''),
+    initials: String(data.initials || initialsForName(data.displayName || data.organization)),
+    showCard: Boolean(data.showCard),
+  }
+}
+
+function publicCardFromStoredCard(card: Record<string, unknown>) {
+  const snapshot = card.publicSnapshot && typeof card.publicSnapshot === 'object'
+    ? card.publicSnapshot as Record<string, unknown>
+    : {}
+  const fields = snapshot.fields && typeof snapshot.fields === 'object'
+    ? snapshot.fields as Record<string, unknown>
+    : {}
+  const customLinks = Array.isArray(snapshot.customLinks) ? snapshot.customLinks : []
+  const safeFields = Object.entries(fields).reduce<Record<string, string>>((current, [key, value]) => {
+    if (typeof value === 'string' && value.trim()) current[key] = value.trim()
+    return current
+  }, {})
+
+  return {
+    name: String(snapshot.name || card.cardName || 'Shared contact'),
+    fields: safeFields,
+    customLinks,
+    photoURL: typeof snapshot.photoURL === 'string' ? snapshot.photoURL : null,
+    companyLogoURL: typeof snapshot.companyLogoURL === 'string' ? snapshot.companyLogoURL : null,
+    theme: typeof snapshot.theme === 'string' ? snapshot.theme : card.theme || null,
+    design: snapshot.design && typeof snapshot.design === 'object' ? snapshot.design : card.design || null,
+  }
+}
+
+async function getDefaultCardIdForUser(uid: string) {
+  const userSnapshot = await db.collection('users').doc(uid).get()
+  const defaultCardPublicId = String(userSnapshot.data()?.settings?.defaultCardPublicId || '')
+  if (defaultCardPublicId) {
+    const defaultCardSnapshot = await db.collection('cards').doc(defaultCardPublicId).get()
+    const defaultCard = defaultCardSnapshot.data() || {}
+    if (defaultCardSnapshot.exists && defaultCard.ownerUid === uid && defaultCard.active === true) {
+      return defaultCardSnapshot.id
+    }
+  }
+
+  const cardsSnapshot = await db
+    .collection('cards')
+    .where('ownerUid', '==', uid)
+    .where('active', '==', true)
+    .limit(20)
+    .get()
+  if (cardsSnapshot.empty) return ''
+  const defaultDoc = cardsSnapshot.docs.find((docSnap) => docSnap.data()?.isDefault === true)
+  return (defaultDoc || cardsSnapshot.docs[0]).id
+}
+
 function personAccessLifecycle(person: Record<string, unknown>) {
   const accessStatus = String(person.accessStatus || person.rosterStatus || 'active')
   return ['blocked', 'removed'].includes(accessStatus) ? accessStatus : 'active'
@@ -560,6 +756,7 @@ function buildSangEventAccessMirror(input: {
   program: Record<string, unknown>
   passId: string
   passQrPayload?: string
+  passCode?: string
   linkStatus: string
   linkMethod: string
 }) {
@@ -579,6 +776,7 @@ function buildSangEventAccessMirror(input: {
     programPersonId: input.programPersonId,
     passId: input.passId,
     passQrPayload: String(input.passQrPayload || ''),
+    passCode: normalizePassCode(input.passCode) || normalizePassCode(input.person.passCode),
     programName: String(input.program.name || ''),
     programTagline: String(input.program.tagline || input.program.subtitle || ''),
     programType: String(input.program.programType || ''),
@@ -586,6 +784,8 @@ function buildSangEventAccessMirror(input: {
     status: String(input.program.status || 'draft'),
     startDate: timestampFromInput(input.program.startDate, { timezone, dateOnly: 'start' }),
     endDate: timestampFromInput(input.program.endDate, { timezone, dateOnly: 'end' }),
+    startTime: String(input.program.startTime || ''),
+    endTime: String(input.program.endTime || ''),
     timezone,
     venueName: String(input.program.venueName || ''),
     city: String(input.program.city || ''),
@@ -607,6 +807,8 @@ function buildSangEventAccessMirror(input: {
     passStatus,
     accessStatus: lifecycleStatus,
     rosterStatus: String(input.person.rosterStatus || lifecycleStatus),
+    showCard: Boolean(input.person.showCard),
+    selectedCardId: String(input.person.selectedCardId || input.person.eventSelectedCardId || ''),
     linkStatus: input.linkStatus,
     linkMethod: input.linkMethod,
     allowedEventIds: lifecycleStatus === 'active'
@@ -634,16 +836,19 @@ async function ensureIssuedPassForPerson(batch: FirebaseFirestore.WriteBatch, in
     const existingPass = existingPassSnapshot.data() || {}
     const status = String(existingPass.status || '')
     if (existingPassSnapshot.exists && !['revoked', 'expired', 'cancelled', 'blocked'].includes(status)) {
+      const passCodeResult = await ensurePassCodeForPass(batch, existingPassSnapshot.ref, existingPass)
       return {
         passId: existingPassId,
         qrPayload: String(existingPass.qrPayload || ''),
-        writesAdded: 0,
+        passCode: passCodeResult.passCode,
+        writesAdded: passCodeResult.writesAdded,
       }
     }
   }
 
   const token = makeToken()
   const passQrPayload = `SANGPASS1:${token}`
+  const passCode = await makeUniquePassCode()
   const passRef = db.collection('pePasses').doc()
   batch.set(passRef, {
     orgId: input.orgId,
@@ -651,6 +856,7 @@ async function ensureIssuedPassForPerson(batch: FirebaseFirestore.WriteBatch, in
     programPersonId: input.programPersonId,
     tokenHash: tokenHash(token),
     qrPayload: passQrPayload,
+    passCode,
     status: 'issued',
     delivery: { channel: 'manual', status: 'notSent' },
     createdAt: FieldValue.serverTimestamp(),
@@ -659,6 +865,7 @@ async function ensureIssuedPassForPerson(batch: FirebaseFirestore.WriteBatch, in
   return {
     passId: passRef.id,
     qrPayload: passQrPayload,
+    passCode,
     writesAdded: 1,
   }
 }
@@ -671,12 +878,26 @@ function mirrorProgramAccess(batch: FirebaseFirestore.WriteBatch, input: {
   program: Record<string, unknown>
   passId: string
   passQrPayload?: string
+  passCode?: string
   linkStatus: string
   linkMethod: string
 }) {
+  // Replace the mirror doc so removed eventAccess map keys do not survive Firestore merge semantics.
   batch.set(
     db.collection('users').doc(input.uid).collection('eventAccess').doc(input.programId),
     buildSangEventAccessMirror(input),
+  )
+}
+
+function mirrorPublicPerson(batch: FirebaseFirestore.WriteBatch, input: {
+  programId: string
+  programPersonId: string
+  person: Record<string, unknown>
+  status?: 'active' | 'inactive'
+}) {
+  batch.set(
+    publicPeopleCollection(input.programId).doc(input.programPersonId),
+    publicPersonPayload(input),
     { merge: true },
   )
 }
@@ -774,6 +995,9 @@ function publicScheduleItem(item: Record<string, unknown>) {
   const timezone = String(item.timezone || 'Asia/Kolkata')
   return {
     id: String(item.id || ''),
+    eventId: String(item.eventId || ''),
+    eventNameSnapshot: String(item.eventNameSnapshot || ''),
+    eventTypeSnapshot: String(item.eventTypeSnapshot || ''),
     title: String(item.title || ''),
     type: String(item.type || 'session'),
     customTypeLabel: String(item.customTypeLabel || ''),
@@ -785,12 +1009,94 @@ function publicScheduleItem(item: Record<string, unknown>) {
     roomId: String(item.roomId || ''),
     venueName: String(item.venueName || ''),
     roomName: String(item.roomName || ''),
+    address: String(item.address || ''),
+    locationNote: String(item.locationNote || ''),
+    directionsNote: String(item.directionsNote || ''),
     ...(latitude === undefined ? {} : { latitude }),
     ...(longitude === undefined ? {} : { longitude }),
     visibility: String(item.visibility || 'public'),
+    allowedRoleIds: Array.isArray(item.allowedRoleIds) ? uniqueStrings(item.allowedRoleIds.map((roleId) => normalizeRoleId(String(roleId)))) : [],
+    allowedRoleNames: Array.isArray(item.allowedRoleNames) ? uniqueStrings(item.allowedRoleNames.map((roleName) => String(roleName))) : [],
+    parentScheduleItemId: String(item.parentScheduleItemId || ''),
+    groupLabel: String(item.groupLabel || ''),
     status: String(item.status || 'scheduled'),
     sortOrder: Number(item.sortOrder || 0),
   }
+}
+
+type PublicScheduleItem = ReturnType<typeof publicScheduleItem>
+type MobileScheduleItem = Partial<PublicScheduleItem> & {
+  id: string
+  startsAt?: unknown
+  workshops?: MobileScheduleItem[]
+}
+
+function scheduleDateKey(item: { startsAt?: unknown }, timezone = 'Asia/Kolkata') {
+  const date = dateFromFirestore(item.startsAt)
+  if (!date) return 'unscheduled'
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date)
+  const value = (type: string) => parts.find((part) => part.type === type)?.value || ''
+  return `${value('year')}-${value('month')}-${value('day')}`
+}
+
+function scheduleDateLabel(dateKey: string, timezone = 'Asia/Kolkata') {
+  if (dateKey === 'unscheduled') return 'Schedule'
+  const date = zonedLocalDateTimeToDate(`${dateKey}T12:00`, timezone) || new Date(`${dateKey}T12:00:00`)
+  return new Intl.DateTimeFormat('en-IN', {
+    timeZone: timezone,
+    day: '2-digit',
+    month: 'short',
+  }).format(date)
+}
+
+function schedulePageId(programId: string, pageNo: number) {
+  return `${programId}_${String(pageNo).padStart(3, '0')}`
+}
+
+function pruneScheduleItemForMobile(item: PublicScheduleItem): MobileScheduleItem {
+  return Object.fromEntries(
+    Object.entries(item).filter(([, value]) => {
+      if (value === undefined || value === null || value === '') return false
+      if (Array.isArray(value) && value.length === 0) return false
+      return true
+    }),
+  ) as unknown as MobileScheduleItem
+}
+
+function eventVisibleInMobile(event: Record<string, unknown>) {
+  const status = String(event.status || 'draft').toLowerCase()
+  return event.mobileVisible !== false && !['cancelled', 'archived', 'deleted'].includes(status)
+}
+
+function publicProgramEvent(eventId: string, event: Record<string, unknown>) {
+  const latitude = typeof event.latitude === 'number' ? event.latitude : undefined
+  const longitude = typeof event.longitude === 'number' ? event.longitude : undefined
+  return Object.fromEntries(
+    Object.entries({
+      id: eventId,
+      programId: String(event.programId || ''),
+      name: String(event.name || ''),
+      eventType: String(event.eventType || ''),
+      description: String(event.description || ''),
+      posterUrl: String(event.posterUrl || ''),
+      venueName: String(event.venueName || ''),
+      locationNote: String(event.locationNote || ''),
+      directionsNote: String(event.directionsNote || ''),
+      address: String(event.address || ''),
+      startDateTime: event.startDateTime || null,
+      endDateTime: event.endDateTime || null,
+      status: String(event.status || 'draft'),
+      mobileVisible: event.mobileVisible !== false,
+      sortOrder: Number(event.sortOrder || 0),
+      ...(latitude === undefined ? {} : { latitude }),
+      ...(longitude === undefined ? {} : { longitude }),
+    }).filter(([, value]) => value !== undefined && value !== null && value !== ''),
+  )
 }
 
 async function upsertProgramVenue(input: {
@@ -978,13 +1284,20 @@ function programVenueRecordFromInput(input: ProgramVenueDraftInput, programId: s
   }
 }
 
-async function rebuildEventScheduleSnapshot(input: { orgId: string; programId: string; eventId?: string }) {
-  if (!input.eventId) return
+async function publishProgramScheduleSnapshot(input: { orgId: string; programId: string }) {
+  const { program } = await assertProgram(input)
+  const timezone = String(program.timezone || 'Asia/Kolkata')
+  const eventSnapshot = await db
+    .collection('peEvents')
+    .where('orgId', '==', input.orgId)
+    .where('programId', '==', input.programId)
+    .get()
+  const eventById = new Map(eventSnapshot.docs.map((eventDoc) => [eventDoc.id, eventDoc.data() || {}]))
 
   const scheduleSnapshot = await db
     .collection(scheduleDashboardCollection)
     .where('orgId', '==', input.orgId)
-    .where('eventId', '==', input.eventId)
+    .where('programId', '==', input.programId)
     .get()
 
   const crmItems = scheduleSnapshot.docs.map((scheduleDoc) => ({
@@ -997,40 +1310,169 @@ async function rebuildEventScheduleSnapshot(input: { orgId: string; programId: s
     return timestampMillis(first.startsAt) - timestampMillis(second.startsAt)
   })
 
-  const audienceItems = crmItems
-    .filter((item) => item.visibility !== 'staffOnly')
-    .map(publicScheduleItem)
+  const rootRef = db.collection(programScheduleCollection).doc(input.programId)
+  const existingRoot = await rootRef.get()
+  const existingPages = Array.isArray(existingRoot.data()?.pages) ? existingRoot.data()?.pages as Array<Record<string, unknown>> : []
+  const existingPageIds = existingPages.map((page) => String(page.pageId || '')).filter(Boolean)
+
+  const flatItems = crmItems
+    .filter((item) => !['draft', 'cancelled'].includes(String(item.status || 'scheduled')))
+    .filter((item) => String(item.visibility || 'public') !== 'staffOnly')
+    .map((item) => {
+      const eventId = String(item.eventId || '')
+      const eventData = eventId ? eventById.get(eventId) || {} : {}
+      return publicScheduleItem({
+        ...item,
+        eventNameSnapshot: item.eventNameSnapshot || eventData.name || '',
+        eventTypeSnapshot: item.eventTypeSnapshot || eventData.eventType || '',
+      })
+    })
+
+  const parentItems = flatItems.filter((item) => !item.parentScheduleItemId)
+  const childItems = flatItems.filter((item) => item.parentScheduleItemId)
+  const childrenByParent = childItems.reduce<Map<string, PublicScheduleItem[]>>((current, child) => {
+    const parentId = child.parentScheduleItemId
+    current.set(parentId, [...(current.get(parentId) || []), child])
+    return current
+  }, new Map())
+  for (const children of childrenByParent.values()) {
+    children.sort((first, second) => timestampMillis(first.startsAt) - timestampMillis(second.startsAt))
+  }
+
+  const mobileItems = parentItems.map((item) => {
+    const workshops = (childrenByParent.get(item.id) || []).map((child) => pruneScheduleItemForMobile(child))
+    return {
+      ...pruneScheduleItemForMobile(item),
+      ...(workshops.length ? { workshops } : {}),
+    }
+  })
+
+  const pages: Array<{
+    pageId: string
+    pageNo: number
+    itemCount: number
+    dateKeys: string[]
+  }> = []
+  const dayMap = new Map<string, { dateKey: string; dateLabel: string; itemCount: number; pageIds: Set<string> }>()
+  const batch = db.batch()
+  for (const pageId of existingPageIds) {
+    batch.delete(db.collection(programSchedulePagesCollection).doc(pageId))
+  }
+
+  for (let index = 0; index < mobileItems.length; index += mobileSchedulePageSize) {
+    const pageNo = Math.floor(index / mobileSchedulePageSize) + 1
+    const pageId = schedulePageId(input.programId, pageNo)
+    const items = mobileItems.slice(index, index + mobileSchedulePageSize)
+    const dateKeys = uniqueStrings(items.map((item) => scheduleDateKey(item, timezone)))
+    pages.push({
+      pageId,
+      pageNo,
+      itemCount: items.length,
+      dateKeys,
+    })
+    for (const dateKey of dateKeys) {
+      const itemCount = items.filter((item) => scheduleDateKey(item, timezone) === dateKey).length
+      const existingDay = dayMap.get(dateKey) || { dateKey, dateLabel: scheduleDateLabel(dateKey, timezone), itemCount: 0, pageIds: new Set<string>() }
+      existingDay.itemCount += itemCount
+      existingDay.pageIds.add(pageId)
+      dayMap.set(dateKey, existingDay)
+    }
+    batch.set(
+      db.collection(programSchedulePagesCollection).doc(pageId),
+      {
+        orgId: input.orgId,
+        programId: input.programId,
+        pageNo,
+        itemCount: items.length,
+        dateKeys,
+        items,
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    )
+  }
 
   const nowMillis = Date.now()
-  const nextItem = audienceItems.find((item) => item.status !== 'cancelled' && timestampMillis(item.startsAt) >= nowMillis)
-    || audienceItems.find((item) => item.status !== 'cancelled')
-    || audienceItems[0]
-
-  const batch = db.batch()
+  const nextItem = flatItems.find((item) => timestampMillis(item.startsAt) >= nowMillis) || flatItems[0]
+  const days = Array.from(dayMap.values()).map((day) => ({
+    ...day,
+    pageIds: Array.from(day.pageIds),
+  }))
   batch.set(
-    db.collection(scheduleSnapshotCollection).doc(input.eventId),
+    rootRef,
     {
       orgId: input.orgId,
       programId: input.programId,
-      eventId: input.eventId,
-      itemCount: audienceItems.length,
-      items: audienceItems,
+      mode: pages.length ? 'paged' : 'empty',
+      pageSize: mobileSchedulePageSize,
+      itemCount: mobileItems.length,
+      items: FieldValue.delete(),
+      pages,
+      days,
       version: FieldValue.increment(1),
       updatedAt: FieldValue.serverTimestamp(),
     },
     { merge: true },
   )
   batch.set(
-    db.collection('peEvents').doc(input.eventId),
+    db.collection('pePrograms').doc(input.programId),
     {
-      scheduleItemCount: crmItems.length,
+      scheduleItemCount: mobileItems.length,
       nextScheduleTitle: nextItem?.title || '',
       nextScheduleAt: nextItem?.startsAt || null,
+      scheduleLastPublishedAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     },
     { merge: true },
   )
   await batch.commit()
+
+  return {
+    itemCount: mobileItems.length,
+    pageCount: pages.length,
+  }
+}
+
+async function publishProgramMobileEventsSnapshot(input: { orgId: string; programId: string }) {
+  await assertProgram(input)
+  const eventSnapshot = await db
+    .collection('peEvents')
+    .where('orgId', '==', input.orgId)
+    .where('programId', '==', input.programId)
+    .get()
+
+  const items = eventSnapshot.docs
+    .map((eventDoc) => ({ id: eventDoc.id, data: eventDoc.data() || {} }))
+    .filter(({ data }) => eventVisibleInMobile(data))
+    .map(({ id, data }) => publicProgramEvent(id, data))
+    .sort((first, second) => {
+      const sortDelta = Number(first.sortOrder || 0) - Number(second.sortOrder || 0)
+      if (sortDelta !== 0) return sortDelta
+      const startDelta = timestampMillis(first.startDateTime) - timestampMillis(second.startDateTime)
+      if (startDelta !== 0) return startDelta
+      return String(first.name || '').localeCompare(String(second.name || ''))
+    })
+
+  await db.collection(programMobileEventsCollection).doc(input.programId).set(
+    {
+      orgId: input.orgId,
+      programId: input.programId,
+      itemCount: items.length,
+      items,
+      version: FieldValue.increment(1),
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  )
+  await db.collection('pePrograms').doc(input.programId).set(
+    {
+      eventsLastPublishedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  )
+
+  return { itemCount: items.length }
 }
 
 export const createOrganization = onCall(callableOptions, async (request) => {
@@ -1059,27 +1501,7 @@ export const createOrganization = onCall(callableOptions, async (request) => {
     updatedAt: FieldValue.serverTimestamp(),
   })
 
-  for (const role of defaultRoles) {
-    batch.set(orgRef.collection('roles').doc(role.id), {
-      ...role,
-      orgId: orgRef.id,
-      createdAt: FieldValue.serverTimestamp(),
-      updatedAt: FieldValue.serverTimestamp(),
-    })
-  }
-
-  for (const role of defaultAudienceRoles) {
-    batch.set(orgRef.collection('roles').doc(role.id), {
-      ...role,
-      orgId: orgRef.id,
-      category: 'audience',
-      description: `${role.name} audience category`,
-      permissions: [],
-      isDefault: true,
-      createdAt: FieldValue.serverTimestamp(),
-      updatedAt: FieldValue.serverTimestamp(),
-    })
-  }
+  await seedMissingDefaultRoles({ batch, orgRef })
 
   batch.set(db.collection('peTeamMembers').doc(`${orgRef.id}_${uid}`), {
     orgId: orgRef.id,
@@ -1489,6 +1911,8 @@ export const createProgram = onCall(callableOptions, async (request) => {
       programType: z.string().optional().default('college_fest'),
       startDate: z.string().min(1),
       endDate: z.string().min(1),
+      startTime: z.string().optional().default(''),
+      endTime: z.string().optional().default(''),
       venueName: z.string().optional().default(''),
       city: z.string().optional().default(''),
       logoUrl: z.string().optional().default(''),
@@ -1523,6 +1947,7 @@ export const createProgram = onCall(callableOptions, async (request) => {
     : {}
 
   const batch = db.batch()
+  await seedMissingDefaultRoles({ batch, orgRef: db.collection('peOrganizations').doc(input.orgId) })
   batch.set(programRef, {
     ...programInput,
     ...programVenuePatch,
@@ -1564,6 +1989,8 @@ export const updateProgram = onCall(callableOptions, async (request) => {
       programType: z.string().optional().default('college_fest'),
       startDate: z.string().min(1),
       endDate: z.string().min(1),
+      startTime: z.string().optional().default(''),
+      endTime: z.string().optional().default(''),
       venueName: z.string().optional().default(''),
       city: z.string().optional().default(''),
       logoUrl: z.string().optional().default(''),
@@ -1826,6 +2253,7 @@ export const createEvent = onCall(callableOptions, async (request) => {
       longitude: z.number().optional(),
       address: z.string().optional().default(''),
       entryScope: z.enum(['program', 'event', 'both']).optional().default('event'),
+      mobileVisible: z.boolean().optional().default(true),
       competitive: z.boolean().optional().default(false),
       resultsEnabled: z.boolean().optional().default(false),
       scheduleItemCount: z.number().optional().default(0),
@@ -1877,6 +2305,7 @@ export const updateEvent = onCall(callableOptions, async (request) => {
       longitude: z.number().optional(),
       address: z.string().optional().default(''),
       entryScope: z.enum(['program', 'event', 'both']).optional().default('event'),
+      mobileVisible: z.boolean().optional().default(true),
       competitive: z.boolean().optional().default(false),
       resultsEnabled: z.boolean().optional().default(false),
       scheduleItemCount: z.number().optional().default(0),
@@ -1934,7 +2363,6 @@ export const deleteEvent = onCall(callableOptions, async (request) => {
 
   const batch = db.batch()
   batch.delete(eventRef)
-  batch.delete(db.collection(scheduleSnapshotCollection).doc(input.eventId))
   await batch.commit()
   await writeAudit({ orgId: input.orgId, actorUid: uid, action: 'event.delete', entityPath: eventRef.path })
   return { eventId: input.eventId }
@@ -1950,8 +2378,10 @@ export const createScheduleItem = onCall(callableOptions, async (request) => {
   })
   const { program } = await assertProgram(input)
   const timezone = input.timezone || String(program.timezone || 'Asia/Kolkata')
+  let eventSnapshot: Record<string, unknown> | null = null
   if (input.eventId) {
-    await assertEvent({ orgId: input.orgId, programId: input.programId, eventId: input.eventId })
+    const { event } = await assertEvent({ orgId: input.orgId, programId: input.programId, eventId: input.eventId })
+    eventSnapshot = event
   }
 
   const venueSelection = await upsertProgramVenue(input)
@@ -1961,13 +2391,21 @@ export const createScheduleItem = onCall(callableOptions, async (request) => {
     startsAt: timestampFromInput(input.startsAt, { timezone, required: true }),
     endsAt: timestampFromInput(input.endsAt, { timezone }),
     timezone,
+    eventNameSnapshot: eventSnapshot ? String(eventSnapshot.name || '') : '',
+    eventTypeSnapshot: eventSnapshot ? String(eventSnapshot.eventType || '') : '',
     venueId: venueSelection.venueId,
     roomId: venueSelection.roomId,
+    allowedRoleIds: uniqueStrings(input.allowedRoleIds.map(normalizeRoleId)),
+    allowedRoleNames: uniqueStrings(input.allowedRoleNames),
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   })
-  await rebuildEventScheduleSnapshot(input)
-  await writeAudit({ orgId: input.orgId, actorUid: uid, action: 'schedule.create', entityPath: scheduleRef.path })
+  await writeAudit({
+    orgId: input.orgId,
+    actorUid: uid,
+    action: 'schedule.create',
+    entityPath: scheduleRef.path,
+  })
   return { scheduleItemId: scheduleRef.id }
 })
 
@@ -1990,8 +2428,10 @@ export const updateScheduleItem = onCall(callableOptions, async (request) => {
   })
   const { program } = await assertProgram(input)
   const timezone = input.timezone || String(program.timezone || 'Asia/Kolkata')
+  let eventSnapshot: Record<string, unknown> | null = null
   if (input.eventId) {
-    await assertEvent({ orgId: input.orgId, programId: input.programId, eventId: input.eventId })
+    const { event } = await assertEvent({ orgId: input.orgId, programId: input.programId, eventId: input.eventId })
+    eventSnapshot = event
   }
   const venueSelection = await upsertProgramVenue(input)
   await scheduleRef.set(
@@ -2000,18 +2440,22 @@ export const updateScheduleItem = onCall(callableOptions, async (request) => {
       startsAt: timestampFromInput(input.startsAt, { timezone, required: true }),
       endsAt: timestampFromInput(input.endsAt, { timezone }),
       timezone,
+      eventNameSnapshot: eventSnapshot ? String(eventSnapshot.name || '') : '',
+      eventTypeSnapshot: eventSnapshot ? String(eventSnapshot.eventType || '') : '',
       venueId: venueSelection.venueId,
       roomId: venueSelection.roomId,
+      allowedRoleIds: uniqueStrings(input.allowedRoleIds.map(normalizeRoleId)),
+      allowedRoleNames: uniqueStrings(input.allowedRoleNames),
       updatedAt: FieldValue.serverTimestamp(),
     },
     { merge: true },
   )
-  await rebuildEventScheduleSnapshot(input)
-  const previousEventId = String(previousSchedule.eventId || '')
-  if (previousEventId && previousEventId !== input.eventId) {
-    await rebuildEventScheduleSnapshot({ orgId: input.orgId, programId: String(previousSchedule.programId || input.programId), eventId: previousEventId })
-  }
-  await writeAudit({ orgId: input.orgId, actorUid: uid, action: 'schedule.update', entityPath: scheduleRef.path })
+  await writeAudit({
+    orgId: input.orgId,
+    actorUid: uid,
+    action: 'schedule.update',
+    entityPath: scheduleRef.path,
+  })
   return { scheduleItemId: input.scheduleItemId }
 })
 
@@ -2036,14 +2480,46 @@ export const deleteScheduleItem = onCall(callableOptions, async (request) => {
     programId: String(scheduleSnapshot.data()?.programId || ''),
     eventId: String(scheduleSnapshot.data()?.eventId || '') || undefined,
   })
+  const programId = String(scheduleSnapshot.data()?.programId || '')
   await scheduleRef.delete()
-  await rebuildEventScheduleSnapshot({
+  await writeAudit({
     orgId: input.orgId,
-    programId: String(scheduleSnapshot.data()?.programId || ''),
-    eventId: String(scheduleSnapshot.data()?.eventId || ''),
+    actorUid: uid,
+    action: 'schedule.delete',
+    entityPath: scheduleRef.path,
+    metadata: { programId },
   })
-  await writeAudit({ orgId: input.orgId, actorUid: uid, action: 'schedule.delete', entityPath: scheduleRef.path })
   return { scheduleItemId: input.scheduleItemId }
+})
+
+export const publishProgramSchedule = onCall(callableOptions, async (request) => {
+  const uid = requireUid(request)
+  const input = z
+    .object({
+      orgId: z.string().min(1),
+      programId: z.string().min(1),
+    })
+    .parse(request.data)
+
+  await assertPermission(uid, input.orgId, permissions.eventWrite, { programId: input.programId })
+  const result = await publishProgramScheduleSnapshot(input)
+  await writeAudit({ orgId: input.orgId, actorUid: uid, action: 'schedule.publish', entityPath: `${programScheduleCollection}/${input.programId}` })
+  return result
+})
+
+export const publishProgramEvents = onCall(callableOptions, async (request) => {
+  const uid = requireUid(request)
+  const input = z
+    .object({
+      orgId: z.string().min(1),
+      programId: z.string().min(1),
+    })
+    .parse(request.data)
+
+  await assertPermission(uid, input.orgId, permissions.eventWrite, { programId: input.programId })
+  const result = await publishProgramMobileEventsSnapshot(input)
+  await writeAudit({ orgId: input.orgId, actorUid: uid, action: 'events.publish', entityPath: `${programMobileEventsCollection}/${input.programId}` })
+  return result
 })
 
 export const publishProgramPeopleAccess = onCall(callableOptions, async (request) => {
@@ -2074,6 +2550,7 @@ export const publishProgramPeopleAccess = onCall(callableOptions, async (request
   let manualReviewCount = 0
   let alreadyLinkedCount = 0
   let skippedCount = 0
+  const activeRoleMap = new Map<string, { label: string; count: number }>()
 
   async function flushBatch(force = false) {
     if (batchWrites === 0 || (!force && batchWrites < 420)) return
@@ -2141,12 +2618,26 @@ export const publishProgramPeopleAccess = onCall(callableOptions, async (request
         }
         batchWrites += 1
       }
+      mirrorPublicPerson(batch, {
+        programId: input.programId,
+        programPersonId: personDoc.id,
+        person,
+        status: 'inactive',
+      })
+      batchWrites += 1
       skippedCount += 1
       await flushBatch()
       continue
     }
     const email = normalizeEmail(String(person.normalizedEmail || person.email || ''))
     const phone = normalizePhone(String(person.normalizedPhone || person.phone || ''))
+    const roleKey = normalizeRoleId(String(person.programRoleId || person.kind || 'visitor'))
+    const roleLabel = String(person.programRoleName || person.kind || roleKey).trim() || roleKey
+    const currentRole = activeRoleMap.get(roleKey)
+    activeRoleMap.set(roleKey, {
+      label: currentRole?.label || roleLabel,
+      count: (currentRole?.count || 0) + 1,
+    })
     const linkResult = existingSangUserId
       ? {
         linkStatus: 'linked' as const,
@@ -2170,6 +2661,18 @@ export const publishProgramPeopleAccess = onCall(callableOptions, async (request
         },
         { merge: true },
       )
+      mirrorPublicPerson(batch, {
+        programId: input.programId,
+        programPersonId: personDoc.id,
+        person: {
+          ...person,
+          linkStatus: linkResult.linkStatus,
+          linkConflictReason: linkResult.linkConflictReason,
+          ...sangAppFields,
+        },
+        status: 'active',
+      })
+      batchWrites += 1
       batchWrites += 1
       if (linkResult.linkStatus === 'manual_review') manualReviewCount += 1
       else pendingCount += 1
@@ -2195,6 +2698,7 @@ export const publishProgramPeopleAccess = onCall(callableOptions, async (request
       ...sangAppFields,
       passId: passResult.passId,
       passStatus: 'issued',
+      passCode: passResult.passCode,
     }
     const isAlreadyLinked = Boolean(existingSangUserId)
     batch.set(
@@ -2212,10 +2716,17 @@ export const publishProgramPeopleAccess = onCall(callableOptions, async (request
         accessLastPublishedAt: FieldValue.serverTimestamp(),
         passId: passResult.passId,
         passStatus: 'issued',
+        passCode: passResult.passCode,
         updatedAt: FieldValue.serverTimestamp(),
       },
       { merge: true },
     )
+    mirrorPublicPerson(batch, {
+      programId: input.programId,
+      programPersonId: personDoc.id,
+      person: nextPerson,
+      status: 'active',
+    })
     mirrorProgramAccess(batch, {
       uid: linkResult.sangUserId,
       programId: input.programId,
@@ -2224,10 +2735,11 @@ export const publishProgramPeopleAccess = onCall(callableOptions, async (request
       program,
       passId: passResult.passId,
       passQrPayload: passResult.qrPayload,
+      passCode: passResult.passCode,
       linkStatus: 'linked',
       linkMethod: linkResult.linkMethod,
     })
-    batchWrites += 2
+    batchWrites += 3
     if (isAlreadyLinked) alreadyLinkedCount += 1
     else linkedCount += 1
     if (input.notify && (input.forceNotify || !person.accessPublishedAt)) {
@@ -2250,6 +2762,15 @@ export const publishProgramPeopleAccess = onCall(callableOptions, async (request
       notificationSentCount += result.sent
     }
   }
+
+  await db.collection('pePrograms').doc(input.programId).set(
+    {
+      peopleDirectoryRoles: roleFilterPayloadFromMap(activeRoleMap),
+      peopleLastPublishedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  )
 
   await writeAudit({
     orgId: input.orgId,
@@ -2287,9 +2808,9 @@ export const createProgramPersonAndPass = onCall(callableOptions, async (request
       fullName: z.string().min(1),
       email: z.string().optional().default(''),
       phone: z.string().optional().default(''),
-      kind: z.string().optional().default('attendee'),
-      programRoleId: z.string().optional().default('attendee'),
-      programRoleName: z.string().optional().default('Attendee'),
+      kind: z.string().optional().default('visitor'),
+      programRoleId: z.string().optional().default('visitor'),
+      programRoleName: z.string().optional().default('Visitor'),
       company: z.string().optional().default(''),
       organization: z.string().optional().default(''),
       designation: z.string().optional().default(''),
@@ -2388,6 +2909,11 @@ export const createProgramPersonAndPass = onCall(callableOptions, async (request
   const passQrPayload = canReusePass
     ? String(existingPassSnapshot?.data()?.qrPayload || '')
     : `SANGPASS1:${token}`
+  const batch = db.batch()
+  const passCodeResult = canReusePass && existingPassSnapshot?.exists
+    ? await ensurePassCodeForPass(batch, passRef, existingPassSnapshot.data() || {})
+    : { passCode: await makeUniquePassCode(), writesAdded: 0 }
+  const passCode = passCodeResult.passCode
   const existingSangUserId = String(existingPerson.sangUserId || existingPerson.sangUid || '')
   const linkResult = existingSangUserId
     ? {
@@ -2418,6 +2944,7 @@ export const createProgramPersonAndPass = onCall(callableOptions, async (request
     eventRoleKeys: nextEventRoleKeys,
     passId: passRef.id,
     passStatus,
+    passCode,
     rosterStatus: 'active',
     accessStatus: 'active',
     sangUserId: linkResult.sangUserId,
@@ -2430,9 +2957,14 @@ export const createProgramPersonAndPass = onCall(callableOptions, async (request
     ...(!personSnapshot.exists ? { createdAt: FieldValue.serverTimestamp() } : {}),
     updatedAt: FieldValue.serverTimestamp(),
   }
-  const batch = db.batch()
 
   batch.set(personRef, personPatch, { merge: true })
+  mirrorPublicPerson(batch, {
+    programId: input.programId,
+    programPersonId: personRef.id,
+    person: { ...existingPerson, ...personPatch },
+    status: 'active',
+  })
 
   if (!canReusePass) {
     batch.set(passRef, {
@@ -2441,6 +2973,7 @@ export const createProgramPersonAndPass = onCall(callableOptions, async (request
       programPersonId: personRef.id,
       tokenHash: tokenHash(token),
       qrPayload: passQrPayload,
+      passCode,
       status: 'issued',
       delivery: { channel: 'manual', status: 'notSent' },
       createdAt: FieldValue.serverTimestamp(),
@@ -2457,10 +2990,10 @@ export const createProgramPersonAndPass = onCall(callableOptions, async (request
         program,
         passId: passRef.id,
         passQrPayload,
+        passCode,
         linkStatus: linkResult.linkStatus,
         linkMethod: linkResult.linkMethod,
       }),
-      { merge: true },
     )
   }
 
@@ -2470,6 +3003,215 @@ export const createProgramPersonAndPass = onCall(callableOptions, async (request
     programPersonId: personRef.id,
     passId: passRef.id,
     qrPayload: passQrPayload,
+    passCode,
+  }
+})
+
+export const updateProgramPersonAccess = onCall(callableOptions, async (request) => {
+  const uid = requireUid(request)
+  const input = z
+    .object({
+      orgId: z.string().min(1),
+      programPersonId: z.string().min(1),
+      fullName: z.string().min(1),
+      email: z.string().optional().default(''),
+      phone: z.string().optional().default(''),
+      kind: z.string().optional().default('visitor'),
+      programRoleId: z.string().optional().default('visitor'),
+      programRoleName: z.string().optional().default('Visitor'),
+      company: z.string().optional().default(''),
+      organization: z.string().optional().default(''),
+      designation: z.string().optional().default(''),
+      eventAccess: z.array(eventAccessSchema).optional().default([]),
+    })
+    .parse(request.data)
+
+  const personRef = db.collection('peProgramPeople').doc(input.programPersonId)
+  const personSnapshot = await personRef.get()
+  if (!personSnapshot.exists) {
+    throw new HttpsError('not-found', 'Program person not found.')
+  }
+
+  const person = personSnapshot.data() || {}
+  if (person.orgId !== input.orgId) {
+    throw new HttpsError('permission-denied', 'Program person belongs to another organization.')
+  }
+  if (personAccessLifecycle(person) === 'removed') {
+    throw new HttpsError('failed-precondition', 'Removed people must be added again before their access can be edited.')
+  }
+
+  const programId = String(person.programId || '')
+  if (!programId) {
+    throw new HttpsError('failed-precondition', 'Program person is missing a program.')
+  }
+  const { program } = await assertProgram({ orgId: input.orgId, programId })
+
+  const eventAccessById = new Map<string, z.infer<typeof eventAccessSchema>>()
+  for (const access of input.eventAccess) {
+    eventAccessById.set(access.eventId, {
+      ...access,
+      roleId: normalizeRoleId(access.roleId),
+      roleName: access.roleName.trim() || access.roleId,
+    })
+  }
+  const nextRequestedEventIds = Array.from(eventAccessById.keys())
+  const existingEventIds = Array.isArray(person.eventAccessIds)
+    ? person.eventAccessIds.map((eventId) => String(eventId)).filter(Boolean)
+    : []
+  await assertPermission(uid, input.orgId, permissions.peopleImport, {
+    programId,
+    eventIds: uniqueStrings([...existingEventIds, ...nextRequestedEventIds]),
+  })
+
+  const eventDetailsById = new Map<string, Record<string, unknown>>()
+  for (const eventId of nextRequestedEventIds) {
+    const { event } = await assertEvent({ orgId: input.orgId, programId, eventId })
+    eventDetailsById.set(eventId, event)
+  }
+  const eventAccessMap = Array.from(eventAccessById.values()).reduce<Record<string, Record<string, unknown>>>((current, access) => {
+    const eventData = eventDetailsById.get(access.eventId) || {}
+    const roleId = normalizeRoleId(access.roleId)
+    const roleName = access.roleName.trim() || access.roleId
+    current[access.eventId] = {
+      eventId: access.eventId,
+      eventNameSnapshot: String(eventData.name || access.eventId),
+      eventTypeSnapshot: String(eventData.eventType || ''),
+      eventDescription: String(eventData.description || ''),
+      eventPosterUrl: String(eventData.posterUrl || ''),
+      eventVenueName: String(eventData.venueName || ''),
+      eventLocationNote: String(eventData.locationNote || ''),
+      eventDirectionsNote: String(eventData.directionsNote || ''),
+      eventAddress: String(eventData.address || ''),
+      eventStartDateTime: eventData.startDateTime || null,
+      eventEndDateTime: eventData.endDateTime || null,
+      roleId,
+      roleName,
+      status: access.status,
+    }
+    return current
+  }, {})
+  const eventAccessList: Array<Record<string, unknown> & { eventId: string }> = Object.entries(eventAccessMap).map(([eventId, access]) => ({
+    ...access,
+    eventId: String(access.eventId || eventId),
+  }))
+  const visibleStatuses = new Set(['allowed', 'registered'])
+  const activeEventAccessList = eventAccessList.filter((access) => visibleStatuses.has(String(access.status || 'allowed')))
+  const nextEventAccessIds = uniqueStrings(activeEventAccessList.map((access) => access.eventId))
+  const nextEventRoleKeys = uniqueStrings(activeEventAccessList.map((access) => `${access.eventId}:${String(access.roleId || '')}`))
+  const programRoleId = normalizeRoleId(input.programRoleId || input.kind)
+  const programRoleName = input.programRoleName.trim() || input.kind || 'Attendee'
+  const organization = input.organization.trim() || input.company.trim()
+  const email = normalizeEmail(input.email)
+  const phone = input.phone.trim()
+  const normalizedPhone = normalizePhone(phone)
+  const previousSangUserId = String(person.sangUserId || person.sangUid || person.sangAppUserId || '')
+  const previousEmail = normalizeEmail(String(person.normalizedEmail || person.email || ''))
+  const previousPhone = normalizePhone(String(person.normalizedPhone || person.phone || ''))
+  const identityChanged = previousEmail !== email || previousPhone !== normalizedPhone
+  const linkResult = previousSangUserId && !identityChanged
+    ? {
+      linkStatus: 'linked' as const,
+      sangUserId: previousSangUserId,
+      linkMethod: String(person.linkMethod || person.sangAppMatchMethod || 'manual') as SangLinkResult['linkMethod'],
+      linkConflictReason: '',
+    }
+    : await findVerifiedSangUser({ normalizedEmail: email, normalizedPhone })
+  const sangAppFields = sangAppFieldsFromLinkResult(linkResult, Boolean(email || normalizedPhone))
+  const lifecycleStatus = personAccessLifecycle(person)
+  const nextLifecycleStatus = lifecycleStatus === 'blocked' ? 'blocked' : 'active'
+  const passId = String(person.passId || '')
+  const passSnapshot = passId ? await db.collection('pePasses').doc(passId).get() : null
+  const passData = passSnapshot?.data() || {}
+  const passQrPayload = passSnapshot?.exists ? String(passData.qrPayload || '') : ''
+  let passCode = passSnapshot?.exists ? normalizePassCode(passData.passCode) : normalizePassCode(person.passCode)
+  if (passSnapshot?.exists && !passCode) {
+    passCode = await makeUniquePassCode()
+  }
+
+  const batch = db.batch()
+  if (passSnapshot?.exists && !normalizePassCode(passData.passCode) && passCode) {
+    batch.set(passSnapshot.ref, { passCode, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
+  }
+  passCode = passCode || normalizePassCode(person.passCode)
+  const personPatch = {
+    fullName: input.fullName.trim(),
+    email,
+    phone,
+    normalizedEmail: email,
+    normalizedPhone,
+    kind: programRoleId,
+    programRoleId,
+    programRoleName,
+    company: input.company.trim(),
+    organization,
+    designation: input.designation.trim(),
+    eventAccessIds: nextEventAccessIds,
+    eventAccess: eventAccessMap,
+    eventAccessList,
+    eventRoleKeys: nextEventRoleKeys,
+    ...(passCode ? { passCode } : {}),
+    rosterStatus: nextLifecycleStatus,
+    accessStatus: nextLifecycleStatus,
+    ...(lifecycleStatus === 'blocked'
+      ? {
+        eventAccessBeforeBlock: eventAccessMap,
+        eventAccessIdsBeforeBlock: nextEventAccessIds,
+        eventRoleKeysBeforeBlock: nextEventRoleKeys,
+      }
+      : {}),
+    sangUserId: linkResult.sangUserId,
+    sangUid: linkResult.sangUserId,
+    linkStatus: linkResult.linkStatus,
+    linkMethod: linkResult.linkMethod,
+    linkConflictReason: linkResult.linkConflictReason,
+    ...sangAppFields,
+    ...(linkResult.linkStatus === 'linked' && previousSangUserId !== linkResult.sangUserId ? { linkedAt: FieldValue.serverTimestamp() } : {}),
+    ...(linkResult.linkStatus !== 'linked' ? { linkedAt: FieldValue.delete() } : {}),
+    updatedAt: FieldValue.serverTimestamp(),
+  }
+  const updatedPerson = { ...person, ...personPatch }
+
+  batch.update(personRef, personPatch)
+  if (previousSangUserId && previousSangUserId !== linkResult.sangUserId) {
+    batch.delete(db.collection('users').doc(previousSangUserId).collection('eventAccess').doc(programId))
+  }
+  mirrorPublicPerson(batch, {
+    programId,
+    programPersonId: input.programPersonId,
+    person: updatedPerson,
+    status: nextLifecycleStatus === 'active' ? 'active' : 'inactive',
+  })
+  if (linkResult.sangUserId && passId) {
+    mirrorProgramAccess(batch, {
+      uid: linkResult.sangUserId,
+      programId,
+      programPersonId: input.programPersonId,
+      person: updatedPerson,
+      program,
+      passId,
+      passQrPayload,
+      passCode,
+      linkStatus: linkResult.linkStatus,
+      linkMethod: linkResult.linkMethod,
+    })
+  }
+
+  await batch.commit()
+  await writeAudit({
+    orgId: input.orgId,
+    actorUid: uid,
+    action: 'programPerson.updateAccess',
+    entityPath: personRef.path,
+    metadata: {
+      programId,
+      eventCount: nextEventAccessIds.length,
+      linked: Boolean(linkResult.sangUserId),
+    },
+  })
+  return {
+    programPersonId: input.programPersonId,
+    status: nextLifecycleStatus,
+    linked: Boolean(linkResult.sangUserId),
   }
 })
 
@@ -2579,6 +3321,12 @@ export const claimMyEventAccess = onCall(callableOptions, async (request) => {
     const passId = String(person.passId || '')
     const passSnapshot = passId ? await db.collection('pePasses').doc(passId).get() : null
     const passQrPayload = passSnapshot?.exists ? String(passSnapshot.data()?.qrPayload || '') : ''
+    const passCodeFromPass = passSnapshot?.exists ? normalizePassCode(passSnapshot.data()?.passCode) : ''
+    let passCode = normalizePassCode(person.passCode) || passCodeFromPass
+    if (passSnapshot?.exists && !passCode) {
+      passCode = await makeUniquePassCode()
+      batch.set(passSnapshot.ref, { passCode, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
+    }
 
     batch.set(
       db.collection('peProgramPeople').doc(person.id),
@@ -2588,6 +3336,7 @@ export const claimMyEventAccess = onCall(callableOptions, async (request) => {
         linkStatus: 'linked',
         linkMethod,
         linkConflictReason: '',
+        ...(passCode ? { passCode } : {}),
         ...sangAppFieldsFromLinkResult(linkResult, true),
         linkedAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
@@ -2609,11 +3358,23 @@ export const claimMyEventAccess = onCall(callableOptions, async (request) => {
         program,
         passId,
         passQrPayload,
+        passCode,
         linkStatus: 'linked',
         linkMethod,
       }),
-      { merge: true },
     )
+    mirrorPublicPerson(batch, {
+      programId,
+      programPersonId: person.id,
+      person: {
+        ...person,
+        sangUserId: uid,
+        sangUid: uid,
+        linkStatus: 'linked',
+        linkMethod,
+      },
+      status: 'active',
+    })
     linkedCount += 1
   }
 
@@ -2625,6 +3386,374 @@ export const claimMyEventAccess = onCall(callableOptions, async (request) => {
     linkedCount,
     pendingCount: Math.max(candidates.size - linkedCount - manualReviewCount, 0),
     manualReviewCount,
+  }
+})
+
+export const getMyEventPass = onCall(callableOptions, async (request) => {
+  const uid = requireUid(request)
+  const input = z
+    .object({
+      programId: z.string().min(1),
+    })
+    .parse(request.data)
+
+  const mirrorRef = db.collection('users').doc(uid).collection('eventAccess').doc(input.programId)
+  const mirrorSnapshot = await mirrorRef.get()
+  if (!mirrorSnapshot.exists) {
+    throw new HttpsError('permission-denied', 'Event access not found for this account.')
+  }
+
+  const mirror = mirrorSnapshot.data() || {}
+  const passId = String(mirror.passId || '')
+  const programPersonId = String(mirror.programPersonId || '')
+  if (!passId || !programPersonId) {
+    throw new HttpsError('failed-precondition', 'Event pass is not ready yet.')
+  }
+
+  const passSnapshot = await db.collection('pePasses').doc(passId).get()
+  if (!passSnapshot.exists) {
+    throw new HttpsError('not-found', 'Event pass not found.')
+  }
+
+  const pass = passSnapshot.data() || {}
+  if (String(pass.programId || '') !== input.programId || String(pass.programPersonId || '') !== programPersonId) {
+    throw new HttpsError('permission-denied', 'Event pass does not match this account.')
+  }
+
+  const passStatus = String(pass.status || mirror.passStatus || 'issued')
+  const passQrPayload = String(pass.qrPayload || '')
+  const passCode = normalizePassCode(pass.passCode) || normalizePassCode(mirror.passCode)
+  const updatedAt = FieldValue.serverTimestamp()
+  await mirrorRef.set(
+    {
+      passId,
+      programPersonId,
+      passQrPayload,
+      ...(passCode ? { passCode } : {}),
+      passStatus,
+      passUpdatedAt: pass.updatedAt || null,
+      updatedAt,
+    },
+    { merge: true },
+  )
+
+  return {
+    passQrPayload,
+    passCode,
+    passStatus,
+    updatedAt: pass.updatedAt || null,
+  }
+})
+
+function accessEventRoleMap(access: Record<string, unknown>) {
+  const map = new Map<string, string>()
+  const eventAccessList = Array.isArray(access.eventAccessList) ? access.eventAccessList : []
+  for (const entry of eventAccessList) {
+    if (!entry || typeof entry !== 'object') continue
+    const value = entry as Record<string, unknown>
+    const eventId = String(value.eventId || '')
+    if (!eventId) continue
+    map.set(eventId, normalizeRoleId(String(value.roleId || access.programRoleId || access.personKind || 'visitor')))
+  }
+  const eventAccess = access.eventAccess && typeof access.eventAccess === 'object' && !Array.isArray(access.eventAccess)
+    ? access.eventAccess as Record<string, Record<string, unknown>>
+    : {}
+  for (const [eventId, entry] of Object.entries(eventAccess)) {
+    if (!eventId) continue
+    map.set(eventId, normalizeRoleId(String(entry.roleId || access.programRoleId || access.personKind || 'visitor')))
+  }
+  return map
+}
+
+function accessAllowedEventIds(access: Record<string, unknown>) {
+  const explicitIds = Array.isArray(access.allowedEventIds) ? access.allowedEventIds.map((eventId) => String(eventId)).filter(Boolean) : []
+  if (explicitIds.length) return new Set(explicitIds)
+  return new Set(accessEventRoleMap(access).keys())
+}
+
+function scheduleItemAllowedForAccess(item: Record<string, unknown>, access: Record<string, unknown>) {
+  const visibility = String(item.visibility || 'public')
+  if (visibility === 'staffOnly') return false
+  const eventId = String(item.eventId || '')
+  const allowedEventIds = accessAllowedEventIds(access)
+  if (eventId && allowedEventIds.size && !allowedEventIds.has(eventId)) return false
+
+  const programRoleId = normalizeRoleId(String(access.programRoleId || access.personKind || 'visitor'))
+  const roleForEvent = eventId ? accessEventRoleMap(access).get(eventId) || programRoleId : programRoleId
+  const allowedRoleIds = Array.isArray(item.allowedRoleIds) ? item.allowedRoleIds.map((roleId) => normalizeRoleId(String(roleId))).filter(Boolean) : []
+  if (visibility === 'rolesOnly' || visibility === 'participantsOnly' || allowedRoleIds.length) {
+    if (!allowedRoleIds.length) return true
+    return allowedRoleIds.includes(roleForEvent) || allowedRoleIds.includes(programRoleId)
+  }
+  return true
+}
+
+function safeScheduleItemForApp(item: Record<string, unknown>): Record<string, unknown> {
+  const workshops = Array.isArray(item.workshops)
+    ? item.workshops
+      .filter((workshop): workshop is Record<string, unknown> => Boolean(workshop && typeof workshop === 'object'))
+      .map((workshop) => safeScheduleItemForApp(workshop))
+    : []
+
+  return {
+    id: String(item.id || ''),
+    eventId: String(item.eventId || ''),
+    eventNameSnapshot: String(item.eventNameSnapshot || ''),
+    eventTypeSnapshot: String(item.eventTypeSnapshot || ''),
+    title: String(item.title || ''),
+    type: String(item.type || 'session'),
+    customTypeLabel: String(item.customTypeLabel || ''),
+    description: String(item.description || ''),
+    startsAt: item.startsAt || null,
+    endsAt: item.endsAt || null,
+    timezone: String(item.timezone || 'Asia/Kolkata'),
+    venueName: String(item.venueName || ''),
+    roomName: String(item.roomName || ''),
+    address: String(item.address || ''),
+    locationNote: String(item.locationNote || ''),
+    directionsNote: String(item.directionsNote || ''),
+    latitude: typeof item.latitude === 'number' ? item.latitude : undefined,
+    longitude: typeof item.longitude === 'number' ? item.longitude : undefined,
+    visibility: String(item.visibility || 'public'),
+    allowedRoleNames: Array.isArray(item.allowedRoleNames) ? item.allowedRoleNames.map((roleName) => String(roleName)).filter(Boolean) : [],
+    parentScheduleItemId: String(item.parentScheduleItemId || ''),
+    groupLabel: String(item.groupLabel || ''),
+    workshops,
+    status: String(item.status || 'scheduled'),
+    sortOrder: Number(item.sortOrder || 0),
+  }
+}
+
+export const getMyProgramSchedule = onCall(callableOptions, async (request) => {
+  const uid = requireUid(request)
+  const input = z
+    .object({
+      programId: z.string().min(1),
+    })
+    .parse(request.data)
+
+  const accessSnapshot = await db.collection('users').doc(uid).collection('eventAccess').doc(input.programId).get()
+  if (!accessSnapshot.exists) {
+    throw new HttpsError('permission-denied', 'Event access not found for this account.')
+  }
+  const access = accessSnapshot.data() || {}
+  const scheduleSnapshot = await db.collection(programScheduleCollection).doc(input.programId).get()
+  if (!scheduleSnapshot.exists) {
+    return {
+      id: input.programId,
+      programId: input.programId,
+      itemCount: 0,
+      items: [],
+      days: [],
+      updatedAt: null,
+    }
+  }
+
+  const schedule = scheduleSnapshot.data() || {}
+  const pageIds = Array.isArray(schedule.pages) ? schedule.pages.map((page) => String((page as Record<string, unknown>).pageId || '')).filter(Boolean) : []
+  const rawItems: Record<string, unknown>[] = []
+  if (Array.isArray(schedule.items) && schedule.items.length) {
+    rawItems.push(...schedule.items.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object')))
+  } else if (pageIds.length) {
+    const pageSnapshots = await Promise.all(pageIds.map((pageId) => db.collection(programSchedulePagesCollection).doc(pageId).get()))
+    for (const pageSnapshot of pageSnapshots) {
+      const pageItems = pageSnapshot.data()?.items
+      if (Array.isArray(pageItems)) {
+        rawItems.push(...pageItems.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object')))
+      }
+    }
+  }
+
+  const items = rawItems
+    .filter((item) => scheduleItemAllowedForAccess(item, access))
+    .map((item) => {
+      const visibleWorkshops = Array.isArray(item.workshops)
+        ? item.workshops
+          .filter((workshop): workshop is Record<string, unknown> => Boolean(workshop && typeof workshop === 'object'))
+          .filter((workshop) => scheduleItemAllowedForAccess(workshop, access))
+        : []
+      return safeScheduleItemForApp({ ...item, workshops: visibleWorkshops })
+    })
+
+  return {
+    id: scheduleSnapshot.id,
+    programId: input.programId,
+    itemCount: items.length,
+    items,
+    days: Array.isArray(schedule.days) ? schedule.days : [],
+    updatedAt: schedule.updatedAt || null,
+  }
+})
+
+export const getEventPeopleDirectory = onCall(callableOptions, async (request) => {
+  const uid = requireUid(request)
+  const input = z
+    .object({
+      programId: z.string().min(1),
+      roleKey: z.string().optional().default('all'),
+      cursor: z
+        .object({
+          sortName: z.string().optional().default(''),
+          programPersonId: z.string().optional().default(''),
+        })
+        .optional()
+        .nullable(),
+    })
+    .parse(request.data)
+
+  const accessSnapshot = await db.collection('users').doc(uid).collection('eventAccess').doc(input.programId).get()
+  if (!accessSnapshot.exists) {
+    throw new HttpsError('permission-denied', 'Event access not found for this account.')
+  }
+  const roleKey = normalizeRoleId(input.roleKey || 'all')
+  let peopleQuery: FirebaseFirestore.Query = publicPeopleCollection(input.programId)
+    .where('status', '==', 'active')
+  if (roleKey && roleKey !== 'all') {
+    peopleQuery = peopleQuery.where('roleKey', '==', roleKey)
+  }
+  peopleQuery = peopleQuery
+    .orderBy('sortName')
+    .orderBy('programPersonId')
+  if (input.cursor?.sortName && input.cursor?.programPersonId) {
+    peopleQuery = peopleQuery.startAfter(input.cursor.sortName, input.cursor.programPersonId)
+  }
+
+  const snapshot = await peopleQuery.limit(mobilePeoplePageSize + 1).get()
+  const docs = snapshot.docs.slice(0, mobilePeoplePageSize)
+  const lastDoc = docs[docs.length - 1]
+
+  return {
+    people: docs.map(safePeopleDirectoryPerson),
+    nextCursor: snapshot.docs.length > mobilePeoplePageSize && lastDoc
+      ? {
+        sortName: String(lastDoc.data()?.sortName || ''),
+        programPersonId: String(lastDoc.data()?.programPersonId || lastDoc.id),
+      }
+      : null,
+  }
+})
+
+export const setEventShowCard = onCall(callableOptions, async (request) => {
+  const uid = requireUid(request)
+  const input = z
+    .object({
+      programId: z.string().min(1),
+      showCard: z.boolean(),
+      selectedCardId: z.string().optional().default(''),
+    })
+    .parse(request.data)
+
+  const accessRef = db.collection('users').doc(uid).collection('eventAccess').doc(input.programId)
+  const accessSnapshot = await accessRef.get()
+  if (!accessSnapshot.exists) {
+    throw new HttpsError('permission-denied', 'Event access not found for this account.')
+  }
+  const access = accessSnapshot.data() || {}
+  const programPersonId = String(access.programPersonId || '')
+  if (!programPersonId) {
+    throw new HttpsError('failed-precondition', 'Event person link is not ready.')
+  }
+
+  let selectedCardId = input.selectedCardId.trim()
+  if (input.showCard && !selectedCardId) {
+    selectedCardId = await getDefaultCardIdForUser(uid)
+  }
+  if (input.showCard && !selectedCardId) {
+    throw new HttpsError('failed-precondition', 'Create a Sang card before showing it at this event.')
+  }
+  if (input.showCard) {
+    const cardSnapshot = await db.collection('cards').doc(selectedCardId).get()
+    const card = cardSnapshot.data() || {}
+    if (!cardSnapshot.exists || card.ownerUid !== uid || card.active !== true) {
+      throw new HttpsError('permission-denied', 'Selected card is not available.')
+    }
+  }
+
+  const personRef = publicPeopleCollection(input.programId).doc(programPersonId)
+  const personSnapshot = await personRef.get()
+  const person = personSnapshot.data() || {}
+  if (!personSnapshot.exists) {
+    throw new HttpsError('not-found', 'Event people directory is not published yet.')
+  }
+  if (String(person.sangUid || '') !== uid) {
+    throw new HttpsError('permission-denied', 'This event person belongs to another account.')
+  }
+
+  const patch = {
+    showCard: input.showCard,
+    selectedCardId: input.showCard ? selectedCardId : '',
+    updatedAt: FieldValue.serverTimestamp(),
+  }
+  const batch = db.batch()
+  batch.set(accessRef, patch, { merge: true })
+  batch.set(personRef, patch, { merge: true })
+  batch.set(
+    db.collection('peProgramPeople').doc(programPersonId),
+    {
+      showCard: input.showCard,
+      selectedCardId: input.showCard ? selectedCardId : '',
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  )
+  await batch.commit()
+
+  return {
+    showCard: input.showCard,
+    selectedCardId: input.showCard ? selectedCardId : '',
+  }
+})
+
+export const getEventPersonCard = onCall(callableOptions, async (request) => {
+  const uid = requireUid(request)
+  const input = z
+    .object({
+      programId: z.string().min(1),
+      programPersonId: z.string().min(1),
+    })
+    .parse(request.data)
+
+  const accessSnapshot = await db.collection('users').doc(uid).collection('eventAccess').doc(input.programId).get()
+  if (!accessSnapshot.exists) {
+    throw new HttpsError('permission-denied', 'Event access not found for this account.')
+  }
+
+  const personSnapshot = await publicPeopleCollection(input.programId).doc(input.programPersonId).get()
+  if (!personSnapshot.exists) {
+    throw new HttpsError('not-found', 'Person not found in this event.')
+  }
+  const person = personSnapshot.data() || {}
+  if (person.status !== 'active') {
+    throw new HttpsError('not-found', 'Person is not visible in this event.')
+  }
+  if (person.showCard !== true) {
+    return {
+      person: safePeopleDirectoryPerson(personSnapshot),
+      card: null,
+    }
+  }
+
+  const sangUid = String(person.sangUid || '')
+  const selectedCardId = String(person.selectedCardId || '')
+  if (!sangUid || !selectedCardId) {
+    return {
+      person: safePeopleDirectoryPerson(personSnapshot),
+      card: null,
+    }
+  }
+
+  const cardSnapshot = await db.collection('cards').doc(selectedCardId).get()
+  const card = cardSnapshot.data() || {}
+  if (!cardSnapshot.exists || card.ownerUid !== sangUid || card.active !== true) {
+    return {
+      person: safePeopleDirectoryPerson(personSnapshot),
+      card: null,
+    }
+  }
+
+  return {
+    person: safePeopleDirectoryPerson(personSnapshot),
+    card: publicCardFromStoredCard(card),
   }
 })
 
@@ -2663,6 +3792,7 @@ async function updateProgramPersonLifecycle(input: {
   const existingPassId = String(person.passId || '')
   const existingPassSnapshot = existingPassId ? await db.collection('pePasses').doc(existingPassId).get() : null
   const passQrPayload = existingPassSnapshot?.exists ? String(existingPassSnapshot.data()?.qrPayload || '') : ''
+  const passCode = normalizePassCode(person.passCode) || (existingPassSnapshot?.exists ? normalizePassCode(existingPassSnapshot.data()?.passCode) : '')
   const sangUserId = String(person.sangUserId || person.sangUid || person.sangAppUserId || '')
   const timestampField = input.lifecycleStatus === 'blocked' ? 'blockedAt' : 'removedAt'
   const actorField = input.lifecycleStatus === 'blocked' ? 'blockedBy' : 'removedBy'
@@ -2671,6 +3801,7 @@ async function updateProgramPersonLifecycle(input: {
     rosterStatus: input.lifecycleStatus,
     accessStatus: input.lifecycleStatus,
     passStatus: inactivePassStatus,
+    ...(passCode ? { passCode } : {}),
     eventAccess: inactiveEventAccess,
     eventAccessList: eventAccessListFromMap(inactiveEventAccess),
     ...(input.lifecycleStatus === 'removed' ? { eventAccessIds: [], eventRoleKeys: [] } : {}),
@@ -2718,12 +3849,20 @@ async function updateProgramPersonLifecycle(input: {
           program: programSnapshot.data() || {},
           passId: existingPassId,
           passQrPayload,
+          passCode,
           linkStatus: String(person.linkStatus || 'linked'),
           linkMethod: String(person.linkMethod || 'manual'),
         }),
-        { merge: true },
       )
     }
+  }
+  if (programId) {
+    mirrorPublicPerson(batch, {
+      programId,
+      programPersonId: input.programPersonId,
+      person: { ...person, ...personPatch },
+      status: 'inactive',
+    })
   }
   await batch.commit()
   await writeAudit({
@@ -2833,12 +3972,14 @@ export const unblockProgramPersonAccess = onCall(callableOptions, async (request
       passStatus: String(person.passStatus || 'issued'),
       passId: String(person.passId || ''),
       qrPayload: '',
+      passCode: normalizePassCode(person.passCode),
     }
   }
 
   const previousPassId = String(person.passId || '')
   const token = makeToken()
   const passQrPayload = `SANGPASS1:${token}`
+  const passCode = await makeUniquePassCode()
   const passRef = db.collection('pePasses').doc()
   const sangUserId = String(person.sangUserId || person.sangUid || person.sangAppUserId || '')
   const reason = input.reason.trim() || 'unblocked-by-organizer'
@@ -2847,6 +3988,7 @@ export const unblockProgramPersonAccess = onCall(callableOptions, async (request
     accessStatus: 'active',
     passStatus: 'issued',
     passId: passRef.id,
+    passCode,
     previousPassId,
     passRotatedAt: FieldValue.serverTimestamp(),
     eventAccess,
@@ -2888,10 +4030,17 @@ export const unblockProgramPersonAccess = onCall(callableOptions, async (request
     programPersonId: input.programPersonId,
     tokenHash: tokenHash(token),
     qrPayload: passQrPayload,
+    passCode,
     status: 'issued',
     delivery: { channel: 'manual', status: 'notSent' },
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
+  })
+  mirrorPublicPerson(batch, {
+    programId,
+    programPersonId: input.programPersonId,
+    person: { ...person, ...personPatch },
+    status: 'active',
   })
   if (sangUserId && programId) {
     const programSnapshot = await db.collection('pePrograms').doc(programId).get()
@@ -2906,6 +4055,7 @@ export const unblockProgramPersonAccess = onCall(callableOptions, async (request
           accessStatus: 'active',
           passStatus: 'issued',
           passId: passRef.id,
+          passCode,
           eventAccess,
           eventAccessList,
           eventAccessIds: restoredEventAccessIds,
@@ -2914,10 +4064,10 @@ export const unblockProgramPersonAccess = onCall(callableOptions, async (request
         program: programSnapshot.data() || {},
         passId: passRef.id,
         passQrPayload,
+        passCode,
         linkStatus: String(person.linkStatus || 'linked'),
         linkMethod: String(person.linkMethod || 'manual'),
       }),
-      { merge: true },
     )
   }
   await batch.commit()
@@ -2939,6 +4089,7 @@ export const unblockProgramPersonAccess = onCall(callableOptions, async (request
     passStatus: 'issued',
     passId: passRef.id,
     qrPayload: passQrPayload,
+    passCode,
     revokedPassId: previousPassId,
   }
 })
@@ -2970,45 +4121,44 @@ export const issuePassForProgramPerson = onCall(callableOptions, async (request)
     eventIds: Array.isArray(person.eventAccessIds) ? person.eventAccessIds : [],
   })
 
-  const token = makeToken()
-  const passQrPayload = `SANGPASS1:${token}`
-  const passRef = db.collection('pePasses').doc()
-  const batch = db.batch()
   const sangUserId = String(person.sangUserId || person.sangUid || '')
   const previousPassId = String(person.passId || '')
-  const previousPassRef = previousPassId ? db.collection('pePasses').doc(previousPassId) : null
-  const previousPassSnapshot = previousPassRef ? await previousPassRef.get() : null
-  if (previousPassSnapshot?.exists && previousPassSnapshot.data()?.status !== 'revoked') {
-    batch.set(
-      previousPassSnapshot.ref,
-      {
-        status: 'revoked',
-        revokedReason: 'qr-rotated',
-        revokedBy: uid,
-        replacedByPassId: passRef.id,
-        revokedAt: FieldValue.serverTimestamp(),
-        updatedAt: FieldValue.serverTimestamp(),
-      },
-      { merge: true },
-    )
-  }
+  const passRef = previousPassId ? db.collection('pePasses').doc(previousPassId) : db.collection('pePasses').doc()
+  const existingPassSnapshot = previousPassId ? await passRef.get() : null
+  const token = makeToken()
+  const passQrPayload = `SANGPASS1:${token}`
+  const passCode = await makeUniquePassCode()
+  const batch = db.batch()
 
-  batch.set(passRef, {
+  const passPatch: Record<string, unknown> = {
     orgId: input.orgId,
     programId: person.programId,
     programPersonId: input.programPersonId,
     tokenHash: tokenHash(token),
     qrPayload: passQrPayload,
+    passCode,
     status: 'issued',
     delivery: { channel: 'manual', status: 'notSent' },
-    createdAt: FieldValue.serverTimestamp(),
+    qrUpdatedAt: FieldValue.serverTimestamp(),
+    qrUpdatedBy: uid,
+    qrRotationCount: existingPassSnapshot?.exists ? FieldValue.increment(1) : 0,
+    revokedAt: FieldValue.delete(),
+    revokedBy: FieldValue.delete(),
+    revokedReason: FieldValue.delete(),
+    replacedByPassId: FieldValue.delete(),
     updatedAt: FieldValue.serverTimestamp(),
-  })
+  }
+  if (!existingPassSnapshot?.exists) {
+    passPatch.createdAt = FieldValue.serverTimestamp()
+  }
+  batch.set(passRef, passPatch, { merge: true })
   batch.update(personRef, {
     passId: passRef.id,
     passStatus: 'issued',
-    previousPassId,
-    passRotatedAt: previousPassId ? FieldValue.serverTimestamp() : null,
+    passCode,
+    passQrUpdatedAt: FieldValue.serverTimestamp(),
+    previousPassId: FieldValue.delete(),
+    passRotatedAt: existingPassSnapshot?.exists ? FieldValue.serverTimestamp() : FieldValue.delete(),
     updatedAt: FieldValue.serverTimestamp(),
   })
   if (sangUserId) {
@@ -3022,10 +4172,10 @@ export const issuePassForProgramPerson = onCall(callableOptions, async (request)
         program: programSnapshot.data() || {},
         passId: passRef.id,
         passQrPayload,
+        passCode,
         linkStatus: String(person.linkStatus || 'linked'),
         linkMethod: String(person.linkMethod || 'manual'),
       }),
-      { merge: true },
     )
   }
   await batch.commit()
@@ -3034,9 +4184,9 @@ export const issuePassForProgramPerson = onCall(callableOptions, async (request)
     actorUid: uid,
     action: previousPassId ? 'pass.rotate' : 'pass.issue',
     entityPath: passRef.path,
-    metadata: previousPassId ? { previousPassId } : {},
+    metadata: previousPassId ? { passId: passRef.id, stablePassId: true } : {},
   })
-  return { passId: passRef.id, qrPayload: passQrPayload, revokedPassId: previousPassId }
+  return { passId: passRef.id, qrPayload: passQrPayload, passCode }
 })
 
 export const createScannerSession = onCall(callableOptions, async (request) => {

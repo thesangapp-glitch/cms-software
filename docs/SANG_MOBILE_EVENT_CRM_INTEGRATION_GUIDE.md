@@ -27,7 +27,7 @@ Important decisions:
 5. Backend matches roster rows to existing Sang users by verified email or verified phone.
 6. Backend writes the mobile mirror under `users/{uid}/eventAccess/{programId}`.
 7. Sang app reads only the user's own `eventAccess` mirror for the Events tab.
-8. Sang app reads `peEventSchedule/{eventId}` for schedules of events the user can access.
+8. Sang app calls `getMyProgramSchedule({ programId })` for the published schedule.
 9. Sang app renders the entry pass QR from `passQrPayload`.
 10. Staff scanner validates the QR through `scanPassToken`; the app should never validate the token locally.
 
@@ -39,19 +39,20 @@ Implement these app surfaces:
 2. Program list from `users/{uid}/eventAccess`.
 3. Program detail screen from the selected mirror document.
 4. Event list inside a program using `eventAccessList`.
-5. Schedule screen using `peEventSchedule/{eventId}`.
+5. Schedule screen using `getMyProgramSchedule({ programId })`.
 6. Entry pass screen that renders `passQrPayload`.
 7. Patrons tab using `peProgramPartners` for visible sponsors/patrons.
 8. Push notification handling for newly linked programs.
 9. Claim/sync action after login and after email/phone verification.
-10. Optional staff scanner flow if Sang app will be used by gate staff.
+10. Entry pass refresh through `getMyEventPass({ programId })`; mobile must not read `pePasses` directly.
+11. Optional staff scanner flow if Sang app will be used by gate staff.
 
 Current Sang app implementation files:
 
 - `src/services/eventAccess.ts`: Firestore listeners for access, live program/event docs, schedules, patrons, and `claimMyEventAccess` callable wrapper.
 - `src/hooks/useEventAccess.ts`: React hooks for Events list/detail screens.
 - `src/screens/EventsScreen.tsx`: reads live program access instead of `MOCK_EVENTS`.
-- `src/screens/EventDetailScreen.tsx`: reads selected program access and `peEventSchedule` snapshots.
+- `src/screens/EventDetailScreen.tsx`: reads selected program access and published program schedule data.
 - `src/data/mockEvents.ts`: still owns shared UI types; mock rows are no longer the primary Events screen source.
 
 ## Authentication And Identity Matching
@@ -157,6 +158,7 @@ Example document:
 
   passId: 'pass_123',
   passQrPayload: 'SANGPASS1:rawTokenValue',
+  passCode: '48291370', // 8-digit display/support code, not the scanner credential
   passStatus: 'issued', // issued | checkedIn | revoked | expired | cancelled
 
   programName: 'Tech Fest 2026',
@@ -275,70 +277,114 @@ Client should sort locally:
 
 ## Schedule Data For Mobile
 
-### `peEventSchedule/{eventId}`
+Mobile should call the backend callable, not read CRM schedule rows directly.
 
-This is the audience/mobile schedule snapshot. It is optimized for mobile reads.
-
-Mobile should read this collection, not `peEventScheduleDashboard`.
-
-Read path:
+Callable:
 
 ```ts
-peEventSchedule/{eventId}
+getMyProgramSchedule({ programId })
 ```
 
-Example:
+Backend behavior:
+
+- Verifies `users/{uid}/eventAccess/{programId}` exists.
+- Reads the published schedule index from `peProgramSchedule/{programId}`.
+- Reads item pages from `peProgramSchedulePages/{pageId}`.
+- Filters role-based rows against the user's event/program role.
+- Returns only safe mobile fields.
+
+Published schedule index:
+
+```ts
+peProgramSchedule/{programId}
+{
+  orgId: string,
+  programId: string,
+  mode: 'empty' | 'paged',
+  pageSize: number,
+  itemCount: number,
+  version: number,
+  pages: [
+    {
+      pageId: string,       // example: `${programId}_p001`
+      pageNo: number,
+      itemCount: number,
+      dateKeys: string[]
+    }
+  ],
+  days: [
+    {
+      dateKey: string,
+      dateLabel: string,
+      itemCount: number,
+      pageIds: string[]
+    }
+  ],
+  updatedAt: Timestamp
+}
+```
+
+Important: `peProgramSchedule/{programId}` intentionally does not store the full `items` array. It is metadata only. This prevents the same schedule from being duplicated in both root and page documents.
+
+Published schedule pages:
+
+```ts
+peProgramSchedulePages/{pageId}
+{
+  orgId: string,
+  programId: string,
+  pageNo: number,
+  itemCount: number,
+  dateKeys: string[],
+  items: [
+    {
+      id: string,
+      eventId: string,
+      title: string,
+      type: 'session' | 'round' | 'break' | 'checkin' | 'performance' | 'result' | 'ceremony' | 'custom',
+      customTypeLabel: string,
+      description: string,
+      startsAt: Timestamp,
+      endsAt: Timestamp | null,
+      timezone: string,
+      venueId: string,
+      roomId: string,
+      venueName: string,
+      roomName: string,
+      latitude?: number,
+      longitude?: number,
+      visibility: 'public' | 'participantsOnly' | 'rolesOnly',
+      allowedRoleIds: string[],
+      allowedRoleNames: string[],
+      status: string,
+      sortOrder: number,
+      workshops?: Array<object>
+    }
+  ],
+  updatedAt: Timestamp
+}
+```
+
+Callable response:
 
 ```ts
 {
-  orgId: 'org_123',
-  programId: 'program_123',
-  eventId: 'event_1',
-  itemCount: 3,
-  version: 8,
-  updatedAt: Timestamp,
-  items: [
-    {
-      id: 'schedule_1',
-      title: 'Opening Ceremony',
-      type: 'ceremony', // session | round | break | checkin | performance | result | ceremony | custom
-      customTypeLabel: '',
-      description: 'Main stage opening',
-      startsAt: Timestamp,
-      endsAt: Timestamp,
-      timezone: 'Asia/Kolkata',
-      venueId: 'venue_1',
-      roomId: 'room_1',
-      venueName: 'Convocation Hall',
-      roomName: 'Main Hall',
-      latitude: 29.8543,
-      longitude: 77.8880,
-      visibility: 'public', // public | participantsOnly
-      status: 'scheduled',  // draft | scheduled | delayed | cancelled | completed
-      sortOrder: 10
-    }
-  ]
+  id: programId,
+  programId,
+  itemCount: number,
+  items: ScheduleItem[],
+  days: ScheduleDay[],
+  updatedAt: Timestamp | null
 }
 ```
 
 Important:
 
-- `staffOnly` schedule items are filtered out before this snapshot is written.
-- `participantsOnly` items are still present for users who already have access to that event.
+- Organizer controls publishing manually from CRM with "Publish schedule".
+- `draft`, `cancelled`, and `staffOnly` items are filtered out before the snapshot is written.
+- Child rows with `parentScheduleItemId` appear inside parent item `workshops`.
 - Sort by `sortOrder`, then `startsAt`.
-- Use `version` or `updatedAt` to refresh local cache.
-- If a program is standalone with no event IDs, there is currently no program-level mobile schedule snapshot. For production, either create a default event for standalone programs or add a separate `peProgramSchedule/{programId}` snapshot later.
-
-Recommended schedule loading:
-
-```ts
-const accessDoc = await db.doc(`users/${uid}/eventAccess/${programId}`).get()
-const eventIds = accessDoc.data().allowedEventIds || []
-
-for (const eventId of eventIds) {
-  db.doc(`peEventSchedule/${eventId}`).onSnapshot(...)
-}
-```
+- Use `updatedAt` and local cache to avoid unnecessary UI refreshes.
 
 ## Event Detail Read
 
@@ -597,11 +643,15 @@ Shape:
   programPersonId: string,
   tokenHash: string,
   qrPayload: 'SANGPASS1:{token}',
+  passCode: '48291370',
   status: 'issued' | 'checkedIn' | 'revoked' | 'expired' | 'cancelled',
   delivery: {
     channel: string,
     status: string
   },
+  qrUpdatedAt?: Timestamp,
+  qrUpdatedBy?: string,
+  qrRotationCount?: number,
   createdAt: Timestamp,
   updatedAt: Timestamp,
   revokedAt?: Timestamp,
@@ -615,6 +665,8 @@ Mobile rule:
 - Do not read `pePasses`.
 - Do not generate pass token locally.
 - Render the QR from `users/{uid}/eventAccess/{programId}.passQrPayload`.
+- Show `passCode` only as a human-readable support/display code.
+- When CRM refreshes a QR, `passId` normally stays the same and only `passQrPayload`, `passCode`, and update timestamps change in the mirror.
 
 ### `peEventScheduleDashboard/{scheduleItemId}`
 
@@ -623,7 +675,7 @@ CRM editing source for schedules. One document per schedule row.
 Mobile rule:
 
 - Do not read this collection from Sang app.
-- Read `peEventSchedule/{eventId}` snapshot instead.
+- Call `getMyProgramSchedule({ programId })` instead.
 
 ### `peProgramVenues/{programId}`
 
@@ -757,6 +809,48 @@ Expected UX:
 - If `pendingCount > 0`, show a neutral empty state like: "Your registration may still be waiting for organizer publish."
 - If `manualReviewCount > 0`, show support text: "We found a matching registration but it needs organizer review."
 
+### `getMyEventPass`
+
+Purpose:
+
+- Reads the user's event mirror and the current backend pass, then returns only safe pass fields to the app.
+- Keeps `pePasses` as source of truth without allowing direct mobile reads.
+- Refreshes `users/{uid}/eventAccess/{programId}` with the latest pass payload/code/status.
+
+Input:
+
+```ts
+{
+  programId: string
+}
+```
+
+Backend checks:
+
+- Auth uid comes from Firebase Auth, not from app input.
+- `users/{uid}/eventAccess/{programId}` exists.
+- Mirror contains `passId` and `programPersonId`.
+- `pePasses/{passId}.programId == programId`.
+- `pePasses/{passId}.programPersonId == mirror.programPersonId`.
+
+Response:
+
+```ts
+{
+  passQrPayload: 'SANGPASS1:{token}',
+  passCode: '48291370',
+  passStatus: 'issued',
+  updatedAt: Timestamp | null
+}
+```
+
+Mobile behavior:
+
+- Render cached mirror immediately.
+- Call `getMyEventPass` when the pass screen opens.
+- Replace QR/status/code with the callable response when it arrives.
+- Keep using scanner backend validation for actual entry approval.
+
 ### `createScannerSession`
 
 Purpose:
@@ -851,6 +945,7 @@ Mobile should:
 - Never show `tokenHash`.
 - Never generate or mutate the QR payload locally.
 - If empty, call `claimMyEventAccess`; if still empty, show "Pass is syncing" state.
+- Listen to the event access document because CRM can refresh the QR in place without changing `passId`.
 
 ### Scanner
 
@@ -886,7 +981,7 @@ match /eventAccess/{programId} {
 }
 ```
 
-If mobile directly reads `pePrograms`, `peEvents`, or `peEventSchedule`, add mobile read helpers in the same Firestore rules file. Keep existing CRM team rules as-is and add these mobile checks as an OR condition.
+If mobile directly reads `pePrograms`, `peEvents`, `peProgramSchedule`, or `peProgramSchedulePages`, add mobile read helpers in the same Firestore rules file. Keep existing CRM team rules as-is and add these mobile checks as an OR condition. If mobile uses `getMyProgramSchedule`, direct schedule read rules are not required because the callable reads the published snapshot server-side.
 
 Recommended helper:
 
@@ -920,9 +1015,14 @@ match /peEvents/{eventId} {
     || peMobileCanReadEvent(resource.data.programId, eventId);
 }
 
-match /peEventSchedule/{eventId} {
+match /peProgramSchedule/{programId} {
   allow read: if existingCrmScheduleReadCondition
-    || peMobileCanReadEvent(resource.data.programId, eventId);
+    || peMobileHasProgramAccess(programId);
+}
+
+match /peProgramSchedulePages/{pageId} {
+  allow read: if existingCrmSchedulePageReadCondition
+    || peMobileHasProgramAccess(resource.data.programId);
 }
 ```
 
@@ -930,7 +1030,7 @@ Security notes:
 
 - Do not allow mobile writes to CRM collections.
 - Do not allow mobile reads of `pePasses`.
-- If using only the mirror and schedule snapshot, no mobile list query on `pePrograms` or `peEvents` is needed.
+- If using only the mirror and `getMyProgramSchedule`, no mobile list query on `pePrograms`, `peEvents`, `peProgramSchedule`, or `peProgramSchedulePages` is needed.
 
 ## Recommended Mobile Screen Flow
 
@@ -977,7 +1077,7 @@ Data options:
 
 - Minimum: selected item from `eventAccessList`.
 - Better: also read `peEvents/{eventId}` if rules are added.
-- Schedule: read `peEventSchedule/{eventId}`.
+- Schedule: call `getMyProgramSchedule({ programId })` and filter/group by `eventId` in the app UI when showing a single event.
 
 UI:
 
@@ -1025,7 +1125,7 @@ Flow:
 Use Firestore offline persistence/local cache for:
 
 - `users/{uid}/eventAccess/*`
-- `peEventSchedule/{eventId}`
+- the latest `getMyProgramSchedule` response in app/local storage
 
 Recommended behavior:
 
@@ -1044,8 +1144,8 @@ Backend stores these as Firestore `Timestamp`:
 - `peEvents.startDateTime`
 - `peEvents.endDateTime`
 - `peEvents.nextScheduleAt`
-- `peEventSchedule.items[].startsAt`
-- `peEventSchedule.items[].endsAt`
+- `getMyProgramSchedule().items[].startsAt`
+- `getMyProgramSchedule().items[].endsAt`
 - All `createdAt`, `updatedAt`, `linkedAt`, `accessPublishedAt`, `expiresAt`
 
 Mobile should:
@@ -1087,9 +1187,10 @@ Mobile action:
 Possible reasons:
 
 - CRM has not added schedule items.
+- Organizer has not clicked "Publish schedule" after editing.
 - Schedule item visibility is `staffOnly`.
-- User does not have that event in `allowedEventIds`.
-- Standalone program has no event-level schedule snapshot.
+- User role does not match a role-based schedule row.
+- User does not have that event in `allowedEventIds` when the UI filters to one event.
 
 ### Check-in denied
 
@@ -1108,7 +1209,7 @@ Before coding:
 - Confirm Firebase project is `sang-d8b93`.
 - Confirm callable region is `us-central1`.
 - Confirm Firestore rules include `users/{uid}/eventAccess`.
-- Confirm mobile rules for `peEventSchedule` are added if direct schedule reads are used.
+- Confirm mobile uses `getMyProgramSchedule` for schedule loading.
 - Confirm app writes `users/{uid}.verifiedEmail` or `verifiedPhone` after verification.
 - Confirm app writes FCM tokens to `devices`.
 
@@ -1119,7 +1220,7 @@ Mobile implementation:
 - Add listener for `users/{uid}/eventAccess`.
 - Build program card UI from mirror fields.
 - Build event list from `eventAccessList`.
-- Read `peEventSchedule/{eventId}` for schedules.
+- Call `getMyProgramSchedule({ programId })` for schedules.
 - Render QR from `passQrPayload`.
 - Handle FCM `event_program_access` deep link.
 - Add empty, loading, sync, and error states.
@@ -1132,7 +1233,7 @@ Backend/deployment verification:
 - Verify `peProgramPeople.linkStatus == linked`.
 - Verify `users/{uid}/eventAccess/{programId}` exists.
 - Verify `passQrPayload` is present in the mirror.
-- Verify schedule appears in `peEventSchedule/{eventId}`.
+- Verify schedule appears from `getMyProgramSchedule({ programId })` after organizer clicks "Publish schedule".
 - Verify pass QR scans through `scanPassToken`.
 
 ## Minimal Mobile Pseudo-Code
@@ -1141,9 +1242,7 @@ Backend/deployment verification:
 import {
   getFirestore,
   collection,
-  doc,
-  onSnapshot,
-  getDoc
+  onSnapshot
 } from 'firebase/firestore'
 import {
   getFunctions,
@@ -1170,13 +1269,11 @@ function listenToMyPrograms(uid, onPrograms) {
   )
 }
 
-function listenToEventSchedule(eventId, onSchedule) {
-  return onSnapshot(
-    doc(db, 'peEventSchedule', eventId),
-    (docSnap) => {
-      onSchedule(docSnap.exists() ? docSnap.data() : null)
-    }
-  )
+async function getMySchedule(programId) {
+  const result = await httpsCallable(functions, 'getMyProgramSchedule')({
+    programId
+  })
+  return result.data
 }
 
 async function startScannerSession({ orgId, programId, eventId, gateName }) {
@@ -1213,8 +1310,7 @@ async function scanPass({ scannerSessionId, scannerToken, qrPayload, deviceScanI
 
 ## Open Product Gaps To Decide Before Mobile Release
 
-1. Standalone program schedule: either auto-create one default event or add a `peProgramSchedule/{programId}` mobile snapshot.
-2. Event detail reads: decide whether mobile needs direct `peEvents/{eventId}` or whether mirror plus schedule is enough for first release.
-3. Results/competition module: currently not part of mobile event access contract.
-4. Offline scanner mode: not recommended for first release because revoked passes and duplicate scans require server validation.
-5. Rich text rendering: `description` may contain formatted content from CRM; mobile should render sanitized rich text or HTML safely.
+1. Event detail reads: decide whether mobile needs direct `peEvents/{eventId}` or whether mirror plus schedule is enough for first release.
+2. Results/competition module: currently not part of mobile event access contract.
+3. Offline scanner mode: not recommended for first release because revoked passes and duplicate scans require server validation.
+4. Rich text rendering: `description` may contain formatted content from CRM; mobile should render sanitized rich text or HTML safely.
