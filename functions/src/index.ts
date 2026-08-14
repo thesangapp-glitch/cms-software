@@ -1484,9 +1484,13 @@ export const createOrganization = onCall(callableOptions, async (request) => {
       industry: z.string().optional().default(''),
       website: z.string().optional().default(''),
       logoUrl: z.string().optional().default(''),
-      email: z.string().email(),
+      email: z.string().optional().default(''),
     })
     .parse(request.data)
+  const ownerEmail = normalizeEmail(input.email || String(request.auth?.token.email || ''))
+  if (ownerEmail && !z.string().email().safeParse(ownerEmail).success) {
+    throw new HttpsError('invalid-argument', 'Use a valid owner email address.')
+  }
 
   const orgRef = db.collection('peOrganizations').doc()
   const batch = db.batch()
@@ -1505,7 +1509,7 @@ export const createOrganization = onCall(callableOptions, async (request) => {
 
   batch.set(db.collection('peTeamMembers').doc(`${orgRef.id}_${uid}`), {
     orgId: orgRef.id,
-    email: normalizeEmail(input.email),
+    email: ownerEmail,
     displayName: input.displayName.trim(),
     roleId: 'owner',
     scope: 'organization',
@@ -1518,7 +1522,7 @@ export const createOrganization = onCall(callableOptions, async (request) => {
   batch.set(db.collection('peUsers').doc(uid), {
     uid,
     displayName: input.displayName.trim(),
-    email: normalizeEmail(input.email),
+    email: ownerEmail,
     activeOrgId: orgRef.id,
     organizationIds: [orgRef.id],
     createdAt: FieldValue.serverTimestamp(),
