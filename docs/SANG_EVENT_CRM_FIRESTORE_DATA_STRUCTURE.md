@@ -219,6 +219,8 @@ Main fields:
   scope: "organization" | "program" | "event",
   programId?: string,
   eventId?: string,
+  programPersonId?: string,
+  peopleProgramId?: string,
   status: "active" | "invited" | "disabled" | "deleted" | "claimed",
   uid?: string,
   claimedUid?: string,
@@ -251,6 +253,8 @@ Important behavior:
 - Program scope can access only its assigned `programId`.
 - Event scope can access only its assigned `programId + eventId`.
 - Invites are email-first. When user logs in with the invited email, `claimTeamAccess` makes an active member row.
+- New CRM team invites should be linked to a People record using `programPersonId`.
+- Team-linked People records keep their original `programRoleId` and are marked with `isTeamMember` / `teamMemberIds` for CRM linkage.
 
 Before changing:
 
@@ -294,6 +298,10 @@ Main fields:
   entryScope: "program" | "event" | "both",
   competitive: boolean,
   resultsEnabled: boolean,
+  peopleDirectoryRoles?: Array<{ key: string, label: string, count: number }>,
+  eventsLastPublishedAt?: Timestamp,
+  peopleLastPublishedAt?: Timestamp,
+  scheduleLastPublishedAt?: Timestamp,
   status: "draft" | "live" | "archived",
   archivedAt?: Timestamp,
   createdAt: Timestamp,
@@ -340,6 +348,7 @@ Important behavior:
 - `schedule`, `infoSections`, and `fieldDefinitions` are lightweight program-level content/config placeholders stored directly on `pePrograms`.
 - Detailed CRM schedule editing source lives in `peEventScheduleDashboard`; Sang mobile/audience reads the manually published `peProgramSchedule/{programId}` index and `peProgramSchedulePages/{pageId}` rows.
 - Saved venue suggestions for one program live in `peProgramVenues/{programId}`. Audience-facing location data is copied into program/event/schedule docs where needed.
+- `peopleDirectoryRoles` is refreshed by `publishProgramPeopleAccess` for mobile filtering and directory chips.
 
 Before changing:
 
@@ -376,6 +385,22 @@ Main fields:
   entryScope: "program" | "event" | "both",
   competitive: boolean,
   resultsEnabled: boolean,
+  profiles: Array<{
+    id: string,
+    programPersonId?: string,
+    teamMemberId?: string,
+    source?: "people" | "team" | "manual",
+    name: string,
+    role: string,
+    organization?: string,
+    designation?: string,
+    email?: string,
+    phone?: string,
+    bio?: string,
+    photoUrl?: string
+  }>,
+  allowedAudienceRoleIds: string[],
+  allowedAudienceRoleNames: string[],
   scheduleItemCount: number,
   nextScheduleTitle: string,
   nextScheduleAt: Timestamp | null,
@@ -421,6 +446,8 @@ Important behavior:
 - Event-scoped members can load/edit only their assigned event when their role has `event.write`.
 - Schedule summary fields are stored here for fast event list/card rendering.
 - Detailed CRM schedule lives in `peEventScheduleDashboard`; audience/mobile schedule is published manually into `peProgramSchedule/{programId}` plus `peProgramSchedulePages/{pageId}`.
+- Event profiles should reference `peProgramPeople` with `programPersonId`; adding a speaker/guest from the event screen creates or updates the People record first.
+- `allowedAudienceRoleIds` controls scanner entry for event-level gates. Profile roles add suggested allowed role ids, but organizer should verify this list before publishing.
 
 Before changing:
 
@@ -716,6 +743,8 @@ Main fields currently written:
   kind: string,
   programRoleId: string,
   programRoleName: string,
+  isTeamMember?: boolean,
+  teamMemberIds?: string[],
   company: string,
   organization: string,
   designation: string,
@@ -784,6 +813,8 @@ Important behavior:
 - `sangAppStatus == missing_identity` means the row cannot be matched because email/phone is missing.
 - `eventAccessIds` is required for event-scoped reads and event gate access.
 - One person row stores all event access for that program. Do not create per-event subcollections for normal attendee/event access.
+- Event/program public profiles and CRM team members should select/create a People record first, then reference that person by `programPersonId`.
+- A person's base `programRoleId` should not be overwritten just because they are shown as a speaker/mentor/organizer somewhere. Use event-level `eventAccess.{eventId}.roleId` and the event's public `profiles[]` list for those extra responsibilities.
 
 Before changing:
 
@@ -1478,6 +1509,7 @@ Before changing:
 - Updates `peProgramPeople.sangUserId/sangUid/linkStatus/linkMethod`.
 - Ensures every linked person has an issued pass.
 - Writes/refreshes `users/{uid}/eventAccess/{programId}`.
+- Refreshes `pePrograms.peopleDirectoryRoles` for app filters.
 - Sends best-effort FCM notification through top-level `devices` tokens.
 - Writes audit log.
 

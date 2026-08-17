@@ -1,6 +1,6 @@
 # Sang Mobile App Event CRM Integration Guide
 
-Last updated: 2026-08-12
+Last updated: 2026-08-14
 
 This document is the handoff for the Sang mobile app developer. It explains how the Sang Event CRM data appears inside the existing Sang app, which Firestore documents the mobile app should read, which Cloud Functions it should call, and which collections must stay backend-only.
 
@@ -14,6 +14,7 @@ Important decisions:
 - Program scan-to-join is not part of the current plan. Do not implement `SANGPROGRAM1`, `peProgramJoinLinks`, or `peProgramJoinRequests`.
 - The only QR payload currently used for entry/check-in is the pass QR: `SANGPASS1:{token}`.
 - The mobile app should not read `pePasses` directly. The safe QR payload is mirrored to `users/{uid}/eventAccess/{programId}.passQrPayload`.
+- People records are the source of truth for attendees, participants, speakers, guests, mentors, and CRM team profiles. Public speaker/guest display links back to People through `programPersonId`; filtering should use program role and event-wise access role.
 - Operational date/time fields are Firestore `Timestamp`, not strings. Mobile should convert them with the platform SDK.
 - The same Firebase project is used by CRM and Sang mobile: `sang-d8b93`.
 - Cloud Functions region: `us-central1`.
@@ -21,7 +22,7 @@ Important decisions:
 ## High-Level Flow
 
 1. Organizer creates organization, program, events, audience roles, venues, schedule, and people roster in CRM.
-2. CRM stores attendees/participants in `peProgramPeople`.
+2. CRM stores attendees/participants/speakers/guests/team profiles in `peProgramPeople`.
 3. CRM issues passes in `pePasses`.
 4. Organizer clicks publish in CRM.
 5. Backend matches roster rows to existing Sang users by verified email or verified phone.
@@ -258,6 +259,7 @@ Mobile display rules:
 - If `eventAccessList` has items, show event cards inside the program.
 - Hide event access entries with status `blocked`, `cancelled`, `rejected`, or `revoked`.
 - A user's role can be different in different events. Always read the role from the event access entry, not only from `programRoleName`.
+- For filtering/search chips, use `programRoleId/programRoleName` and each event access entry's `roleId/roleName`.
 
 Recommended Events tab query:
 
@@ -418,9 +420,15 @@ peEvents/{eventId}
   profiles: [
     {
       id: string,
+      programPersonId?: string,
+      teamMemberId?: string,
+      source?: 'people' | 'team' | 'manual',
       name: string,
       role: string,
       organization: string,
+      designation?: string,
+      email?: string,
+      phone?: string,
       bio: string,
       photoUrl: string
     }
@@ -441,6 +449,8 @@ Entry rule:
 - If a scanner session is event-level, `scanPassToken` checks `peEvents/{eventId}.allowedAudienceRoleIds`.
 - If the user's event role is not in `allowedAudienceRoleIds`, check-in is denied.
 - If the event should allow participants/startups/delegates, CRM must configure those allowed audience roles.
+- Event profile rows are created from CRM People records. Use `programPersonId` to link profile display with a future safe people-directory/person-card flow.
+- Do not show `email`/`phone` publicly unless the product explicitly decides that event speakers/guests should expose those fields.
 
 ## Program Detail Read
 
@@ -474,6 +484,7 @@ pePrograms/{programId}
   entryScope: 'program' | 'event' | 'both',
   competitive: boolean,
   resultsEnabled: boolean,
+  peopleDirectoryRoles?: Array<{ key: string, label: string, count: number }>,
   status: 'draft' | 'live' | 'archived',
   createdAt: Timestamp,
   updatedAt: Timestamp
@@ -552,6 +563,8 @@ Shape:
   kind: string,
   programRoleId: string,
   programRoleName: string,
+  isTeamMember?: boolean,
+  teamMemberIds?: string[],
 
   eventAccessIds: string[],
   eventAccess: {

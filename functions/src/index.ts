@@ -28,6 +28,7 @@ const permissions = {
   peopleImport: 'people.import',
   passesIssue: 'passes.issue',
   checkinScan: 'checkin.scan',
+  analyticsRead: 'analytics.read',
 }
 
 const defaultRoles = [
@@ -36,7 +37,7 @@ const defaultRoles = [
     name: 'Program Coordinator',
     category: 'team',
     description: 'Can handle the entire assigned program: events, people, passes, check-in, team, and reports.',
-    permissions: ['program.read', permissions.programWrite, permissions.eventWrite, permissions.teamWrite, permissions.peopleImport, permissions.passesIssue, permissions.checkinScan, 'analytics.read', 'exports.create'],
+    permissions: ['program.read', permissions.programWrite, permissions.eventWrite, permissions.teamWrite, permissions.peopleImport, permissions.passesIssue, permissions.checkinScan, permissions.analyticsRead, 'exports.create'],
     isDefault: true,
   },
   {
@@ -44,7 +45,7 @@ const defaultRoles = [
     name: 'Event Coordinator',
     category: 'team',
     description: 'Can handle the assigned event: event setup, people access, passes, check-in, and reports.',
-    permissions: ['program.read', permissions.eventWrite, permissions.peopleImport, permissions.passesIssue, permissions.checkinScan, 'analytics.read', 'exports.create'],
+    permissions: ['program.read', permissions.eventWrite, permissions.peopleImport, permissions.passesIssue, permissions.checkinScan, permissions.analyticsRead, 'exports.create'],
     isDefault: true,
   },
   {
@@ -52,7 +53,7 @@ const defaultRoles = [
     name: 'Owner',
     category: 'team',
     description: 'Full organization control.',
-    permissions: Object.values(permissions).concat(['program.read', 'analytics.read', 'exports.create']),
+    permissions: Object.values(permissions).concat(['program.read', 'exports.create']),
     isDefault: true,
   },
   {
@@ -66,6 +67,7 @@ const defaultRoles = [
 ]
 
 const defaultAudienceRoles = [
+  { id: 'organizer', name: 'Organizer' },
   { id: 'visitor', name: 'Visitor' },
   { id: 'participants', name: 'Participants' },
   { id: 'delegates', name: 'Delegates' },
@@ -77,9 +79,15 @@ const defaultAudienceRoles = [
 
 const eventProfileSchema = z.object({
   id: z.string().optional().default(''),
+  programPersonId: z.string().optional().default(''),
+  teamMemberId: z.string().optional().default(''),
+  source: z.enum(['people', 'team', 'manual']).optional().default('people'),
   name: z.string().min(1),
   role: z.string().optional().default('Profile'),
   organization: z.string().optional().default(''),
+  designation: z.string().optional().default(''),
+  email: z.string().optional().default(''),
+  phone: z.string().optional().default(''),
   bio: z.string().optional().default(''),
   photoUrl: z.string().optional().default(''),
 })
@@ -375,6 +383,11 @@ function timestampMillis(value: unknown) {
   return existingDate && !Number.isNaN(existingDate.getTime()) ? existingDate.getTime() : 0
 }
 
+function timestampIso(value: unknown) {
+  const millis = timestampMillis(value)
+  return millis ? new Date(millis).toISOString() : ''
+}
+
 async function assertProgram(input: { orgId: string; programId: string }) {
   const programRef = db.collection('pePrograms').doc(input.programId)
   const programSnapshot = await programRef.get()
@@ -638,6 +651,8 @@ function publicPersonPayload(input: {
     designation,
     roleName: roleName || 'Attendee',
     roleKey,
+    profileTags: FieldValue.delete(),
+    profileTagLabels: FieldValue.delete(),
     avatarUrl: String(input.person.avatarUrl || input.person.photoUrl || input.person.photoURL || ''),
     initials: initialsForName(fullName || organization),
     showCard,
@@ -685,6 +700,13 @@ function publicCardFromStoredCard(card: Record<string, unknown>) {
     theme: typeof snapshot.theme === 'string' ? snapshot.theme : card.theme || null,
     design: snapshot.design && typeof snapshot.design === 'object' ? snapshot.design : card.design || null,
   }
+}
+
+function publicKeyForStoredCard(cardId: string, card: Record<string, unknown>) {
+  const webLink = card.webLink && typeof card.webLink === 'object'
+    ? card.webLink as Record<string, unknown>
+    : {}
+  return String(webLink.token || card.webPublicToken || card.shortId || card.cardPublicId || cardId)
 }
 
 async function getDefaultCardIdForUser(uid: string) {
@@ -1768,23 +1790,55 @@ export const inviteTeamMember = onCall(callableOptions, async (request) => {
       scope: z.enum(['organization', 'program', 'event']),
       programId: z.string().optional().default(''),
       eventId: z.string().optional().default(''),
+      programPersonId: z.string().optional().default(''),
     })
     .parse(request.data)
 
   await assertPermission(uid, input.orgId, permissions.teamWrite)
   const roleId = await assertTeamRole({ orgId: input.orgId, roleId: input.roleId })
   await assertTeamScope(input)
+  const programPersonId = input.programPersonId.trim()
+  let programPersonRef: FirebaseFirestore.DocumentReference | null = null
+  let peopleProgramId = ''
+  if (programPersonId) {
+    programPersonRef = db.collection('peProgramPeople').doc(programPersonId)
+    const programPersonSnapshot = await programPersonRef.get()
+    const programPerson = programPersonSnapshot.data() || {}
+    if (!programPersonSnapshot.exists || programPerson.orgId !== input.orgId) {
+      throw new HttpsError('failed-precondition', 'Selected People profile is not available in this organization.')
+    }
+    if (personAccessLifecycle(programPerson) === 'removed') {
+      throw new HttpsError('failed-precondition', 'Removed People profiles cannot be attached to team access.')
+    }
+    peopleProgramId = String(programPerson.programId || '')
+  }
   const memberRef = db.collection('peTeamMembers').doc()
-  await memberRef.set({
+  const batch = db.batch()
+  batch.set(memberRef, {
     ...input,
     email: normalizeEmail(input.email),
     roleId,
     programId: input.scope !== 'organization' ? input.programId : '',
     eventId: input.scope === 'event' ? input.eventId : '',
+    programPersonId,
+    peopleProgramId,
     status: 'invited',
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   })
+  if (programPersonRef) {
+    batch.set(
+      programPersonRef,
+      {
+        isTeamMember: true,
+        teamMemberIds: FieldValue.arrayUnion(memberRef.id),
+        profileTags: FieldValue.delete(),
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    )
+  }
+  await batch.commit()
   await writeAudit({ orgId: input.orgId, actorUid: uid, action: 'team.invite', entityPath: memberRef.path, metadata: { email: input.email } })
   return { teamMemberId: memberRef.id }
 })
@@ -1896,6 +1950,17 @@ export const deleteTeamMember = onCall(callableOptions, async (request) => {
     batch.set(
       userRef,
       userUpdate,
+      { merge: true },
+    )
+  }
+  const programPersonId = String(member.programPersonId || '')
+  if (programPersonId) {
+    batch.set(
+      db.collection('peProgramPeople').doc(programPersonId),
+      {
+        teamMemberIds: FieldValue.arrayRemove(input.teamMemberId),
+        updatedAt: FieldValue.serverTimestamp(),
+      },
       { merge: true },
     )
   }
@@ -2578,6 +2643,7 @@ export const publishProgramPeopleAccess = onCall(callableOptions, async (request
           eventAccess: inactiveEventAccess,
           eventAccessList: eventAccessListFromMap(inactiveEventAccess),
           ...(lifecycleStatus === 'removed' ? { eventAccessIds: [], eventRoleKeys: [] } : {}),
+          profileTags: FieldValue.delete(),
           accessLastPublishedBy: uid,
           accessLastPublishedAt: FieldValue.serverTimestamp(),
           updatedAt: FieldValue.serverTimestamp(),
@@ -2658,6 +2724,7 @@ export const publishProgramPeopleAccess = onCall(callableOptions, async (request
         {
           linkStatus: linkResult.linkStatus,
           linkConflictReason: linkResult.linkConflictReason,
+          profileTags: FieldValue.delete(),
           ...sangAppFields,
           accessLastPublishedBy: uid,
           accessLastPublishedAt: FieldValue.serverTimestamp(),
@@ -2721,6 +2788,7 @@ export const publishProgramPeopleAccess = onCall(callableOptions, async (request
         passId: passResult.passId,
         passStatus: 'issued',
         passCode: passResult.passCode,
+        profileTags: FieldValue.delete(),
         updatedAt: FieldValue.serverTimestamp(),
       },
       { merge: true },
@@ -2770,6 +2838,7 @@ export const publishProgramPeopleAccess = onCall(callableOptions, async (request
   await db.collection('pePrograms').doc(input.programId).set(
     {
       peopleDirectoryRoles: roleFilterPayloadFromMap(activeRoleMap),
+      peopleDirectoryTags: FieldValue.delete(),
       peopleLastPublishedAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     },
@@ -2800,6 +2869,104 @@ export const publishProgramPeopleAccess = onCall(callableOptions, async (request
     manualReviewCount,
     notificationSentCount,
     skippedCount,
+  }
+})
+
+export const getProgramConnectionAnalytics = onCall(callableOptions, async (request) => {
+  const uid = requireUid(request)
+  const input = z
+    .object({
+      orgId: z.string().min(1),
+      programId: z.string().min(1),
+    })
+    .parse(request.data)
+
+  const { program } = await assertProgram(input)
+  await assertPermission(uid, input.orgId, permissions.analyticsRead, { programId: input.programId })
+
+  const connectionLimit = 1000
+  const connectionSnapshot = await db
+    .collection('connectionPairs')
+    .where('programId', '==', input.programId)
+    .limit(connectionLimit)
+    .get()
+
+  const uniquePeople = new Set<string>()
+  const eventBreakdown = new Map<string, {
+    eventId: string
+    eventName: string
+    connectionCount: number
+    users: Set<string>
+    lastConnectionAt: string
+    lastConnectionMillis: number
+  }>()
+  const recentConnections: Array<{
+    eventId: string
+    eventName: string
+    connectedAt: string
+    connectedAtMillis: number
+  }> = []
+
+  for (const connectionDoc of connectionSnapshot.docs) {
+    const connection = connectionDoc.data()
+    if (String(connection.status || '') !== 'connected') continue
+    const users = Array.isArray(connection.users)
+      ? connection.users.map((userId) => String(userId || '').trim()).filter(Boolean)
+      : []
+    users.forEach((userId) => uniquePeople.add(userId))
+
+    const connectedAtValue = connection.connectedAt || connection.updatedAt || connection.createdAt
+    const connectedAtMillis = timestampMillis(connectedAtValue)
+    const connectedAt = timestampIso(connectedAtValue)
+    const eventId = String(connection.eventId || '').trim()
+    const eventName = String(
+      connection.eventName ||
+      (connection.eventMeta && typeof connection.eventMeta === 'object' ? (connection.eventMeta as Record<string, unknown>).event : '') ||
+      (eventId ? 'Event' : program.name || 'Program'),
+    ).trim() || 'Program'
+    const eventKey = eventId || eventName.toLowerCase() || 'program'
+    const current = eventBreakdown.get(eventKey) || {
+      eventId,
+      eventName,
+      connectionCount: 0,
+      users: new Set<string>(),
+      lastConnectionAt: '',
+      lastConnectionMillis: 0,
+    }
+    current.connectionCount += 1
+    users.forEach((userId) => current.users.add(userId))
+    if (connectedAtMillis > current.lastConnectionMillis) {
+      current.lastConnectionMillis = connectedAtMillis
+      current.lastConnectionAt = connectedAt
+    }
+    eventBreakdown.set(eventKey, current)
+    recentConnections.push({ eventId, eventName, connectedAt, connectedAtMillis })
+  }
+
+  return {
+    programId: input.programId,
+    programName: String(program.name || ''),
+    totalConnections: recentConnections.length,
+    uniquePeopleCount: uniquePeople.size,
+    eventBreakdown: Array.from(eventBreakdown.values())
+      .map((eventStat) => ({
+        eventId: eventStat.eventId,
+        eventName: eventStat.eventName,
+        connectionCount: eventStat.connectionCount,
+        uniquePeopleCount: eventStat.users.size,
+        lastConnectionAt: eventStat.lastConnectionAt,
+      }))
+      .sort((first, second) => second.connectionCount - first.connectionCount || first.eventName.localeCompare(second.eventName)),
+    recentConnections: recentConnections
+      .sort((first, second) => second.connectedAtMillis - first.connectedAtMillis)
+      .slice(0, 8)
+      .map((connection) => ({
+        eventId: connection.eventId,
+        eventName: connection.eventName,
+        connectedAt: connection.connectedAt,
+      })),
+    generatedAt: new Date().toISOString(),
+    limitReached: connectionSnapshot.size >= connectionLimit,
   }
 })
 
@@ -2946,6 +3113,7 @@ export const createProgramPersonAndPass = onCall(callableOptions, async (request
     eventAccess: nextEventAccess,
     eventAccessList: nextEventAccessList,
     eventRoleKeys: nextEventRoleKeys,
+    profileTags: FieldValue.delete(),
     passId: passRef.id,
     passStatus,
     passCode,
@@ -3153,6 +3321,7 @@ export const updateProgramPersonAccess = onCall(callableOptions, async (request)
     eventAccess: eventAccessMap,
     eventAccessList,
     eventRoleKeys: nextEventRoleKeys,
+    profileTags: FieldValue.delete(),
     ...(passCode ? { passCode } : {}),
     rosterStatus: nextLifecycleStatus,
     accessStatus: nextLifecycleStatus,
@@ -3758,6 +3927,94 @@ export const getEventPersonCard = onCall(callableOptions, async (request) => {
   return {
     person: safePeopleDirectoryPerson(personSnapshot),
     card: publicCardFromStoredCard(card),
+  }
+})
+
+export const resolveEventPassForConnection = onCall(callableOptions, async (request) => {
+  requireUid(request)
+  const input = z
+    .object({
+      payload: z.string().min(10),
+    })
+    .parse(request.data)
+
+  const rawPayload = input.payload.trim()
+  if (!rawPayload.toUpperCase().startsWith('SANGPASS1:')) {
+    throw new HttpsError('invalid-argument', 'This is not a Sang event pass.')
+  }
+  const token = rawPayload.replace(/^SANGPASS1:/i, '').trim()
+  if (!token) {
+    throw new HttpsError('invalid-argument', 'Pass token is missing.')
+  }
+
+  const passQuery = await db.collection('pePasses').where('tokenHash', '==', tokenHash(token)).limit(1).get()
+  if (passQuery.empty) {
+    throw new HttpsError('not-found', 'Pass not found.')
+  }
+
+  const passSnapshot = passQuery.docs[0]
+  const pass = passSnapshot.data()
+  if (['revoked', 'expired', 'cancelled', 'blocked'].includes(String(pass.status || ''))) {
+    throw new HttpsError('permission-denied', 'This pass is no longer active.')
+  }
+
+  const programId = String(pass.programId || '')
+  const programPersonId = String(pass.programPersonId || '')
+  if (!programId || !programPersonId) {
+    throw new HttpsError('failed-precondition', 'Pass is not linked to an event attendee.')
+  }
+
+  const personSnapshot = await db.collection('peProgramPeople').doc(programPersonId).get()
+  const person = personSnapshot.data() || {}
+  if (!personSnapshot.exists || String(person.programId || '') !== programId) {
+    throw new HttpsError('permission-denied', 'Program person is not valid for this pass.')
+  }
+  if (personAccessLifecycle(person) !== 'active') {
+    throw new HttpsError('permission-denied', 'This attendee access is not active.')
+  }
+
+  const sangUid = String(person.sangUserId || person.sangUid || person.sangAppUserId || '')
+  if (!sangUid) {
+    throw new HttpsError('failed-precondition', 'This pass is not linked with a Sang user yet.')
+  }
+
+  const preferredCardId = String(person.selectedCardId || person.eventSelectedCardId || '')
+  const cardIds = uniqueStrings([preferredCardId, await getDefaultCardIdForUser(sangUid)])
+  let selectedCardSnapshot: FirebaseFirestore.DocumentSnapshot | null = null
+  let selectedCard: Record<string, unknown> | null = null
+  for (const cardId of cardIds) {
+    if (!cardId) continue
+    const cardSnapshot = await db.collection('cards').doc(cardId).get()
+    const card = cardSnapshot.data() || {}
+    if (cardSnapshot.exists && card.ownerUid === sangUid && card.active === true) {
+      selectedCardSnapshot = cardSnapshot
+      selectedCard = card
+      break
+    }
+  }
+  if (!selectedCardSnapshot || !selectedCard) {
+    throw new HttpsError('not-found', 'No active Sang card is available for this pass.')
+  }
+
+  const programSnapshot = await db.collection('pePrograms').doc(programId).get()
+  const program = programSnapshot.data() || {}
+  const latitude = typeof program.latitude === 'number' ? program.latitude : undefined
+  const longitude = typeof program.longitude === 'number' ? program.longitude : undefined
+
+  return {
+    shortId: publicKeyForStoredCard(selectedCardSnapshot.id, selectedCard),
+    card: publicCardFromStoredCard(selectedCard),
+    context: {
+      event: String(program.name || person.programName || 'Event'),
+      programId,
+      eventId: '',
+      city: String(program.city || ''),
+      country: String(program.country || ''),
+      address: String(program.address || ''),
+      venueName: String(program.venueName || ''),
+      ...(latitude === undefined ? {} : { latitude }),
+      ...(longitude === undefined ? {} : { longitude }),
+    },
   }
 })
 

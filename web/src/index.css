@@ -1258,6 +1258,35 @@ th {
   padding: 14px;
 }
 
+.segmented-control {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  width: fit-content;
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #eef3f4;
+  padding: 4px;
+}
+
+.segmented-control button {
+  min-height: 34px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  padding: 0 10px;
+}
+
+.segmented-control button.active {
+  background: #fff;
+  color: var(--ink);
+  box-shadow: 0 6px 20px rgba(26, 42, 48, 0.08);
+}
+
 .section-mini-head {
   display: flex;
   align-items: flex-start;
@@ -1284,6 +1313,97 @@ th {
 .profile-input-grid {
   display: grid;
   gap: 12px;
+}
+
+.person-lookup-box {
+  display: grid;
+  gap: 10px;
+}
+
+.person-lookup-results {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.lookup-person-card,
+.selected-person-card {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  padding: 9px 10px;
+  text-align: left;
+}
+
+.lookup-person-card.active,
+.lookup-person-card:hover {
+  border-color: #7aa78e;
+  background: #f4fbf6;
+}
+
+.lookup-person-card span,
+.selected-person-card span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.lookup-person-card strong,
+.lookup-person-card small,
+.selected-person-card strong,
+.selected-person-card small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lookup-person-card small,
+.selected-person-card small,
+.field-help {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.selected-person-card {
+  border-color: #cfe2e5;
+  background: #f2fbfb;
+  color: #0f5962;
+}
+
+.selected-person-card.with-action {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.selected-person-card.warning-card {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  border-color: #e7b957;
+  background: #fff8e7;
+  color: #694109;
+}
+
+.compact-button {
+  min-height: 34px;
+  padding: 8px 10px;
+  white-space: nowrap;
+}
+
+.required-star {
+  color: #b42318;
+  font-weight: 900;
+}
+
+.field-missing input,
+.field-missing select,
+.field-missing textarea {
+  border-color: #d92d20;
+  box-shadow: 0 0 0 3px rgba(217, 45, 32, 0.12);
 }
 
 .profile-list {
@@ -1712,6 +1832,99 @@ th {
 .dashboard-publish-panel .form-success,
 .dashboard-publish-panel .form-error {
   grid-column: 1 / -1;
+}
+
+.analytics-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.analytics-loading {
+  min-height: 118px;
+  display: grid;
+  place-items: center;
+  gap: 8px;
+  border: 1px dashed #cbd6cd;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.analytics-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.analytics-stat-grid > div {
+  min-height: 104px;
+  display: grid;
+  align-content: center;
+  gap: 6px;
+  border: 1px solid #dce7e8;
+  border-radius: 8px;
+  background: #f8fbfb;
+  padding: 14px;
+}
+
+.analytics-stat-grid span,
+.analytics-stat-grid small,
+.mini-section-heading span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.analytics-stat-grid strong {
+  color: var(--ink);
+  font-size: 24px;
+  line-height: 1.1;
+}
+
+.analytics-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(280px, 0.85fr);
+  gap: 14px;
+}
+
+.analytics-columns > section {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.mini-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.mini-section-heading strong {
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.analytics-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.analytics-count-pill {
+  min-width: 44px;
+  min-height: 30px;
+  justify-content: center;
+  border-radius: 999px;
+  background: #e8f3f4;
+  color: #0f5962 !important;
+  font-size: 13px !important;
+  font-weight: 900;
+  padding: 0 10px;
+}
+
+.analytics-limit-note {
+  margin: 0;
 }
 
 .workspace-meta {
@@ -2803,7 +3016,8 @@ th {
   .auth-panel,
   .app-shell,
   .page-grid,
-  .split-grid {
+  .split-grid,
+  .analytics-columns {
     grid-template-columns: 1fr;
   }
 
@@ -2912,6 +3126,7 @@ th {
 
   .nav-list,
   .stats-grid,
+  .analytics-stat-grid,
   .quick-action-grid,
   .form-grid.two,
   .form-grid.three,
@@ -2924,6 +3139,7 @@ th {
   .event-card-grid,
   .program-card-grid,
   .profile-list,
+  .person-lookup-results,
   .program-hero,
   .venue-page-hero,
   .event-card,

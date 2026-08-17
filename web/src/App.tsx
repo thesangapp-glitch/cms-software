@@ -109,9 +109,15 @@ type VenueRoom = {
 
 type EventProfile = {
   id: string
+  programPersonId?: string
+  teamMemberId?: string
+  source?: 'people' | 'team' | 'manual'
   name: string
   role: string
   organization?: string
+  designation?: string
+  email?: string
+  phone?: string
   bio?: string
   photoUrl?: string
 }
@@ -161,6 +167,7 @@ const scheduleTypeOptions: Array<{ value: ScheduleType; label: string }> = [
 ]
 
 const audienceRolePresets: AudienceRoleOption[] = [
+  { id: 'organizer', name: 'Organizer' },
   { id: 'visitor', name: 'Visitor' },
   { id: 'participants', name: 'Participants' },
   { id: 'delegates', name: 'Delegates' },
@@ -276,6 +283,62 @@ function resolveAudienceRole(value: string | undefined, audienceRoles: AudienceR
   return { id: slugify(normalized), name: normalized }
 }
 
+function normalizeProfileTag(value: string) {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')
+}
+
+function normalizedIdentityEmail(value?: string) {
+  return (value || '').trim().toLowerCase()
+}
+
+function trimmedIdentityPhone(value?: string) {
+  return (value || '').trim()
+}
+
+function personSearchText(person: ProgramPerson) {
+  return [
+    person.fullName,
+    person.email,
+    person.phone,
+    person.organization,
+    person.company,
+    person.designation,
+    person.programRoleName,
+  ].filter(Boolean).join(' ').toLowerCase()
+}
+
+function audienceRoleForProfile(profileRole: string, audienceRoles: AudienceRoleOption[]) {
+  const profileKey = normalizeProfileTag(profileRole)
+  const aliasByProfile: Record<string, string> = {
+    speaker: 'speakers',
+    speakers: 'speakers',
+    'chief-guest': 'delegates',
+    guest: 'delegates',
+    judge: 'mentor',
+    mentor: 'mentor',
+    performer: 'participants',
+    organizer: 'organizer',
+  }
+  const preferredRoleId = aliasByProfile[profileKey] || profileKey
+  const exact = audienceRoles.find((role) => role.id === preferredRoleId || normalizeProfileTag(role.name) === preferredRoleId)
+  return exact || audienceRoles.find((role) => role.id === 'visitor') || audienceRoles[0] || audienceRolePresets[0]
+}
+
+function programPeopleForLookup(people: ProgramPerson[], programId: string) {
+  return people
+    .filter((person) => person.programId === programId && personAccessState(person) !== 'removed')
+    .sort((a, b) => (a.fullName || a.email).localeCompare(b.fullName || b.email))
+}
+
+function suggestedTeamScopeForRole(role?: Role): TeamScope {
+  const roleText = `${role?.id || ''} ${role?.name || ''}`.toLowerCase()
+  if (!roleText.trim()) return 'organization'
+  if (roleText.includes('owner')) return 'organization'
+  if (roleText.includes('event') || roleText.includes('gate')) return 'event'
+  if (roleText.includes('program')) return 'program'
+  return 'organization'
+}
+
 function formatDateTime(value?: string) {
   if (!value) return 'Time pending'
   const date = new Date(value)
@@ -331,6 +394,8 @@ type TeamMember = {
   scope: TeamScope
   programId?: string
   eventId?: string
+  programPersonId?: string
+  peopleProgramId?: string
   status: 'invited' | 'active' | 'disabled' | 'deleted' | 'claimed'
   uid?: string
 }
@@ -521,6 +586,8 @@ type ProgramPerson = {
   company?: string
   organization?: string
   designation?: string
+  teamMemberIds?: string[]
+  isTeamMember?: boolean
   eventAccessIds?: string[]
   eventAccess?: Record<string, EventAccess>
   eventAccessList?: Array<EventAccess & { eventId: string }>
@@ -551,6 +618,27 @@ type ProgramPersonInput = Omit<ProgramPerson, 'id' | 'passId' | 'passStatus' | '
 
 type ProgramPersonAccessUpdateInput = Pick<ProgramPersonInput, 'orgId' | 'fullName' | 'email' | 'phone' | 'kind' | 'programRoleId' | 'programRoleName' | 'company' | 'organization' | 'designation' | 'eventAccess'> & {
   programPersonId: string
+}
+
+type ProgramConnectionAnalytics = {
+  programId: string
+  programName: string
+  totalConnections: number
+  uniquePeopleCount: number
+  generatedAt: string
+  limitReached?: boolean
+  eventBreakdown: Array<{
+    eventId: string
+    eventName: string
+    connectionCount: number
+    uniquePeopleCount: number
+    lastConnectionAt?: string
+  }>
+  recentConnections: Array<{
+    eventId: string
+    eventName: string
+    connectedAt?: string
+  }>
 }
 
 function sangAppStatusLabel(person: ProgramPerson) {
@@ -663,6 +751,18 @@ function nowDateInput() {
 
 function formatCount(value: number) {
   return new Intl.NumberFormat('en-IN').format(value)
+}
+
+function formatAnalyticsTimestamp(value?: string) {
+  if (!value) return 'No activity yet'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return new Intl.DateTimeFormat('en-IN', {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date)
 }
 
 function downloadCsv(filename: string, rows: Record<string, unknown>[]) {
@@ -831,7 +931,7 @@ const setActiveOrganizationCallable = httpsCallable<{ orgId: string }, { orgId: 
 const claimTeamAccessCallable = httpsCallable<void, { claimedOrgIds: string[] }>(functions, 'claimTeamAccess')
 const createRoleCallable = httpsCallable<{ orgId: string; roleId: string; name: string; category: RoleCategory; description: string; permissions: string[] }, { roleId: string }>(functions, 'createRole')
 const deleteRoleCallable = httpsCallable<{ orgId: string; roleId: string }, { roleId: string }>(functions, 'deleteRole')
-const inviteTeamMemberCallable = httpsCallable<{ orgId: string; email: string; displayName: string; roleId: string; scope: TeamScope; programId?: string; eventId?: string }, { teamMemberId: string }>(functions, 'inviteTeamMember')
+const inviteTeamMemberCallable = httpsCallable<{ orgId: string; email: string; displayName: string; roleId: string; scope: TeamScope; programId?: string; eventId?: string; programPersonId?: string }, { teamMemberId: string }>(functions, 'inviteTeamMember')
 const updateTeamMemberCallable = httpsCallable<{ orgId: string; teamMemberId: string; displayName: string; roleId: string; scope: TeamScope; programId?: string; eventId?: string; status: 'active' | 'invited' | 'disabled' }, { teamMemberId: string }>(functions, 'updateTeamMember')
 const deleteTeamMemberCallable = httpsCallable<{ orgId: string; teamMemberId: string }, { teamMemberId: string }>(functions, 'deleteTeamMember')
 const createProgramCallable = httpsCallable<CreateProgramPayload, { programId: string }>(functions, 'createProgram')
@@ -851,6 +951,7 @@ const publishProgramEventsCallable = httpsCallable<{ orgId: string; programId: s
 const createProgramPersonAndPassCallable = httpsCallable<ProgramPersonInput, { programPersonId: string; passId: string; qrPayload: string; passCode: string }>(functions, 'createProgramPersonAndPass')
 const issuePassForProgramPersonCallable = httpsCallable<{ orgId: string; programPersonId: string }, { passId: string; qrPayload: string; passCode: string; revokedPassId?: string }>(functions, 'issuePassForProgramPerson')
 const publishProgramPeopleAccessCallable = httpsCallable<{ orgId: string; programId: string; notify?: boolean; forceNotify?: boolean }, { peopleCount: number; linkedCount: number; alreadyLinkedCount: number; pendingCount: number; manualReviewCount: number; notificationSentCount: number; skippedCount?: number }>(functions, 'publishProgramPeopleAccess')
+const getProgramConnectionAnalyticsCallable = httpsCallable<{ orgId: string; programId: string }, ProgramConnectionAnalytics>(functions, 'getProgramConnectionAnalytics')
 const updateProgramPersonAccessCallable = httpsCallable<ProgramPersonAccessUpdateInput, { programPersonId: string; status: string; linked: boolean }>(functions, 'updateProgramPersonAccess')
 const blockProgramPersonAccessCallable = httpsCallable<{ orgId: string; programPersonId: string; reason?: string }, { programPersonId: string; status: string; passStatus: string }>(functions, 'blockProgramPersonAccess')
 const removeProgramPersonAccessCallable = httpsCallable<{ orgId: string; programPersonId: string; reason?: string }, { programPersonId: string; status: string; passStatus: string }>(functions, 'removeProgramPersonAccess')
@@ -2267,39 +2368,187 @@ function ScheduleVenueSelector({
 
 function EventProfilesEditor({
   uid,
+  orgId,
+  program,
+  eventId,
   profiles,
+  people,
+  roles,
+  teamMembers = [],
+  onAllowedRole,
   onChange,
 }: {
   uid: string
+  orgId: string
+  program: Program
+  eventId?: string
   profiles: EventProfile[]
+  people: ProgramPerson[]
+  roles: Role[]
+  teamMembers?: TeamMember[]
+  onAllowedRole?: (roleId: string) => void
   onChange: (profiles: EventProfile[]) => void
 }) {
+  const audienceRoles = useMemo(() => getAudienceRoles(roles), [roles])
+  const programPeople = useMemo(() => programPeopleForLookup(people, program.id), [people, program.id])
+  const teamPersonIds = useMemo(() => new Set(teamMembers.map((member) => member.programPersonId).filter(Boolean)), [teamMembers])
+  const teamPeople = useMemo(() => programPeople.filter((person) => (
+    teamPersonIds.has(person.id) ||
+    person.isTeamMember ||
+    person.teamMemberIds?.length
+  )), [programPeople, teamPersonIds])
+  const [sourceMode, setSourceMode] = useState<'people' | 'create' | 'team'>('people')
+  const [lookup, setLookup] = useState('')
+  const [selectedPersonId, setSelectedPersonId] = useState('')
   const [name, setName] = useState('')
   const [role, setRole] = useState('Speaker')
   const [customRole, setCustomRole] = useState('')
+  const [email, setEmail] = useState('')
+  const [phone, setPhone] = useState('')
   const [organization, setOrganization] = useState('')
+  const [designation, setDesignation] = useState('')
   const [bio, setBio] = useState('')
   const [photoUrl, setPhotoUrl] = useState('')
+  const [profileError, setProfileError] = useState('')
+  const [profileBusy, setProfileBusy] = useState(false)
+  const [missingFields, setMissingFields] = useState<string[]>([])
+  const selectedPerson = programPeople.find((person) => person.id === selectedPersonId) || null
+  const availablePeople = sourceMode === 'team' ? teamPeople : programPeople
+  const lookupResults = useMemo(() => {
+    const term = lookup.trim().toLowerCase()
+    const source = availablePeople
+    if (!term && sourceMode === 'team') return source.slice(0, 6)
+    if (term.length < 2) return []
+    return source.filter((person) => personSearchText(person).includes(term)).slice(0, 6)
+  }, [availablePeople, lookup, sourceMode])
+  const duplicateCreatePerson = useMemo(() => {
+    if (sourceMode !== 'create') return null
+    const draftEmail = normalizedIdentityEmail(email)
+    const draftPhone = trimmedIdentityPhone(phone)
+    if (!draftEmail && !draftPhone) return null
+    return programPeople.find((person) => (
+      (draftEmail && normalizedIdentityEmail(person.email) === draftEmail) ||
+      (draftPhone && trimmedIdentityPhone(person.phone) === draftPhone)
+    )) || null
+  }, [email, phone, programPeople, sourceMode])
 
-  function addProfile() {
-    if (!name.trim()) return
-    onChange([
-      ...profiles,
-      {
-        id: makeLocalId(),
-        name: name.trim(),
-        role: role === 'Custom profile' ? customRole.trim() || 'Custom profile' : role.trim() || 'Profile',
-        organization: organization.trim(),
-        bio: bio.trim(),
-        photoUrl: photoUrl.trim(),
-      },
-    ])
+  function clearMissing(field: string) {
+    setMissingFields((current) => current.filter((item) => item !== field && item !== 'duplicate'))
+  }
+
+  function resetProfileDraft(nextSourceMode = sourceMode) {
+    setSourceMode(nextSourceMode)
+    setLookup('')
+    setSelectedPersonId('')
     setName('')
     setRole('Speaker')
     setCustomRole('')
+    setEmail('')
+    setPhone('')
     setOrganization('')
+    setDesignation('')
     setBio('')
     setPhotoUrl('')
+    setProfileError('')
+    setMissingFields([])
+  }
+
+  function selectPerson(person: ProgramPerson) {
+    setSelectedPersonId(person.id)
+    setLookup(person.email || person.fullName || '')
+    setName(person.fullName || '')
+    setEmail(person.email || '')
+    setPhone(person.phone || '')
+    setOrganization(person.organization || person.company || '')
+    setDesignation(person.designation || '')
+    setProfileError('')
+    setMissingFields([])
+  }
+
+  async function addProfile() {
+    const profileRole = role === 'Custom profile' ? customRole.trim() || 'Custom profile' : role.trim() || 'Profile'
+    const profileRoleKey = normalizeProfileTag(profileRole)
+    const eventRole = audienceRoleForProfile(profileRole, audienceRoles)
+    const primaryRole = selectedPerson
+      ? resolveAudienceRole(selectedPerson.programRoleId || selectedPerson.kind || eventRole.id, audienceRoles, eventRole.id)
+      : eventRole
+    const fullName = (selectedPerson?.fullName || name).trim()
+    const normalizedEmail = selectedPerson ? normalizedIdentityEmail(selectedPerson.email) : normalizedIdentityEmail(email)
+    const nextPhone = selectedPerson ? trimmedIdentityPhone(selectedPerson.phone) : trimmedIdentityPhone(phone)
+    const savedOrganization = selectedPerson ? (selectedPerson.organization || selectedPerson.company || '').trim() : organization.trim()
+    const savedDesignation = selectedPerson ? (selectedPerson.designation || '').trim() : designation.trim()
+    const profileOrganization = (organization || savedOrganization).trim()
+    const profileDesignation = (designation || savedDesignation).trim()
+    const nextMissing: string[] = []
+    if (sourceMode === 'create') {
+      if (!fullName) nextMissing.push('name')
+      if (!normalizedEmail) nextMissing.push('email')
+    } else if (!selectedPerson) {
+      nextMissing.push('lookup')
+    }
+    if (role === 'Custom profile' && !customRole.trim()) nextMissing.push('customRole')
+    if (duplicateCreatePerson) nextMissing.push('duplicate', 'email')
+    if (nextMissing.length > 0) {
+      setMissingFields(nextMissing)
+      setProfileError(duplicateCreatePerson
+        ? 'This email or phone already exists in People. Use the existing person, or enter a different contact.'
+        : 'Please complete the highlighted fields.')
+      return
+    }
+    setProfileBusy(true)
+    setProfileError('')
+    setMissingFields([])
+    try {
+      const response = await createProgramPersonAndPassCallable({
+        orgId,
+        programId: program.id,
+        fullName,
+        email: normalizedEmail,
+        phone: nextPhone,
+        kind: primaryRole.id,
+        programRoleId: primaryRole.id,
+        programRoleName: primaryRole.name,
+        company: savedOrganization,
+        organization: savedOrganization,
+        designation: savedDesignation,
+        eventIds: eventId ? [eventId] : [],
+        eventAccess: eventId ? [{
+          eventId,
+          roleId: eventRole.id,
+          roleName: eventRole.name,
+          status: 'allowed',
+        }] : [],
+      })
+      onAllowedRole?.(eventRole.id)
+      const programPersonId = response.data.programPersonId
+      const nextProfile: EventProfile = {
+        id: selectedPerson ? `person:${programPersonId}:${profileRoleKey}` : makeLocalId(),
+        programPersonId,
+        teamMemberId: teamMembers.find((member) => member.programPersonId === programPersonId)?.id || '',
+        source: sourceMode === 'team' ? 'team' : 'people',
+        name: fullName,
+        role: profileRole,
+        organization: profileOrganization,
+        designation: profileDesignation,
+        email: normalizedEmail,
+        phone: nextPhone,
+        bio: bio.trim(),
+        photoUrl: photoUrl.trim(),
+      }
+      const existingIndex = profiles.findIndex((profile) => (
+        (profile.programPersonId && profile.programPersonId === programPersonId && normalizeProfileTag(profile.role) === normalizeProfileTag(profileRole)) ||
+        (profile.email && normalizedEmail && profile.email.toLowerCase() === normalizedEmail && normalizeProfileTag(profile.role) === normalizeProfileTag(profileRole))
+      ))
+      const nextProfiles = existingIndex >= 0
+        ? profiles.map((profile, index) => index === existingIndex ? nextProfile : profile)
+        : [...profiles, nextProfile]
+      onChange(nextProfiles)
+      resetProfileDraft(sourceMode)
+    } catch (addError) {
+      setProfileError(addError instanceof Error ? addError.message : 'Unable to add this profile.')
+    } finally {
+      setProfileBusy(false)
+    }
   }
 
   function removeProfile(profileId: string) {
@@ -2315,15 +2564,97 @@ function EventProfilesEditor({
         </div>
         <span>{profiles.length} added</span>
       </div>
+      <div className="segmented-control">
+        {[
+          { key: 'people', label: 'Select from People' },
+          { key: 'create', label: 'Create new Person' },
+          { key: 'team', label: 'Select from Team' },
+        ].map((option) => (
+          <button
+            className={sourceMode === option.key ? 'active' : ''}
+            key={option.key}
+            onClick={() => resetProfileDraft(option.key as 'people' | 'create' | 'team')}
+            type="button"
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
       <div className="profile-input-grid">
+        {sourceMode !== 'create' && (
+          <div className="person-lookup-box">
+            <label className={missingFields.includes('lookup') ? 'field-missing' : ''}>
+              <span>Search by email, name, phone, or role <b className="required-star">*</b></span>
+              <input
+                placeholder={sourceMode === 'team' ? 'Search organizer / team member' : 'Search existing program people'}
+                value={lookup}
+                onChange={(event) => {
+                  setLookup(event.target.value)
+                  setSelectedPersonId('')
+                  clearMissing('lookup')
+                }}
+              />
+            </label>
+            {!selectedPerson && lookupResults.length > 0 && (
+              <div className="person-lookup-results">
+                {lookupResults.map((person) => (
+                  <button className={selectedPersonId === person.id ? 'lookup-person-card active' : 'lookup-person-card'} key={person.id} onClick={() => selectPerson(person)} type="button">
+                    <UserRound size={16} />
+                    <span>
+                      <strong>{person.fullName || person.email}</strong>
+                      <small>{person.email || person.phone || 'No email saved'}{person.programRoleName ? ` - ${person.programRoleName}` : ''}</small>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {lookup.trim().length >= 2 && lookupResults.length === 0 && (
+              <p className="field-help">{sourceMode === 'team' ? 'No linked team profile found in this program. Add the team member from Team first, or use Create new Person.' : 'No matching person found. Switch to Create new Person to add them once.'}</p>
+            )}
+            {selectedPerson && (
+              <div className="selected-person-card with-action">
+                <BadgeCheck size={16} />
+                <span>
+                  <strong>{selectedPerson.fullName}</strong>
+                  <small>{selectedPerson.email || selectedPerson.phone || 'Identity pending'}{selectedPerson.programRoleName ? ` - ${selectedPerson.programRoleName}` : ''}</small>
+                </span>
+                <button className="secondary-button compact-button" onClick={() => { setSelectedPersonId(''); setLookup('') }} type="button">
+                  Change
+                </button>
+              </div>
+            )}
+            {selectedPerson && (
+              <p className="field-help">People identity stays locked. The public title, bio, photo, and profile type below are saved only for this event profile.</p>
+            )}
+          </div>
+        )}
+        {sourceMode === 'create' && duplicateCreatePerson && (
+          <div className="selected-person-card warning-card">
+            <BadgeCheck size={16} />
+            <span>
+              <strong>Person already exists</strong>
+              <small>{duplicateCreatePerson.fullName || duplicateCreatePerson.email} - {duplicateCreatePerson.email || duplicateCreatePerson.phone}</small>
+            </span>
+            <button
+              className="secondary-button compact-button"
+              onClick={() => {
+                setSourceMode('people')
+                selectPerson(duplicateCreatePerson)
+              }}
+              type="button"
+            >
+              Use person
+            </button>
+          </div>
+        )}
         <div className="form-grid two">
-          <label>
-            Name
-            <input placeholder="Speaker or judge name" value={name} onChange={(event) => setName(event.target.value)} />
+          <label className={missingFields.includes('name') ? 'field-missing' : ''}>
+            <span>Name {sourceMode === 'create' && <b className="required-star">*</b>}</span>
+            <input disabled={sourceMode !== 'create' && Boolean(selectedPerson)} placeholder="Speaker or judge name" value={name} onChange={(event) => { setName(event.target.value); clearMissing('name') }} />
           </label>
           <label>
-            Profile type
-            <select value={role} onChange={(event) => setRole(event.target.value)}>
+            <span>Profile type <b className="required-star">*</b></span>
+            <select value={role} onChange={(event) => { setRole(event.target.value); clearMissing('customRole') }}>
               <option>Speaker</option>
               <option>Chief guest</option>
               <option>Judge</option>
@@ -2333,14 +2664,26 @@ function EventProfilesEditor({
               <option>Custom profile</option>
             </select>
           </label>
+          <label className={missingFields.includes('email') || missingFields.includes('duplicate') ? 'field-missing' : ''}>
+            <span>Email {sourceMode === 'create' && <b className="required-star">*</b>}</span>
+            <input disabled={sourceMode !== 'create' && Boolean(selectedPerson)} placeholder="person@example.com" type="email" value={email} onChange={(event) => { setEmail(event.target.value); clearMissing('email') }} />
+          </label>
           <label>
-            Organization / title
+            Phone
+            <input disabled={sourceMode !== 'create' && Boolean(selectedPerson)} placeholder="+91..." value={phone} onChange={(event) => setPhone(event.target.value)} />
+          </label>
+          <label>
+            Organization / college / company
             <input placeholder="Company, college, designation" value={organization} onChange={(event) => setOrganization(event.target.value)} />
           </label>
+          <label>
+            Designation
+            <input placeholder="Founder, professor, judge, guest..." value={designation} onChange={(event) => setDesignation(event.target.value)} />
+          </label>
           {role === 'Custom profile' && (
-            <label>
-              Custom profile type
-              <input placeholder="Anchor, curator, panelist..." value={customRole} onChange={(event) => setCustomRole(event.target.value)} />
+            <label className={missingFields.includes('customRole') ? 'field-missing' : ''}>
+              <span>Custom profile type <b className="required-star">*</b></span>
+              <input placeholder="Anchor, curator, panelist..." value={customRole} onChange={(event) => { setCustomRole(event.target.value); clearMissing('customRole') }} />
             </label>
           )}
           <ImageUploader folder="event-profiles" label="Profile photo" onChange={setPhotoUrl} uid={uid} value={photoUrl} />
@@ -2349,8 +2692,9 @@ function EventProfilesEditor({
           Short bio
           <textarea placeholder="Optional short introduction" value={bio} onChange={(event) => setBio(event.target.value)} />
         </label>
-        <button className="secondary-button" disabled={!name.trim()} onClick={addProfile} type="button">
-          <UserRound size={16} />
+        {profileError && <p className="form-error">{profileError}</p>}
+        <button className="secondary-button" disabled={profileBusy} onClick={addProfile} type="button">
+          {profileBusy ? <Loader2 className="spin" size={16} /> : <UserRound size={16} />}
           Add profile
         </button>
       </div>
@@ -2362,7 +2706,7 @@ function EventProfilesEditor({
               {profile.photoUrl ? <img alt="" src={profile.photoUrl} /> : <div><UserRound size={18} /></div>}
               <span>
                 <strong>{profile.name}</strong>
-                <small>{profile.role}{profile.organization ? ` - ${profile.organization}` : ''}</small>
+                <small>{profile.role}{profile.organization ? ` - ${profile.organization}` : ''}{profile.email ? ` - ${profile.email}` : ''}</small>
               </span>
               <button className="icon-button" onClick={() => removeProfile(profile.id)} title="Remove profile" type="button">
                 <X size={15} />
@@ -2528,6 +2872,10 @@ function ProgramWorkspaceDashboard({
   const [publishing, setPublishing] = useState<'events' | 'people' | 'schedule' | ''>('')
   const [publishNotice, setPublishNotice] = useState('')
   const [publishError, setPublishError] = useState('')
+  const analyticsRequestRef = useRef(0)
+  const [connectionAnalytics, setConnectionAnalytics] = useState<ProgramConnectionAnalytics | null>(null)
+  const [connectionAnalyticsLoading, setConnectionAnalyticsLoading] = useState(false)
+  const [connectionAnalyticsError, setConnectionAnalyticsError] = useState('')
   const eventsPublishedAt = timestampMs(program.eventsLastPublishedAt)
   const peoplePublishedAt = timestampMs(program.peopleLastPublishedAt)
   const schedulePublishedAt = timestampMs(program.scheduleLastPublishedAt)
@@ -2539,6 +2887,34 @@ function ProgramWorkspaceDashboard({
     peoplePublishPending ? 'People/pass access changed after the last mobile publish.' : '',
     schedulePublishPending ? 'Schedule changed after the last mobile publish.' : '',
   ].filter(Boolean)
+  const latestConnectionAt = connectionAnalytics?.recentConnections[0]?.connectedAt || connectionAnalytics?.eventBreakdown[0]?.lastConnectionAt || ''
+
+  const loadConnectionAnalytics = useCallback(async () => {
+    const requestId = analyticsRequestRef.current + 1
+    analyticsRequestRef.current = requestId
+    setConnectionAnalyticsLoading(true)
+    setConnectionAnalyticsError('')
+    try {
+      const response = await getProgramConnectionAnalyticsCallable({ orgId, programId: program.id })
+      if (analyticsRequestRef.current === requestId) {
+        setConnectionAnalytics(response.data)
+      }
+    } catch (analyticsFailure) {
+      if (analyticsRequestRef.current === requestId) {
+        setConnectionAnalyticsError(analyticsFailure instanceof Error ? analyticsFailure.message : 'Unable to load connection analytics.')
+      }
+    } finally {
+      if (analyticsRequestRef.current === requestId) {
+        setConnectionAnalyticsLoading(false)
+      }
+    }
+  }, [orgId, program.id])
+
+  useEffect(() => {
+    setConnectionAnalytics(null)
+    setConnectionAnalyticsError('')
+    void loadConnectionAnalytics()
+  }, [loadConnectionAnalytics])
 
   async function runDashboardPublish(kind: 'events' | 'people' | 'schedule') {
     setPublishing(kind)
@@ -2619,6 +2995,97 @@ function ProgramWorkspaceDashboard({
         <Stat icon={BadgeCheck} label="Passes issued" value={formatCount(issuedPasses)} detail="For selected program" />
         <Stat icon={Users} label="People" value={formatCount(people.length)} detail="Attendees, participants, staff" />
       </div>
+
+      <section className="panel analytics-panel">
+        <div className="panel-heading">
+          <div>
+            <span className="eyebrow">Networking analytics</span>
+            <h2>Connections made at this program</h2>
+          </div>
+          <button className="secondary-button" disabled={connectionAnalyticsLoading} onClick={() => void loadConnectionAnalytics()} type="button">
+            {connectionAnalyticsLoading ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
+            Refresh
+          </button>
+        </div>
+
+        {connectionAnalyticsError ? <p className="form-error">{connectionAnalyticsError}</p> : null}
+
+        {connectionAnalyticsLoading && !connectionAnalytics ? (
+          <div className="analytics-loading">
+            <Loader2 className="spin" size={18} />
+            <span>Loading connection analytics</span>
+          </div>
+        ) : connectionAnalytics && connectionAnalytics.totalConnections > 0 ? (
+          <>
+            <div className="analytics-stat-grid">
+              <div>
+                <span>Total connections</span>
+                <strong>{formatCount(connectionAnalytics.totalConnections)}</strong>
+                <small>Confirmed Sang-to-Sang connections</small>
+              </div>
+              <div>
+                <span>Unique Sang users</span>
+                <strong>{formatCount(connectionAnalytics.uniquePeopleCount)}</strong>
+                <small>People involved in those connections</small>
+              </div>
+              <div>
+                <span>Latest activity</span>
+                <strong>{formatAnalyticsTimestamp(latestConnectionAt)}</strong>
+                <small>{connectionAnalytics.generatedAt ? `Updated ${formatAnalyticsTimestamp(connectionAnalytics.generatedAt)}` : 'Refresh when needed'}</small>
+              </div>
+            </div>
+
+            {connectionAnalytics.limitReached ? (
+              <div className="publish-reminder analytics-limit-note">
+                <ShieldCheck size={17} />
+                <div>
+                  <strong>Large program detected</strong>
+                  <span>This report is showing the first 1,000 connection records. Export reporting can handle larger totals later.</span>
+                </div>
+              </div>
+            ) : null}
+
+            <div className="analytics-columns">
+              <section>
+                <div className="mini-section-heading">
+                  <strong>Event breakdown</strong>
+                  <span>{formatCount(connectionAnalytics.eventBreakdown.length)} event{connectionAnalytics.eventBreakdown.length === 1 ? '' : 's'}</span>
+                </div>
+                <div className="list-stack">
+                  {connectionAnalytics.eventBreakdown.map((eventStat) => (
+                    <div className="row-item analytics-row" key={eventStat.eventId || eventStat.eventName}>
+                      <div>
+                        <strong>{eventStat.eventName}</strong>
+                        <span>{formatCount(eventStat.uniquePeopleCount)} unique user{eventStat.uniquePeopleCount === 1 ? '' : 's'} - latest {formatAnalyticsTimestamp(eventStat.lastConnectionAt)}</span>
+                      </div>
+                      <span className="analytics-count-pill">{formatCount(eventStat.connectionCount)}</span>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              <section>
+                <div className="mini-section-heading">
+                  <strong>Recent activity</strong>
+                  <span>Last {formatCount(connectionAnalytics.recentConnections.length)}</span>
+                </div>
+                <div className="list-stack">
+                  {connectionAnalytics.recentConnections.map((connection, index) => (
+                    <div className="row-item compact" key={`${connection.eventId || connection.eventName}-${connection.connectedAt || index}`}>
+                      <div>
+                        <strong>{connection.eventName || program.name}</strong>
+                        <span><Link2 size={13} /> {formatAnalyticsTimestamp(connection.connectedAt)}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            </div>
+          </>
+        ) : (
+          <EmptyState title="No event connections yet" body="When attendees connect through Sang during this program, totals and event-wise counts will appear here." />
+        )}
+      </section>
 
       <div className="quick-action-grid">
         <button className="quick-action" onClick={() => setRoute('settings')} type="button">
@@ -3516,6 +3983,8 @@ function EventsPage({
   events,
   scheduleItems,
   roles,
+  people,
+  teamMembers,
   venueCatalog,
 }: {
   orgId: string
@@ -3524,6 +3993,8 @@ function EventsPage({
   events: ProgramEvent[]
   scheduleItems: ScheduleItem[]
   roles: Role[]
+  people: ProgramPerson[]
+  teamMembers: TeamMember[]
   venueCatalog?: ProgramVenueCatalog | null
 }) {
   const [selectedEventId, setSelectedEventId] = useState('')
@@ -3609,6 +4080,42 @@ function EventsPage({
     setAllowedAudienceRoleIds((current) => checked ? Array.from(new Set([...current, roleId])) : current.filter((id) => id !== roleId))
   }
 
+  async function syncProfilesToPeople(eventId: string, profileList: EventProfile[]) {
+    for (const profile of profileList) {
+      const fullName = profile.name.trim()
+      if (!fullName) continue
+      const profileRole = profile.role || 'Profile'
+      const eventRole = audienceRoleForProfile(profileRole, audienceRoles)
+      const linkedPerson = people.find((person) => person.id === profile.programPersonId)
+      if (profile.programPersonId && !linkedPerson) continue
+      const primaryRole = linkedPerson
+        ? resolveAudienceRole(linkedPerson.programRoleId || linkedPerson.kind || eventRole.id, audienceRoles, eventRole.id)
+        : eventRole
+      const savedOrganization = linkedPerson ? (linkedPerson.organization || linkedPerson.company || '').trim() : (profile.organization || '').trim()
+      const savedDesignation = linkedPerson ? (linkedPerson.designation || '').trim() : (profile.designation || '').trim()
+      await createProgramPersonAndPassCallable({
+        orgId,
+        programId: program.id,
+        fullName,
+        email: (profile.email || '').trim().toLowerCase(),
+        phone: (profile.phone || '').trim(),
+        kind: primaryRole.id,
+        programRoleId: primaryRole.id,
+        programRoleName: primaryRole.name,
+        company: savedOrganization,
+        organization: savedOrganization,
+        designation: savedDesignation,
+        eventIds: [eventId],
+        eventAccess: [{
+          eventId,
+          roleId: eventRole.id,
+          roleName: eventRole.name,
+          status: 'allowed',
+        }],
+      })
+    }
+  }
+
   async function createEvent(event: FormEvent) {
     event.preventDefault()
     setError('')
@@ -3646,6 +4153,7 @@ function EventsPage({
         competitive,
         resultsEnabled: program.competitive && competitive ? resultsEnabled : false,
       })
+      await syncProfilesToPeople(response.data.eventId, profiles)
       setSelectedEventId(response.data.eventId)
       setEditing(false)
     } catch (eventError) {
@@ -3669,6 +4177,7 @@ function EventsPage({
     }
     setBusy(true)
     try {
+      await syncProfilesToPeople(selectedEvent.id, profiles)
       await updateEventCallable({
         orgId,
         eventId: selectedEvent.id,
@@ -3828,7 +4337,7 @@ function EventsPage({
                       {profile.photoUrl ? <img alt="" src={profile.photoUrl} /> : <div><UserRound size={18} /></div>}
                       <span>
                         <strong>{profile.name}</strong>
-                        <small>{profile.role}{profile.organization ? ` - ${profile.organization}` : ''}</small>
+                        <small>{profile.role}{profile.organization ? ` - ${profile.organization}` : ''}{profile.email ? ` - ${profile.email}` : ''}</small>
                       </span>
                     </article>
                   ))}
@@ -3925,7 +4434,18 @@ function EventsPage({
                   )}
                 </div>
                 <ImageUploader folder="event-posters" label="Event poster" onChange={setPosterUrl} uid={uid} value={posterUrl} />
-                <EventProfilesEditor onChange={setProfiles} profiles={profiles} uid={uid} />
+                <EventProfilesEditor
+                  eventId={selectedEvent?.id || ''}
+                  orgId={orgId}
+                  onAllowedRole={(roleId) => setAllowedAudienceRoleIds((current) => Array.from(new Set([...current, roleId])))}
+                  onChange={setProfiles}
+                  people={people}
+                  profiles={profiles}
+                  program={program}
+                  roles={roles}
+                  teamMembers={teamMembers}
+                  uid={uid}
+                />
                 <div className="action-row">
                   <button className="secondary-button" onClick={() => selectedEvent ? setEditing(false) : setEditing(false)} type="button">
                     Cancel
@@ -4831,13 +5351,22 @@ function RolesPage({ orgId, roles }: { orgId: string; roles: Role[] }) {
   )
 }
 
-function TeamPage({ orgId, roles, programs, events, members }: { orgId: string; roles: Role[]; programs: Program[]; events: ProgramEvent[]; members: TeamMember[] }) {
+function TeamPage({ orgId, roles, programs, events, members, people }: { orgId: string; roles: Role[]; programs: Program[]; events: ProgramEvent[]; members: TeamMember[]; people: ProgramPerson[] }) {
   const teamRoles = useMemo(() => roles.filter((role) => roleCategory(role) === 'team' && !isDeletedRole(role)), [roles])
+  const audienceRoles = useMemo(() => getAudienceRoles(roles), [roles])
   const visibleMembers = members.filter((member) => member.status !== 'deleted' && member.status !== 'claimed')
   const [email, setEmail] = useState('')
   const [displayName, setDisplayName] = useState('')
-  const [roleId, setRoleId] = useState(teamRoles[0]?.id || 'gate-executive')
-  const [scope, setScope] = useState<TeamScope>('organization')
+  const [profileProgramId, setProfileProgramId] = useState('')
+  const [personLookup, setPersonLookup] = useState('')
+  const [selectedPersonId, setSelectedPersonId] = useState('')
+  const [newPersonName, setNewPersonName] = useState('')
+  const [newPersonPhone, setNewPersonPhone] = useState('')
+  const [newPersonOrganization, setNewPersonOrganization] = useState('')
+  const [newPersonDesignation, setNewPersonDesignation] = useState('')
+  const defaultTeamRole = teamRoles.find((role) => role.id === 'program-coordinator') || teamRoles.find((role) => role.id === 'owner') || teamRoles[0]
+  const [roleId, setRoleId] = useState(defaultTeamRole?.id || 'program-coordinator')
+  const [scope, setScope] = useState<TeamScope>(() => suggestedTeamScopeForRole(defaultTeamRole))
   const [programId, setProgramId] = useState('')
   const [eventId, setEventId] = useState('')
   const [error, setError] = useState('')
@@ -4849,12 +5378,35 @@ function TeamPage({ orgId, roles, programs, events, members }: { orgId: string; 
   const [editProgramId, setEditProgramId] = useState('')
   const [editEventId, setEditEventId] = useState('')
   const [editStatus, setEditStatus] = useState<'active' | 'invited' | 'disabled'>('active')
+  const lookupProgramId = scope === 'organization' ? profileProgramId : programId
+  const selectedPerson = people.find((person) => person.id === selectedPersonId) || null
+  const lookupPeople = useMemo(() => programPeopleForLookup(people, lookupProgramId), [lookupProgramId, people])
+  const organizerRole = useMemo(() => audienceRoles.find((role) => role.id === 'organizer') || resolveAudienceRole('Organizer', audienceRoles, 'visitor'), [audienceRoles])
+  const teamLookupResults = useMemo(() => {
+    const term = personLookup.trim().toLowerCase()
+    if (term.length < 2) return []
+    return lookupPeople.filter((person) => personSearchText(person).includes(term)).slice(0, 6)
+  }, [lookupPeople, personLookup])
 
   useEffect(() => {
     if (!teamRoles.some((role) => role.id === roleId)) {
-      setRoleId(teamRoles[0]?.id || 'gate-executive')
+      const nextRole = teamRoles.find((role) => role.id === 'program-coordinator') || teamRoles.find((role) => role.id === 'owner') || teamRoles[0]
+      setRoleId(nextRole?.id || 'program-coordinator')
+      setScope(suggestedTeamScopeForRole(nextRole))
     }
   }, [roleId, teamRoles])
+
+  useEffect(() => {
+    if (!profileProgramId && programs[0]) {
+      setProfileProgramId(programs[0].id)
+    }
+  }, [profileProgramId, programs])
+
+  useEffect(() => {
+    if (scope !== 'organization' && !programId && (profileProgramId || programs[0]?.id)) {
+      setProgramId(profileProgramId || programs[0].id)
+    }
+  }, [profileProgramId, programId, programs, scope])
 
   useEffect(() => {
     if (!editingMember) return
@@ -4874,21 +5426,112 @@ function TeamPage({ orgId, roles, programs, events, members }: { orgId: string; 
     return programEvent ? `${programEvent.name}` : 'Event scope'
   }
 
+  function selectTeamPerson(person: ProgramPerson) {
+    setSelectedPersonId(person.id)
+    setPersonLookup(person.email || person.fullName || '')
+    setEmail(person.email || '')
+    setDisplayName(person.fullName || '')
+    setNewPersonName(person.fullName || '')
+    setNewPersonPhone(person.phone || '')
+    setNewPersonOrganization(person.organization || person.company || '')
+    setNewPersonDesignation(person.designation || '')
+  }
+
+  function resetTeamPersonDraft() {
+    setEmail('')
+    setDisplayName('')
+    setPersonLookup('')
+    setSelectedPersonId('')
+    setNewPersonName('')
+    setNewPersonPhone('')
+    setNewPersonOrganization('')
+    setNewPersonDesignation('')
+  }
+
+  function setTeamScope(nextScope: TeamScope) {
+    setScope(nextScope)
+    setEventId('')
+    if (nextScope === 'organization') {
+      setProgramId('')
+    } else if (!programId) {
+      const nextProgramId = profileProgramId || programs[0]?.id || ''
+      setProgramId(nextProgramId)
+      setProfileProgramId(nextProgramId)
+    }
+    resetTeamPersonDraft()
+  }
+
+  function changeTeamRole(nextRoleId: string) {
+    const nextRole = teamRoles.find((role) => role.id === nextRoleId)
+    const nextScope = suggestedTeamScopeForRole(nextRole)
+    setRoleId(nextRoleId)
+    setTeamScope(nextScope)
+  }
+
+  async function ensureTeamPerson() {
+    const peopleProgramId = lookupProgramId
+    if (!peopleProgramId) {
+      throw new Error('Choose a program before selecting the People profile.')
+    }
+    const sourcePerson = selectedPerson
+    const fullName = (sourcePerson?.fullName || newPersonName || displayName).trim()
+    const normalizedEmail = (sourcePerson?.email || email).trim().toLowerCase()
+    const phone = (sourcePerson?.phone || newPersonPhone).trim()
+    const organization = (sourcePerson?.organization || sourcePerson?.company || newPersonOrganization).trim()
+    const designation = (sourcePerson?.designation || newPersonDesignation).trim()
+    if (!normalizedEmail) {
+      throw new Error('Team members need an email so they can claim CRM access.')
+    }
+    if (!fullName) {
+      throw new Error('Choose a person or create their People profile first.')
+    }
+    const preservedRole = sourcePerson
+      ? resolveAudienceRole(sourcePerson.programRoleId || sourcePerson.kind || organizerRole.id, audienceRoles, organizerRole.id)
+      : organizerRole
+    const eventAccess = scope === 'event' && eventId ? [{
+      eventId,
+      roleId: organizerRole.id,
+      roleName: organizerRole.name,
+      status: 'allowed' as const,
+    }] : []
+    const response = await createProgramPersonAndPassCallable({
+      orgId,
+      programId: peopleProgramId,
+      fullName,
+      email: normalizedEmail,
+      phone,
+      kind: preservedRole.id,
+      programRoleId: preservedRole.id,
+      programRoleName: preservedRole.name,
+      company: organization,
+      organization,
+      designation,
+      eventIds: eventAccess.map((access) => access.eventId),
+      eventAccess,
+    })
+    return {
+      programPersonId: response.data.programPersonId,
+      email: normalizedEmail,
+      displayName: fullName,
+    }
+  }
+
   async function inviteMember(event: FormEvent) {
     event.preventDefault()
     setError('')
     try {
+      const teamPerson = await ensureTeamPerson()
       await inviteTeamMemberCallable({
         orgId,
-        email: email.trim().toLowerCase(),
-        displayName: displayName.trim(),
+        email: teamPerson.email,
+        displayName: teamPerson.displayName,
         roleId,
         scope,
         programId: scope !== 'organization' ? programId : '',
         eventId: scope === 'event' ? eventId : '',
+        programPersonId: teamPerson.programPersonId,
       })
-      setEmail('')
-      setDisplayName('')
+      resetTeamPersonDraft()
     } catch (inviteError) {
       setError(inviteError instanceof Error ? inviteError.message : 'Unable to add member.')
     }
@@ -4945,31 +5588,31 @@ function TeamPage({ orgId, roles, programs, events, members }: { orgId: string; 
         </div>
         {error && !editingMember && <p className="form-error">{error}</p>}
         <label>
-          Member email
-          <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required />
-        </label>
-        <label>
-          Name
-          <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} required />
-        </label>
-        <label>
-          Role
-          <select value={roleId} onChange={(event) => setRoleId(event.target.value)} required>
+          CRM access role
+          <select value={roleId} onChange={(event) => changeTeamRole(event.target.value)} required>
             {teamRoles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
           </select>
         </label>
         <label>
           Scope
-          <select value={scope} onChange={(event) => setScope(event.target.value as TeamScope)}>
+          <select value={scope} onChange={(event) => setTeamScope(event.target.value as TeamScope)}>
             <option value="organization">Whole organization</option>
             <option value="program">Specific program</option>
             <option value="event">Specific event</option>
           </select>
         </label>
-        {scope !== 'organization' && (
+        {scope === 'organization' ? (
+          <label>
+            People profile program
+            <select value={profileProgramId} onChange={(event) => { setProfileProgramId(event.target.value); resetTeamPersonDraft() }} required>
+              <option value="">Select program</option>
+              {programs.map((program) => <option key={program.id} value={program.id}>{program.name}</option>)}
+            </select>
+          </label>
+        ) : (
           <label>
             Program
-            <select value={programId} onChange={(event) => setProgramId(event.target.value)} required>
+            <select value={programId} onChange={(event) => { setProgramId(event.target.value); setProfileProgramId(event.target.value); setEventId(''); resetTeamPersonDraft() }} required>
               <option value="">Select program</option>
               {programs.map((program) => <option key={program.id} value={program.id}>{program.name}</option>)}
             </select>
@@ -4986,6 +5629,57 @@ function TeamPage({ orgId, roles, programs, events, members }: { orgId: string; 
             </select>
           </label>
         )}
+        <div className="person-lookup-box">
+          <label>
+            Search People by email
+            <input disabled={!lookupProgramId} placeholder="team.member@example.com" type="email" value={personLookup} onChange={(event) => { setPersonLookup(event.target.value); setEmail(event.target.value); setSelectedPersonId('') }} required />
+          </label>
+          {!selectedPerson && teamLookupResults.length > 0 && (
+            <div className="person-lookup-results">
+              {teamLookupResults.map((person) => (
+                <button className={selectedPersonId === person.id ? 'lookup-person-card active' : 'lookup-person-card'} key={person.id} onClick={() => selectTeamPerson(person)} type="button">
+                  <UserRound size={16} />
+                  <span>
+                    <strong>{person.fullName || person.email}</strong>
+                    <small>{person.email || person.phone || 'No email'}{person.programRoleName ? ` - ${person.programRoleName}` : ''}</small>
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+          {selectedPerson ? (
+            <div className="selected-person-card with-action">
+              <BadgeCheck size={16} />
+              <span>
+                <strong>{selectedPerson.fullName}</strong>
+                <small>{selectedPerson.email || selectedPerson.phone || 'Identity pending'}</small>
+              </span>
+              <button className="secondary-button compact-button" onClick={resetTeamPersonDraft} type="button">
+                Change
+              </button>
+            </div>
+          ) : (
+            <div className="assignment-box">
+              <span>Create People profile if this email is new</span>
+              <label>
+                Full name
+                <input value={newPersonName} onChange={(event) => { setNewPersonName(event.target.value); setDisplayName(event.target.value) }} required />
+              </label>
+              <label>
+                Phone
+                <input value={newPersonPhone} onChange={(event) => setNewPersonPhone(event.target.value)} />
+              </label>
+              <label>
+                Organization / college / company
+                <input value={newPersonOrganization} onChange={(event) => setNewPersonOrganization(event.target.value)} />
+              </label>
+              <label>
+                Designation
+                <input placeholder="Coordinator, faculty, volunteer lead..." value={newPersonDesignation} onChange={(event) => setNewPersonDesignation(event.target.value)} />
+              </label>
+            </div>
+          )}
+        </div>
         <button className="primary-button" type="submit"><Plus size={17} />Add member</button>
       </form>
 
@@ -5000,31 +5694,35 @@ function TeamPage({ orgId, roles, programs, events, members }: { orgId: string; 
         <div className="table-wrap">
           <table>
             <thead>
-              <tr><th>Name</th><th>Email</th><th>Role</th><th>Scope</th><th>Status</th><th>Actions</th></tr>
+              <tr><th>Name</th><th>Email</th><th>Role</th><th>People profile</th><th>Scope</th><th>Status</th><th>Actions</th></tr>
             </thead>
             <tbody>
-              {visibleMembers.map((member) => (
-                <tr key={member.id}>
-                  <td>{member.displayName}</td>
-                  <td>{member.email}</td>
-                  <td>{teamRoles.find((role) => role.id === member.roleId)?.name || member.roleId}</td>
-                  <td>{memberScopeLabel(member)}</td>
-                  <td><span className={`status ${member.status}`}>{member.status}</span></td>
-                  <td>
-                    <div className="table-actions">
-                      <button className="icon-button" disabled={busyMemberId === member.id} onClick={() => setEditingMember(member)} title="Edit member" type="button">
-                        <Pencil size={16} />
-                      </button>
-                      <button className="icon-button danger-icon" disabled={busyMemberId === member.id} onClick={() => removeMember(member)} title="Delete member" type="button">
-                        {busyMemberId === member.id ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />}
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+              {visibleMembers.map((member) => {
+                const linkedPerson = people.find((person) => person.id === member.programPersonId)
+                return (
+                  <tr key={member.id}>
+                    <td>{member.displayName}</td>
+                    <td>{member.email}</td>
+                    <td>{teamRoles.find((role) => role.id === member.roleId)?.name || member.roleId}</td>
+                    <td>{linkedPerson ? `${linkedPerson.fullName} (${linkedPerson.programRoleName || linkedPerson.kind})` : 'Not linked'}</td>
+                    <td>{memberScopeLabel(member)}</td>
+                    <td><span className={`status ${member.status}`}>{member.status}</span></td>
+                    <td>
+                      <div className="table-actions">
+                        <button className="icon-button" disabled={busyMemberId === member.id} onClick={() => setEditingMember(member)} title="Edit member" type="button">
+                          <Pencil size={16} />
+                        </button>
+                        <button className="icon-button danger-icon" disabled={busyMemberId === member.id} onClick={() => removeMember(member)} title="Delete member" type="button">
+                          {busyMemberId === member.id ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
               {visibleMembers.length === 0 && (
                 <tr>
-                  <td colSpan={6}>No team members yet.</td>
+                  <td colSpan={7}>No team members yet.</td>
                 </tr>
               )}
             </tbody>
@@ -5114,6 +5812,9 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
   const [publishBusy, setPublishBusy] = useState(false)
   const selectedPeople = people.filter((person) => (!programId || person.programId === programId) && personAccessState(person) !== 'removed')
   const availableEvents = events.filter((programEvent) => programEvent.programId === programId)
+  const selectedProgram = programs.find((program) => program.id === programId)
+  const selectedPeoplePublishedAt = timestampMs(selectedProgram?.peopleLastPublishedAt)
+  const peoplePublishPending = Boolean(selectedPeople.length && (!selectedPeoplePublishedAt || newestTimestamp(selectedPeople) > selectedPeoplePublishedAt))
 
   useEffect(() => {
     if (!programId && programs[0]) {
@@ -5598,7 +6299,7 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
           </div>
           <div className="table-actions">
             <button
-              className="secondary-button compact-button"
+              className={`secondary-button compact-button ${peoplePublishPending ? 'publish-button-pending' : ''}`}
               disabled={!programId || selectedPeople.length === 0 || publishBusy}
               onClick={publishPeopleAccess}
               type="button"
@@ -5960,7 +6661,7 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
       {programs.error || roles.error || ownMemberships.error || people.error || scheduleItems.error || venueCatalogs.error || partners.error || passes.error || members.error ? <p className="form-error">{programs.error || roles.error || ownMemberships.error || people.error || scheduleItems.error || venueCatalogs.error || partners.error || passes.error || members.error}</p> : null}
       {route === 'dashboard' && activeProgram && <ProgramWorkspaceDashboard events={activeEvents} orgId={orgId} people={activePeople} program={activeProgram} scheduleItems={activeScheduleItems} setRoute={setRoute} venueCatalog={activeVenueCatalog} />}
       {route === 'dashboard' && !activeProgram && <DashboardPage people={people.rows} programs={sortedPrograms} setRoute={setRoute} />}
-      {route === 'events' && activeProgram && <EventsPage events={activeEvents} orgId={orgId} program={activeProgram} roles={roles.rows} scheduleItems={activeScheduleItems} uid={firebaseUser.uid} venueCatalog={activeVenueCatalog} />}
+      {route === 'events' && activeProgram && <EventsPage events={activeEvents} orgId={orgId} people={activePeople} program={activeProgram} roles={roles.rows} scheduleItems={activeScheduleItems} teamMembers={members.rows} uid={firebaseUser.uid} venueCatalog={activeVenueCatalog} />}
       {route === 'events' && !activeProgram && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} venueCatalogs={venueCatalogs.rows} />}
       {route === 'venues' && activeProgram && <VenuesPage orgId={orgId} program={activeProgram} venueCatalog={activeVenueCatalog} />}
       {route === 'venues' && !activeProgram && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} venueCatalogs={venueCatalogs.rows} />}
@@ -5969,7 +6670,7 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
       {route === 'programs' && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} venueCatalogs={venueCatalogs.rows} />}
       {route === 'settings' && <SettingsPage canManageOrganization={canManageOrganization} canManageProgram={canManageProgram} onProgramSelect={chooseProgramInSettings} orgId={orgId} organization={organization} program={activeProgram} programs={sortedPrograms} uid={firebaseUser.uid} venueCatalog={activeVenueCatalog} />}
       {route === 'roles' && <RolesPage orgId={orgId} roles={roles.rows} />}
-      {route === 'team' && <TeamPage events={events.rows} members={members.rows} orgId={orgId} programs={sortedPrograms} roles={roles.rows} />}
+      {route === 'team' && <TeamPage events={events.rows} members={members.rows} orgId={orgId} people={people.rows} programs={sortedPrograms} roles={roles.rows} />}
       {route === 'people' && <PeoplePage events={activeProgram ? activeEvents : events.rows} orgId={orgId} passes={activeProgram ? activePasses : passes.rows} people={activeProgram ? activePeople : people.rows} programs={activeProgram ? [activeProgram] : sortedPrograms} roles={roles.rows} />}
     </Shell>
   )
