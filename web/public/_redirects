@@ -1,0 +1,5 @@
+# Cloudflare Pages SPA fallbacks for the combined monorepo build.
+# Real files (assets, index.html) are served first; these only catch client-side routes.
+# The Sang app marketing site (react-router) lives under /app; the CMS (hash routing) at /.
+/app/*   /app/index.html   200
+/*       /index.html       200

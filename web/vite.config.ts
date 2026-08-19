@@ -8,4 +8,10 @@ export default defineConfig({
   resolve: {
     dedupe: ['react', 'react-dom'],
   },
+  // CMS is the main site, served at "/". Built into the shared monorepo dist so
+  // Cloudflare Pages serves it alongside the /app marketing site (see root package.json).
+  build: {
+    outDir: '../dist',
+    emptyOutDir: true,
+  },
 })

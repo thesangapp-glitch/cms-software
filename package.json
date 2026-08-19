@@ -1,0 +1,11 @@
+{
+  "name": "sang-monorepo",
+  "private": true,
+  "description": "Monorepo: Sang Event CRM (/) + Sang app marketing site (/app), built together for Cloudflare Pages.",
+  "scripts": {
+    "build": "npm run build:web && npm run build:app",
+    "build:web": "cd web && npm ci && npm run build",
+    "build:app": "cd app-site && npm ci && npm run build",
+    "preview": "npx --yes serve dist"
+  }
+}
