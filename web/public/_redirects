@@ -1,11 +1,15 @@
 # Cloudflare Pages SPA fallbacks for the combined monorepo build.
 # Real files (assets, index.html) are served first; these only catch client-side routes.
 #
-# The Sang app site (react-router / BrowserRouter) lives under /app. A wildcard
-# `/app/*  /app/index.html  200` is REJECTED by Cloudflare as an infinite loop
-# (the destination matches the source), so list each /app client route explicitly.
+# The Sang app site (react-router / BrowserRouter) lives under /app. Two Cloudflare
+# gotchas shape these rules:
+#   1. A wildcard `/app/*  /app/index.html  200` is rejected as an infinite-loop redirect.
+#   2. A rewrite whose destination ends in `/index.html` gets auto-normalized to a 308
+#      redirect to the directory, which changes the URL and breaks the client route.
+# So we rewrite each /app route to the DIRECTORY `/app/` (already normalized -> served
+# as index.html with a 200, URL preserved, so react-router renders the right route).
 # Add a line here whenever the Sang site gains a new route.
-/app/privacy   /app/index.html   200
+/app/privacy   /app/   200
 #
 # The CMS at / is hash-routed, so this standard root SPA fallback covers it.
-/*             /index.html       200
+/*             /index.html   200
