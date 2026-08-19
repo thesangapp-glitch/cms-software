@@ -24,8 +24,13 @@ export function HashLink({ to, children, onClick, className }) {
     }
   }
 
+  // Click is handled in JS (via react-router navigate, which is basename-aware). The href
+  // is only a fallback for middle-click / no-JS, so prefix the Vite base ("/app/") to keep
+  // it inside this app rather than jumping to the domain root.
+  const href = import.meta.env.BASE_URL.replace(/\/$/, '') + to
+
   return (
-    <a href={to} className={className} onClick={handleClick}>
+    <a href={href} className={className} onClick={handleClick}>
       {children}
     </a>
   )

@@ -33,6 +33,8 @@ export default function Footer() {
 
         <div className="footer__col">
           <h4>Company</h4>
+          {/* Absolute path leaves this /app-mounted app for the CMS at the domain root. */}
+          <a href="/">Event CRM</a>
           <Link to="/privacy">Privacy & Terms</Link>
           <a href={`mailto:${LINKS.email}`}>Contact</a>
         </div>
