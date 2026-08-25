@@ -335,6 +335,35 @@ function toRows<T extends { id: string }>(snapshotDocs: DocumentData[]) {
   return snapshotDocs.map((snapshotDoc) => ({ id: snapshotDoc.id, ...snapshotDoc.data() }) as T)
 }
 
+// Program/event dates are usually ISO strings, but docs created by other clients
+// (the Sang mobile app, imports, older writes) can arrive as Firestore Timestamps,
+// Dates, or numbers. Normalize to a sortable string so .sort() never calls
+// .localeCompare on a non-string and crashes the whole render.
+function dateSortKey(value: unknown): string {
+  if (value == null) return ''
+  if (typeof value === 'string') return value
+  if (typeof value === 'number') return new Date(value).toISOString()
+  if (value instanceof Date) return value.toISOString()
+  if (typeof value === 'object' && typeof (value as Timestamp).toDate === 'function') {
+    return (value as Timestamp).toDate().toISOString()
+  }
+  return String(value)
+}
+
+// Safe display for date fields that are usually strings but may arrive as
+// Timestamps/Dates/numbers. Rendering a raw Firestore Timestamp as a React child
+// throws "Objects are not valid as a React child", so always coerce to text.
+function displayDate(value: unknown, fallback = ''): string {
+  if (value == null || value === '') return fallback
+  if (typeof value === 'string') return value
+  if (typeof value === 'number') return new Date(value).toLocaleString()
+  if (value instanceof Date) return value.toLocaleString()
+  if (typeof value === 'object' && typeof (value as Timestamp).toDate === 'function') {
+    return (value as Timestamp).toDate().toLocaleString()
+  }
+  return String(value)
+}
+
 // Errors Firestore emits while auth is transitioning (sign-out / sign-in) or the
 // client is tearing down. These are transient, not real failures, so we don't
 // surface them in the UI.
@@ -1065,7 +1094,7 @@ function ProgramWorkspaceDashboard({
           <h1>{program.name}</h1>
           <p>{program.description || 'Program workspace is ready. Add events, import people, issue passes, and track check-ins from here.'}</p>
           <div className="workspace-meta">
-            <span><CalendarDays size={14} /> {program.startDate} to {program.endDate}</span>
+            <span><CalendarDays size={14} /> {displayDate(program.startDate)} to {displayDate(program.endDate)}</span>
             <span><MapPin size={14} /> {program.venueName || 'Venue pending'} {program.city ? `- ${program.city}` : ''}</span>
           </div>
         </div>
@@ -1795,7 +1824,7 @@ function EventsPage({ orgId, uid, program, events, scheduleItems }: { orgId: str
                     <span className={`status ${selectedEvent.status}`}>{selectedEvent.status}</span>
                     <h1>{selectedEvent.name}</h1>
                     <p>{selectedEvent.locationNote || 'No location note added yet.'}</p>
-                    <span><CalendarDays size={14} /> {selectedEvent.startDateTime || 'Start pending'} to {selectedEvent.endDateTime || 'End pending'}</span>
+                    <span><CalendarDays size={14} /> {displayDate(selectedEvent.startDateTime, 'Start pending')} to {displayDate(selectedEvent.endDateTime, 'End pending')}</span>
                     <span><MapPin size={14} /> {selectedEvent.venueName || program.venueName || 'Venue pending'}</span>
                     <span><Ticket size={14} /> Entry: {selectedEvent.entryScope || 'event'} gate</span>
                     <span><BadgeCheck size={14} /> Results: {selectedEvent.resultsEnabled ? 'enabled' : 'not enabled'}</span>
@@ -1906,7 +1935,7 @@ function ScheduleManager({ orgId, program, event, scheduleItems }: { orgId: stri
   const [status, setStatus] = useState<ScheduleStatus>('scheduled')
   const [description, setDescription] = useState('')
   const [busy, setBusy] = useState(false)
-  const sortedItems = [...scheduleItems].sort((a, b) => (a.startsAt || '').localeCompare(b.startsAt || ''))
+  const sortedItems = [...scheduleItems].sort((a, b) => dateSortKey(a.startsAt).localeCompare(dateSortKey(b.startsAt)))
 
   async function addScheduleItem(eventSubmit: FormEvent) {
     eventSubmit.preventDefault()
@@ -2027,7 +2056,7 @@ function ScheduleManager({ orgId, program, event, scheduleItems }: { orgId: stri
               <div>
                 <span className={`status ${item.status}`}>{item.status}</span>
                 <strong>{item.title}</strong>
-                <p>{item.startsAt} {item.endsAt ? `to ${item.endsAt}` : ''}</p>
+                <p>{displayDate(item.startsAt)} {item.endsAt ? `to ${displayDate(item.endsAt)}` : ''}</p>
                 <small>{item.venueName || event.venueName || program.venueName || 'Venue pending'} {item.roomName ? `- ${item.roomName}` : ''}</small>
               </div>
               <button className="icon-button" onClick={() => removeScheduleItem(item)} title="Delete schedule item" type="button">
@@ -3000,7 +3029,7 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
     setRouteState(nextRoute)
   }
 
-  const sortedPrograms = [...programs.rows].sort((a, b) => a.startDate.localeCompare(b.startDate))
+  const sortedPrograms = [...programs.rows].sort((a, b) => dateSortKey(a.startDate).localeCompare(dateSortKey(b.startDate)))
   const selectedProgram = sortedPrograms.find((program) => program.id === selectedProgramId) || null
   const shouldChooseProgram = !selectedProgram && sortedPrograms.length > 1 && route !== 'programs'
   const activeProgram = selectedProgram || (sortedPrograms.length === 1 ? sortedPrograms[0] : null)
