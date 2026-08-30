@@ -4,6 +4,8 @@ import { getAuth } from 'firebase-admin/auth'
 import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore'
 import { getMessaging } from 'firebase-admin/messaging'
 import { HttpsError, onCall } from 'firebase-functions/v2/https'
+import { defineSecret } from 'firebase-functions/params'
+import nodemailer from 'nodemailer'
 import { z } from 'zod'
 
 initializeApp()
@@ -19,6 +21,39 @@ const programVenueCollection = 'peProgramVenues'
 const mobilePeoplePageSize = 15
 const mobileSchedulePageSize = 50
 const publicPeopleCollection = (programId: string) => db.collection('pePrograms').doc(programId).collection('peoplePublic')
+
+// Gmail App Password used to send OTP emails via SMTP. Set with:
+//   firebase functions:secrets:set GMAIL_APP_PASSWORD --project sang-d8b93
+const GMAIL_APP_PASSWORD = defineSecret('GMAIL_APP_PASSWORD')
+const OTP_SENDER_EMAIL = 'thesangapp@gmail.com'
+const OTP_TTL_MS = 10 * 60 * 1000
+const OTP_RESEND_COOLDOWN_MS = 30 * 1000
+const OTP_MAX_ATTEMPTS = 5
+const otpCallableOptions = { ...callableOptions, secrets: [GMAIL_APP_PASSWORD] }
+
+function makeOtpCode() {
+  return String(randomInt(0, 1_000_000)).padStart(6, '0')
+}
+
+async function sendOtpEmail(to: string, code: string) {
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: { user: OTP_SENDER_EMAIL, pass: GMAIL_APP_PASSWORD.value() },
+  })
+  await transporter.sendMail({
+    from: `"Sang Event CRM" <${OTP_SENDER_EMAIL}>`,
+    to,
+    subject: `${code} is your Sang Event CRM verification code`,
+    text: `Your Sang Event CRM verification code is ${code}.\n\nIt expires in 10 minutes. If you didn't try to create an account, you can ignore this email.`,
+    html: `<div style="font-family:system-ui,Segoe UI,Arial,sans-serif;max-width:420px;margin:0 auto;padding:24px;color:#0f172a">
+      <p style="font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#64748b;margin:0 0 8px">Sang Event CRM</p>
+      <h1 style="font-size:20px;margin:0 0 16px">Verify your email</h1>
+      <p style="margin:0 0 16px;color:#334155">Enter this code to finish creating your account:</p>
+      <div style="font-size:34px;font-weight:700;letter-spacing:.35em;background:#f1f5f9;border-radius:12px;padding:16px 0;text-align:center">${code}</div>
+      <p style="margin:16px 0 0;color:#64748b;font-size:13px">This code expires in 10 minutes. If you didn't try to create an account, ignore this email.</p>
+    </div>`,
+  })
+}
 
 const permissions = {
   rolesWrite: 'roles.write',
@@ -1554,6 +1589,88 @@ export const createOrganization = onCall(callableOptions, async (request) => {
   await batch.commit()
   await writeAudit({ orgId: orgRef.id, actorUid: uid, action: 'organization.create', entityPath: orgRef.path })
   return { orgId: orgRef.id }
+})
+
+// Sends a 6-digit verification code to the email on the caller's account.
+// Used right after email/password sign-up to confirm the address is real.
+export const requestEmailOtp = onCall(otpCallableOptions, async (request) => {
+  const uid = requireUid(request)
+  const email = request.auth?.token?.email
+  if (!email) {
+    throw new HttpsError('failed-precondition', 'This account has no email address to verify.')
+  }
+  if (request.auth?.token?.email_verified === true) {
+    return { sent: false, alreadyVerified: true }
+  }
+
+  const otpRef = db.collection('peEmailOtps').doc(uid)
+  const existing = await otpRef.get()
+  const now = Date.now()
+  if (existing.exists) {
+    const lastSentAt = (existing.data()?.lastSentAtMs as number) ?? 0
+    if (now - lastSentAt < OTP_RESEND_COOLDOWN_MS) {
+      throw new HttpsError('resource-exhausted', 'Please wait a few seconds before requesting another code.')
+    }
+  }
+
+  const code = makeOtpCode()
+  await otpRef.set({
+    uid,
+    email: normalizeEmail(email),
+    codeHash: tokenHash(code),
+    attempts: 0,
+    expiresAtMs: now + OTP_TTL_MS,
+    lastSentAtMs: now,
+    createdAt: FieldValue.serverTimestamp(),
+  })
+  await sendOtpEmail(email, code)
+  return { sent: true }
+})
+
+// Verifies the code, marks the auth user's email as verified, and creates the
+// peUsers profile record so the account is persisted after normal sign-up.
+export const verifyEmailOtp = onCall(callableOptions, async (request) => {
+  const uid = requireUid(request)
+  const input = z.object({ code: z.string().regex(/^\d{6}$/, { error: 'Enter the 6-digit code.' }) }).parse(request.data)
+
+  const otpRef = db.collection('peEmailOtps').doc(uid)
+  const snapshot = await otpRef.get()
+  if (!snapshot.exists) {
+    throw new HttpsError('not-found', 'No active verification code. Request a new one.')
+  }
+  const data = snapshot.data() || {}
+
+  if (Date.now() > ((data.expiresAtMs as number) ?? 0)) {
+    await otpRef.delete()
+    throw new HttpsError('deadline-exceeded', 'This code has expired. Request a new one.')
+  }
+  if (((data.attempts as number) ?? 0) >= OTP_MAX_ATTEMPTS) {
+    await otpRef.delete()
+    throw new HttpsError('resource-exhausted', 'Too many incorrect attempts. Request a new code.')
+  }
+  if (data.codeHash !== tokenHash(input.code)) {
+    await otpRef.update({ attempts: FieldValue.increment(1) })
+    throw new HttpsError('invalid-argument', 'Incorrect code. Please try again.')
+  }
+
+  await getAuth().updateUser(uid, { emailVerified: true })
+
+  const email = (data.email as string) || request.auth?.token?.email || ''
+  const displayName = (request.auth?.token?.name as string) || ''
+  await db.collection('peUsers').doc(uid).set(
+    {
+      uid,
+      email: normalizeEmail(email),
+      displayName,
+      emailVerified: true,
+      organizationIds: [],
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  )
+  await otpRef.delete()
+  return { verified: true }
 })
 
 export const updateOrganization = onCall(callableOptions, async (request) => {

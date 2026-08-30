@@ -281,3 +281,9 @@ match /peExports/{exportId} {
     && peCanAccessProgramData(resource.data.orgId, resource.data.programId);
   allow write: if false;
 }
+
+// Email verification codes. Written/read only by Cloud Functions (admin SDK).
+// Never exposed to clients — the raw code must not be readable.
+match /peEmailOtps/{uid} {
+  allow read, write: if false;
+}

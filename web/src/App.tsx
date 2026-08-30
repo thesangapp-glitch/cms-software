@@ -364,6 +364,7 @@ type PeUser = {
   email: string
   activeOrgId?: string
   organizationIds: string[]
+  emailVerified?: boolean
 }
 
 type Organization = {
@@ -801,7 +802,14 @@ function isTransientListenerError(error: { code?: string; message?: string }): b
   const message = error?.message ?? ''
   return (
     code === 'cancelled' ||
-    /database connection is closing|client has already been terminated|the client has been terminated/i.test(message)
+    code === 'unavailable' ||
+    code === 'aborted' ||
+    code === 'deadline-exceeded' ||
+    code === 'resource-exhausted' ||
+    code === 'internal' ||
+    /database connection is closing|client has already been terminated|the client has been terminated|database is closed|the connection is closing|could not reach cloud firestore backend|the operation was aborted|client is offline|failed to obtain|internal assertion|transport errored|stream error/i.test(
+      message,
+    )
   )
 }
 
@@ -925,6 +933,8 @@ function useAuthProfile() {
   return { firebaseUser, profile, setProfile, loading }
 }
 
+const requestEmailOtpCallable = httpsCallable<void, { sent: boolean; alreadyVerified?: boolean }>(functions, 'requestEmailOtp')
+const verifyEmailOtpCallable = httpsCallable<{ code: string }, { verified: boolean }>(functions, 'verifyEmailOtp')
 const createOrganizationCallable = httpsCallable<{ displayName: string; orgName: string; industry: string; website: string; logoUrl: string; email: string }, { orgId: string }>(functions, 'createOrganization')
 const updateOrganizationCallable = httpsCallable<{ orgId: string; name: string; industry: string; website: string; logoUrl: string }, { orgId: string }>(functions, 'updateOrganization')
 const setActiveOrganizationCallable = httpsCallable<{ orgId: string }, { orgId: string }>(functions, 'setActiveOrganization')
@@ -1209,6 +1219,102 @@ function AuthPage({ onBack }: { onBack?: () => void }) {
           </button>
         </form>
       </section>
+    </main>
+  )
+}
+
+function VerifyEmailPage({ user, onVerified, onCancel }: { user: User; onVerified: () => void; onCancel: () => void }) {
+  const [code, setCode] = useState('')
+  const [error, setError] = useState('')
+  const [info, setInfo] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [sending, setSending] = useState(false)
+  const autoSentRef = useRef(false)
+
+  async function sendCode(isInitial: boolean) {
+    setSending(true)
+    setError('')
+    try {
+      await requestEmailOtpCallable()
+      setInfo(`We sent a 6-digit code to ${user.email}. It expires in 10 minutes.`)
+    } catch (sendError) {
+      const message = sendError instanceof Error ? sendError.message : 'Could not send the code.'
+      // On the automatic first send, a cooldown just means a code is already on its way.
+      if (isInitial && /wait a few seconds/i.test(message)) {
+        setInfo(`We sent a 6-digit code to ${user.email}. It expires in 10 minutes.`)
+      } else {
+        setError(message)
+      }
+    } finally {
+      setSending(false)
+    }
+  }
+
+  useEffect(() => {
+    if (autoSentRef.current) return
+    autoSentRef.current = true
+    void sendCode(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    setLoading(true)
+    setError('')
+    try {
+      await verifyEmailOtpCallable({ code: code.trim() })
+      await user.reload()
+      onVerified()
+    } catch (verifyError) {
+      setError(verifyError instanceof Error ? verifyError.message : 'Verification failed.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <main className="auth-screen">
+      <form className="auth-card" onSubmit={submit} style={{ maxWidth: 420, margin: '0 auto' }}>
+        <div className="brand-lockup large">
+          <div className="brand-mark">S</div>
+          <div>
+            <strong>Verify your email</strong>
+            <span>Enter the code we sent you</span>
+          </div>
+        </div>
+        <p style={{ color: '#475569', margin: '4px 0 8px' }}>
+          To finish creating your account, enter the 6-digit code sent to <strong>{user.email}</strong>.
+        </p>
+        <label>
+          Verification code
+          <input
+            autoComplete="one-time-code"
+            inputMode="numeric"
+            maxLength={6}
+            placeholder="000000"
+            style={{ letterSpacing: '0.4em', textAlign: 'center', fontSize: 22 }}
+            value={code}
+            onChange={(event) => setCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
+          />
+        </label>
+
+        {error && <p className="form-error">{error}</p>}
+        {!error && info && <p style={{ color: '#059669', fontSize: 13, margin: 0 }}>{info}</p>}
+
+        <button className="primary-button" disabled={loading || code.length !== 6} type="submit">
+          {loading ? <Loader2 className="spin" size={17} /> : <ShieldCheck size={17} />}
+          Verify and continue
+        </button>
+
+        <button className="secondary-button full-width" disabled={sending} onClick={() => sendCode(false)} type="button">
+          {sending ? <Loader2 className="spin" size={16} /> : null}
+          Resend code
+        </button>
+
+        <button className="auth-back" onClick={onCancel} type="button" style={{ marginTop: 4 }}>
+          Use a different account
+        </button>
+      </form>
     </main>
   )
 }
@@ -6679,12 +6785,18 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
 function App() {
   const { firebaseUser, profile, setProfile, loading } = useAuthProfile()
   const [showAuth, setShowAuth] = useState(() => window.location.hash === '#/signin')
+  const [emailVerified, setEmailVerified] = useState(false)
 
   useEffect(() => {
     const sync = () => setShowAuth(window.location.hash === '#/signin')
     window.addEventListener('hashchange', sync)
     return () => window.removeEventListener('hashchange', sync)
   }, [])
+
+  // Reset the just-verified flag whenever the signed-in account changes.
+  useEffect(() => {
+    setEmailVerified(false)
+  }, [firebaseUser?.uid])
 
   function goToSignIn() {
     window.location.hash = '/signin'
@@ -6710,6 +6822,23 @@ function App() {
     return showAuth
       ? <AuthPage onBack={goToLanding} />
       : <LandingPage onSignIn={goToSignIn} />
+  }
+
+  // Newly created email/password accounts must confirm their address with a
+  // one-time code before reaching the app. Google accounts arrive verified, and
+  // pre-existing password accounts (which have signed in before) are left alone —
+  // a brand-new account has matching creation and last-sign-in timestamps.
+  const isPasswordUser = firebaseUser.providerData.some((provider) => provider.providerId === 'password')
+  const meta = firebaseUser.metadata
+  const isNewAccount = Boolean(meta.creationTime && meta.lastSignInTime && meta.creationTime === meta.lastSignInTime)
+  if (isPasswordUser && isNewAccount && !firebaseUser.emailVerified && !emailVerified) {
+    return (
+      <VerifyEmailPage
+        onCancel={() => signOut(auth)}
+        onVerified={() => setEmailVerified(true)}
+        user={firebaseUser}
+      />
+    )
   }
 
   if (!profile) {
