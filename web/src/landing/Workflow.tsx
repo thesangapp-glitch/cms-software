@@ -79,7 +79,7 @@ function SangStory() {
                   <div className="eos-phone-greet">A new event just appeared</div>
                   <div className="eos-pass">
                     <div className="eos-pass-row">
-                      <span className="eos-pass-title">THOMSO 2027</span>
+                      <span className="eos-pass-title">Flagship Program</span>
                       <span className="eos-badge vip">VIP</span>
                     </div>
                     <div style={{ fontSize: 12, color: 'var(--eos-muted)' }}>Added from Organizer CRM · 12 Sep</div>

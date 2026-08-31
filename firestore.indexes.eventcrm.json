@@ -29,12 +29,36 @@
       "collectionGroup": "peEvents",
       "queryScope": "COLLECTION",
       "fields": [
+        { "fieldPath": "orgId", "order": "ASCENDING" },
+        { "fieldPath": "programId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "peEvents",
+      "queryScope": "COLLECTION",
+      "fields": [
         { "fieldPath": "programId", "order": "ASCENDING" },
         { "fieldPath": "startDateTime", "order": "ASCENDING" }
       ]
     },
     {
-      "collectionGroup": "peEventScheduleItems",
+      "collectionGroup": "peEventScheduleDashboard",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "orgId", "order": "ASCENDING" },
+        { "fieldPath": "programId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "peEventScheduleDashboard",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "orgId", "order": "ASCENDING" },
+        { "fieldPath": "eventId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "peEventScheduleDashboard",
       "queryScope": "COLLECTION",
       "fields": [
         { "fieldPath": "programId", "order": "ASCENDING" },
@@ -42,11 +66,43 @@
       ]
     },
     {
-      "collectionGroup": "peProgramJoinLinks",
+      "collectionGroup": "peProgramVenues",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "orgId", "order": "ASCENDING" },
+        { "fieldPath": "programId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "peProgramPartners",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "orgId", "order": "ASCENDING" },
+        { "fieldPath": "programId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "peProgramPartners",
       "queryScope": "COLLECTION",
       "fields": [
         { "fieldPath": "programId", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" }
+        { "fieldPath": "sortOrder", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "peProgramPeople",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "orgId", "order": "ASCENDING" },
+        { "fieldPath": "programId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "peProgramPeople",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "orgId", "order": "ASCENDING" },
+        { "fieldPath": "eventAccessIds", "arrayConfig": "CONTAINS" }
       ]
     },
     {
@@ -61,8 +117,51 @@
       "collectionGroup": "peProgramPeople",
       "queryScope": "COLLECTION",
       "fields": [
+        { "fieldPath": "programId", "order": "ASCENDING" },
+        { "fieldPath": "normalizedEmail", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "peProgramPeople",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "programId", "order": "ASCENDING" },
+        { "fieldPath": "normalizedPhone", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "peProgramPeople",
+      "queryScope": "COLLECTION",
+      "fields": [
         { "fieldPath": "orgId", "order": "ASCENDING" },
         { "fieldPath": "email", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "peoplePublic",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "sortName", "order": "ASCENDING" },
+        { "fieldPath": "programPersonId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "peoplePublic",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "roleKey", "order": "ASCENDING" },
+        { "fieldPath": "sortName", "order": "ASCENDING" },
+        { "fieldPath": "programPersonId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "pePasses",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "orgId", "order": "ASCENDING" },
+        { "fieldPath": "programId", "order": "ASCENDING" }
       ]
     },
     {
@@ -71,6 +170,22 @@
       "fields": [
         { "fieldPath": "tokenHash", "order": "ASCENDING" },
         { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "peCheckIns",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "orgId", "order": "ASCENDING" },
+        { "fieldPath": "programId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "peCheckIns",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "orgId", "order": "ASCENDING" },
+        { "fieldPath": "eventId", "order": "ASCENDING" }
       ]
     },
     {

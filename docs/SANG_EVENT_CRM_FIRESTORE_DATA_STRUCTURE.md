@@ -21,9 +21,10 @@ This document explains how the Sang Event CRM database works today, which collec
 5. Every program-scoped document must carry both `orgId` and `programId`.
 6. Every event-scoped document must carry `orgId`, `programId`, and `eventId`.
 7. Events are stored top-level in `peEvents`, but an event is never valid without a program. Cloud Functions must enforce this.
-8. Secure QR tokens must never be stored raw, except where the current UI temporarily shows a payload. Passes and join links store `tokenHash`.
+8. Secure QR tokens must never be stored raw, except where the current UI temporarily shows a payload. Passes store `tokenHash`.
 9. Prefer Cloud Functions for writes that issue credentials, create passes, create scan sessions, perform check-ins, update protected state, or write audit logs.
-10. Before adding a field, decide whether it belongs to organization, program, event, person, pass, schedule, entry, analytics, or audit.
+10. Store operational dates/times as Firestore `Timestamp`, not strings. UI may use `YYYY-MM-DD` or `datetime-local` strings only as form input values before Cloud Functions convert them.
+11. Before adding a field, decide whether it belongs to organization, program, event, person, pass, schedule, entry, analytics, or audit.
 
 ## Current High-Level Model
 
@@ -116,7 +117,7 @@ Rules:
 
 - Read: active organization member.
 - Create: authenticated owner.
-- Update: member with `team.write`.
+- Update: organization-scoped member with `team.write`.
 - Delete: not allowed.
 
 Important behavior:
@@ -136,7 +137,8 @@ Purpose: role definitions and permission sets for an organization.
 
 Document id:
 
-- Default ids: `owner`, `event-lead`, `gate-staff`, `analyst`
+- Default team role ids: `program-coordinator`, `event-coordinator`, `owner`, `gate-executive`
+- Default audience role ids: `visitor`, `participants`, `delegates`, `speakers`, `media`, `mentor`, `patrons`
 - Custom role ids are created by role editor.
 
 Main fields:
@@ -146,8 +148,10 @@ Main fields:
   orgId: string,
   name: string,
   description: string,
+  category: "team" | "audience",
   permissions: string[],
   isDefault: boolean,
+  status: "active" | "deleted",
   createdAt: Timestamp,
   updatedAt: Timestamp
 }
@@ -175,11 +179,19 @@ Created/updated by:
 
 - `createOrganization` creates default roles.
 - `createRole` creates/updates custom roles.
+- `deleteRole` tombstones roles with `status: deleted`; it does not hard-delete docs.
 
 Rules:
 
 - Read: active member.
-- Create/update/delete: `roles.write`.
+- Create/update: organization-scoped `roles.write`.
+- Hard delete: false from client.
+
+Important behavior:
+
+- Team roles cannot be deleted while assigned to active/invited team members.
+- Audience roles are removable, including default audience roles. Delete removes the role from event allow-lists.
+- Deleted roles are filtered out in the UI.
 
 Before changing:
 
@@ -207,7 +219,9 @@ Main fields:
   scope: "organization" | "program" | "event",
   programId?: string,
   eventId?: string,
-  status: "active" | "invited" | "claimed",
+  programPersonId?: string,
+  peopleProgramId?: string,
+  status: "active" | "invited" | "disabled" | "deleted" | "claimed",
   uid?: string,
   claimedUid?: string,
   claimedFromTeamMemberId?: string,
@@ -220,25 +234,33 @@ Created/updated by:
 
 - `createOrganization`
 - `inviteTeamMember`
+- `updateTeamMember`
+- `deleteTeamMember` soft-deletes the member row.
 - `claimTeamAccess`
 
 Rules:
 
-- Read: active member of same org, or the user reading their own row by `uid`.
-- Create/update: `team.write`.
-- Delete: not allowed.
+- Read: organization-scoped member with `team.write`, or the user reading their own row by `uid`.
+- Create/update: organization-scoped `team.write`.
+- Hard delete: not allowed.
 
 Important behavior:
 
 - Permission checks in Cloud Functions query `peTeamMembers` where `orgId`, `uid`, and `status == active`.
 - Then function reads `peOrganizations/{orgId}/roles/{roleId}`.
+- Every sensitive function now checks both permission key and member scope.
+- Organization scope can access the whole org.
+- Program scope can access only its assigned `programId`.
+- Event scope can access only its assigned `programId + eventId`.
 - Invites are email-first. When user logs in with the invited email, `claimTeamAccess` makes an active member row.
+- New CRM team invites should be linked to a People record using `programPersonId`.
+- Team-linked People records keep their original `programRoleId` and are marked with `isTeamMember` / `teamMemberIds` for CRM linkage.
 
 Before changing:
 
 - Be careful with duplicate active rows for same `orgId + uid`.
 - If adding phone-based access, normalize phone and add equivalent claim flow.
-- Scope exists but currently permission enforcement is mostly org-level; future work should enforce scope for program/event-specific access.
+- Keep backend, frontend queries, and Firestore rules aligned whenever changing scope behavior.
 
 ### `pePrograms/{programId}`
 
@@ -255,9 +277,10 @@ Main fields:
   orgId: string,
   name: string,
   mode: "standalone" | "multiEvent",
+  tagline: string,
   programType: string,
-  startDate: string,
-  endDate: string,
+  startDate: Timestamp,
+  endDate: Timestamp,
   venueName: string,
   city: string,
   logoUrl: string,
@@ -266,12 +289,19 @@ Main fields:
   latitude?: number,
   longitude?: number,
   address: string,
+  directionsNote: string,
   timezone: string,
   description: string,
+  schedule: unknown[],
+  infoSections: unknown[],
+  fieldDefinitions: unknown[],
   entryScope: "program" | "event" | "both",
   competitive: boolean,
   resultsEnabled: boolean,
-  joinQrEnabled: boolean,
+  peopleDirectoryRoles?: Array<{ key: string, label: string, count: number }>,
+  eventsLastPublishedAt?: Timestamp,
+  peopleLastPublishedAt?: Timestamp,
+  scheduleLastPublishedAt?: Timestamp,
   status: "draft" | "live" | "archived",
   archivedAt?: Timestamp,
   createdAt: Timestamp,
@@ -302,95 +332,28 @@ Created/updated by:
 
 Rules:
 
-- Read: active member.
-- Create/update: `program.write`.
+- Read: member with a workspace read-capable permission (`program.read`, `program.write`, `event.write`, `team.write`, `people.import`, `passes.issue`, `checkin.scan`, or `analytics.read`) within organization/program/event scope. Event-scoped users can read the parent program for context.
+- Create: organization-scoped `program.write`.
+- Update/archive: `program.write` with organization or matching program scope.
 - Delete: not allowed.
 
 Important behavior:
 
 - Dashboard is selected-program based.
+- CRM data queries are scope-aware; scoped users should never load unrelated programs.
 - `mode == standalone` means the program itself can behave like the primary event.
 - `mode == multiEvent` means program contains multiple child events in `peEvents`.
 - `entryScope` controls whether entry pass should work at program gate, event gate, or both.
 - `competitive/resultsEnabled` are program-level controls; event-level result flag is relevant only if program supports competition/results.
+- `schedule`, `infoSections`, and `fieldDefinitions` are lightweight program-level content/config placeholders stored directly on `pePrograms`.
+- Detailed CRM schedule editing source lives in `peEventScheduleDashboard`; Sang mobile/audience reads the manually published `peProgramSchedule/{programId}` index and `peProgramSchedulePages/{pageId}` rows.
+- Saved venue suggestions for one program live in `peProgramVenues/{programId}`. Audience-facing location data is copied into program/event/schedule docs where needed.
+- `peopleDirectoryRoles` is refreshed by `publishProgramPeopleAccess` for mobile filtering and directory chips.
 
 Before changing:
 
 - Do not nest events under program unless you migrate all queries/rules/functions. Current decision is top-level `peEvents` with required `programId`.
 - Do not hard-delete programs unless you design cascade/archive behavior for events, people, passes, check-ins, schedules, analytics, and audit logs.
-
-### `peProgramContent/{programId}`
-
-Purpose: flexible program content shell for schedule/info/form sections.
-
-Document id:
-
-- Same as `programId`
-
-Main fields:
-
-```ts
-{
-  orgId: string,
-  programId: string,
-  schedule: unknown[],
-  infoSections: unknown[],
-  fieldDefinitions: unknown[],
-  createdAt: Timestamp,
-  updatedAt: Timestamp
-}
-```
-
-Created by:
-
-- `createProgram`
-
-Rules:
-
-- Read: active member.
-- Create/update: `program.write`.
-- Delete: not allowed.
-
-Important behavior:
-
-- Current detailed event schedule moved to `peEventScheduleItems`.
-- Treat this as lightweight program content/config only.
-
-Before changing:
-
-- Do not store huge schedules here.
-- For detailed schedule items, use `peEventScheduleItems`.
-
-### `peProgramContentSections/{sectionId}`
-
-Purpose: planned/partial support for independently editable content sections.
-
-Main fields should include:
-
-```ts
-{
-  orgId: string,
-  programId: string,
-  sectionType: string,
-  title: string,
-  content: unknown,
-  sortOrder: number,
-  visibility: string,
-  createdAt: Timestamp,
-  updatedAt: Timestamp
-}
-```
-
-Rules exist:
-
-- Read: active member.
-- Create/update: `program.write`.
-- Delete: not allowed.
-
-Implementation status:
-
-- Rules exist.
-- Current main UI does not heavily use this yet.
 
 ### `peEvents/{eventId}`
 
@@ -408,11 +371,13 @@ Main fields:
   programId: string,
   name: string,
   eventType: string,
-  startDateTime: string,
-  endDateTime: string,
+  description: string,
+  startDateTime: Timestamp | null,
+  endDateTime: Timestamp | null,
   multiDate: boolean,
   venueName: string,
   locationNote: string,
+  directionsNote: string,
   posterUrl: string,
   latitude?: number,
   longitude?: number,
@@ -420,9 +385,25 @@ Main fields:
   entryScope: "program" | "event" | "both",
   competitive: boolean,
   resultsEnabled: boolean,
+  profiles: Array<{
+    id: string,
+    programPersonId?: string,
+    teamMemberId?: string,
+    source?: "people" | "team" | "manual",
+    name: string,
+    role: string,
+    organization?: string,
+    designation?: string,
+    email?: string,
+    phone?: string,
+    bio?: string,
+    photoUrl?: string
+  }>,
+  allowedAudienceRoleIds: string[],
+  allowedAudienceRoleNames: string[],
   scheduleItemCount: number,
   nextScheduleTitle: string,
-  nextScheduleAt: string,
+  nextScheduleAt: Timestamp | null,
   status: "draft" | "live" | "completed",
   createdAt: Timestamp,
   updatedAt: Timestamp
@@ -453,23 +434,27 @@ Created/updated by:
 
 Rules:
 
-- Read: active member.
-- Create/update: `event.write`.
+- Read: member with a workspace read-capable permission within organization/program/event scope.
+- Create: `event.write` with organization or matching program scope.
+- Update: `event.write` with organization, matching program, or matching event scope.
 - Delete: client delete not allowed; function handles delete.
 
 Important behavior:
 
 - `createEvent` validates that `programId` exists and belongs to `orgId`.
 - `updateEvent` validates that event belongs to program and org.
+- Event-scoped members can load/edit only their assigned event when their role has `event.write`.
 - Schedule summary fields are stored here for fast event list/card rendering.
-- Detailed schedule lives in `peEventScheduleItems`.
+- Detailed CRM schedule lives in `peEventScheduleDashboard`; audience/mobile schedule is published manually into `peProgramSchedule/{programId}` plus `peProgramSchedulePages/{pageId}`.
+- Event profiles should reference `peProgramPeople` with `programPersonId`; adding a speaker/guest from the event screen creates or updates the People record first.
+- `allowedAudienceRoleIds` controls scanner entry for event-level gates. Profile roles add suggested allowed role ids, but organizer should verify this list before publishing.
 
 Before changing:
 
 - If delete behavior is changed, consider soft-delete instead of hard-delete because schedule items, people assignments, check-ins, and analytics can point to event ids.
-- If adding multi-day schedule, keep item-level times in `peEventScheduleItems`.
+- If adding multi-day schedule, keep item-level times in `peEventScheduleDashboard` and rebuild the audience snapshot only when organizer clicks "Publish schedule".
 
-### `peEventScheduleItems/{scheduleItemId}`
+### `peEventScheduleDashboard/{scheduleItemId}`
 
 Purpose: detailed source of truth for event schedule items: rounds, sessions, check-in slots, breaks, result announcements, etc.
 
@@ -487,9 +472,11 @@ Main fields:
   title: string,
   type: "session" | "round" | "break" | "checkin" | "performance" | "result" | "ceremony" | "custom",
   description: string,
-  startsAt: string,
-  endsAt: string,
+  startsAt: Timestamp,
+  endsAt: Timestamp | null,
   timezone: string,
+  venueId: string,
+  roomId: string,
   venueName: string,
   roomName: string,
   latitude?: number,
@@ -510,24 +497,189 @@ Created/updated by:
 
 Rules:
 
-- Read: active member.
+- Read: member with a workspace read-capable permission within organization/program/event scope.
 - Write: false from client. Use Cloud Functions.
 
 Important behavior:
 
-- On create with `eventId`, function increments `peEvents/{eventId}.scheduleItemCount`.
-- It also updates `nextScheduleTitle` and `nextScheduleAt`.
-- This avoids large arrays inside event docs and keeps read costs controllable.
+- On create/update/delete, the CRM source is updated only. It does not auto-publish to mobile.
+- Organizer must click "Publish schedule" to rebuild the mobile snapshot.
+- When organizer enters/selects a venue and optional room/hall, the function upserts that venue into `peProgramVenues/{programId}` for reuse.
+- CRM keeps schedule as separate documents so organizer edits, permissions, future audit trails, and large agendas stay manageable.
+- Audience/mobile reads the published snapshot instead of reading many CRM schedule documents.
 
 Before changing:
 
-- Recalculate `nextScheduleTitle/nextScheduleAt` correctly after schedule update/delete. Current create path updates summary; robust recomputation is still a next task.
 - Add assigned staff if schedule item ownership is required.
 - Add reorder logic carefully; do not overwrite unrelated items.
 
-### `peProgramJoinLinks/{joinLinkId}`
+### `peProgramSchedule/{programId}`
 
-Purpose: secure program Scan-to-Join QR links for Sang mobile users.
+Purpose: lightweight mobile schedule index for one program.
+
+Document id:
+
+- Same as `pePrograms/{programId}`
+
+Main fields:
+
+```ts
+{
+  orgId: string,
+  programId: string,
+  mode: "empty" | "paged",
+  pageSize: number,
+  itemCount: number,
+  version: number,
+  pages: Array<{
+    pageId: string,
+    pageNo: number,
+    itemCount: number,
+    dateKeys: string[]
+  }>,
+  days: Array<{
+    dateKey: string,
+    dateLabel: string,
+    itemCount: number,
+    pageIds: string[]
+  }>,
+  updatedAt: Timestamp
+}
+```
+
+Created/updated by:
+
+- `publishProgramSchedule`
+
+Rules:
+
+- Read: CRM member with workspace read permission and matching organization/program scope.
+- Write: false from client. Use Cloud Functions only.
+
+Important behavior:
+
+- This document stores schedule metadata and page pointers only.
+- Actual mobile schedule rows live in `peProgramSchedulePages`.
+- `items` is intentionally removed during publish to avoid duplicating the same schedule rows in two collections.
+- Mobile should normally call `getMyProgramSchedule`, which verifies `users/{uid}/eventAccess/{programId}` and returns only rows allowed for that user.
+
+### `peProgramSchedulePages/{pageId}`
+
+Purpose: paged mobile schedule item storage for one program.
+
+Document id:
+
+- `${programId}_p001`, `${programId}_p002`, etc.
+
+Main fields:
+
+```ts
+{
+  orgId: string,
+  programId: string,
+  pageNo: number,
+  itemCount: number,
+  dateKeys: string[],
+  items: Array<{
+    id: string,
+    eventId: string,
+    title: string,
+    type: string,
+    customTypeLabel: string,
+    description: string,
+    startsAt: Timestamp,
+    endsAt: Timestamp | null,
+    timezone: string,
+    venueId: string,
+    roomId: string,
+    venueName: string,
+    roomName: string,
+    latitude?: number,
+    longitude?: number,
+    visibility: "public" | "participantsOnly" | "rolesOnly",
+    allowedRoleIds: string[],
+    allowedRoleNames: string[],
+    status: string,
+    sortOrder: number,
+    workshops?: Array<object>
+  }>,
+  updatedAt: Timestamp
+}
+```
+
+Created/updated by:
+
+- `publishProgramSchedule`
+
+Rules:
+
+- Read: CRM member with workspace read permission and matching organization/program scope.
+- Write: false from client. Use Cloud Functions only.
+
+Important behavior:
+
+- `draft`, `cancelled`, and `staffOnly` schedule items are excluded before publishing.
+- Child rows with `parentScheduleItemId` are nested under the parent row as `workshops`.
+- Role-based rows remain in the page but `getMyProgramSchedule` filters them against the user's program/event role.
+- Manual publish keeps organizer control: five draft edits do not create five mobile snapshot versions.
+
+### `peProgramVenues/{programId}`
+
+Purpose: CRM-only saved venue catalog for one program, including rooms/halls/zones under the same physical location.
+
+Document id:
+
+- Same as `pePrograms/{programId}`
+
+Main fields:
+
+```ts
+{
+  orgId: string,
+  programId: string,
+  venues: Array<{
+    id: string,
+    name: string,
+    address?: string,
+    directionsNote?: string,
+    latitude?: number,
+    longitude?: number,
+    rooms: Array<{
+      id: string,
+      name: string,
+      floor?: string,
+      capacity?: number,
+      createdAt?: Timestamp,
+      updatedAt?: Timestamp,
+      lastUsedAt?: Timestamp
+    }>,
+    createdAt?: Timestamp,
+    updatedAt?: Timestamp,
+    lastUsedAt?: Timestamp
+  }>,
+  updatedAt: Timestamp
+}
+```
+
+Created/updated by:
+
+- `createScheduleItem`
+- `updateScheduleItem`
+
+Rules:
+
+- Read: CRM member with workspace read permission and matching organization/program scope.
+- Write: false from client. Use Cloud Functions only.
+
+Important behavior:
+
+- This is a CRM convenience catalog, not the audience source of truth.
+- If the same auditorium has multiple rooms/halls, store them under one venue instead of creating many duplicate venue entries.
+- Event/program/schedule documents still store display venue/room names and coordinates so audience screens can render without joining to this catalog.
+
+### `peProgramPartners/{partnerId}`
+
+Purpose: attendee-facing patrons, sponsors, exhibitors, media/community partners, and program partners.
 
 Document id:
 
@@ -539,46 +691,35 @@ Main fields:
 {
   orgId: string,
   programId: string,
-  mode: "direct_join" | "request_approval" | "invite_only",
-  allowedCategory: "attendee" | "participant" | "speaker" | "staff" | "custom",
-  allowedEventIds: string[],
-  maxUses: number,
-  expiresAt: string,
-  campaignName: string,
-  tokenHash: string,
-  usedCount: number,
-  status: "active" | "revoked" | "expired",
-  qrPayload: string, // current payload: SANGPROGRAM1:{token}
-  createdBy: string,
+  name: string,
+  tier: string,
+  category: string,
+  booth: string,
+  description: string,
+  websiteUrl: string,
+  logoUrl: string,
+  sortOrder: number,
+  status: "active" | "hidden",
   createdAt: Timestamp,
   updatedAt: Timestamp
 }
 ```
 
-Created by:
+Created/updated by:
 
-- `createProgramJoinLink`
+- `saveProgramPartner`
+- `deleteProgramPartner` hard-deletes a partner record.
 
 Rules:
 
-- Read: active member.
-- Write: false from client. Use Cloud Functions.
+- Read: CRM member with workspace read permission and matching organization/program scope, or Sang mobile user with access to the same program.
+- Write: false from client. Use Cloud Functions only.
 
 Important behavior:
 
-- Raw token is generated in function.
-- `tokenHash` is stored for lookup.
-- QR payload is returned to UI and currently stored as `qrPayload`.
-
-Security note:
-
-- Long-term best practice: do not store raw `qrPayload` if it contains raw token. Store only hash and display QR from create response, or encrypt/store securely if organizer needs regeneration.
-
-Before changing:
-
-- Implement `joinProgramByQr` before Sang app uses QR in production.
-- It must validate token hash, status, expiry, max uses, duplicate joins, join mode, allowed category, and allowed events.
-- It must update or create `peProgramPeople` safely.
+- The CRM Patrons tab manages this collection.
+- The Sang mobile Patrons tab queries `peProgramPartners where programId == selectedProgramId` and hides `status == hidden`.
+- Store sponsors as separate docs, not as a large array inside `pePrograms`.
 
 ### `peProgramPeople/{programPersonId}`
 
@@ -597,28 +738,55 @@ Main fields currently written:
   fullName: string,
   email: string,
   phone: string,
-  kind: "attendee" | "participant" | "speaker" | "staff",
+  normalizedEmail: string,
+  normalizedPhone: string,
+  kind: string,
+  programRoleId: string,
+  programRoleName: string,
+  isTeamMember?: boolean,
+  teamMemberIds?: string[],
   company: string,
+  organization: string,
   designation: string,
+  eventAccessIds: string[],
+  eventAccess: Record<eventId, {
+    eventId: string,
+    eventNameSnapshot: string,
+    eventTypeSnapshot: string,
+    eventDescription: string,
+    eventPosterUrl: string,
+    eventVenueName: string,
+    eventLocationNote: string,
+    eventDirectionsNote: string,
+    eventAddress: string,
+    eventStartDateTime: Timestamp | null,
+    eventEndDateTime: Timestamp | null,
+    roleId: string,
+    roleName: string,
+    status: "allowed" | "registered" | "blocked" | "cancelled" | "rejected" | "revoked"
+  }>,
+  eventAccessList: Array<object>,
+  eventRoleKeys: string[],
   passId: string,
   passStatus: "issued" | "checkedIn",
-  createdAt: Timestamp,
-  updatedAt: Timestamp
-}
-```
-
-Recommended linking fields for next implementation:
-
-```ts
-{
-  normalizedEmail?: string,
-  normalizedPhone?: string,
   sangUserId?: string,
-  linkStatus?: "linked" | "pending" | "conflict" | "manual_review",
-  linkMethod?: "email" | "phone" | "manual" | "qr_join",
+  sangUid?: string,
+  linkStatus?: "linked" | "pending" | "manual_review",
+  linkMethod?: "verified_email" | "verified_phone" | "manual",
   linkedAt?: Timestamp,
   linkConflictReason?: string,
-  source?: "manual" | "csv_import" | "program_join_qr" | "api"
+  sangAppStatus?: "linked" | "not_found" | "missing_identity" | "manual_review",
+  sangAppLinked?: boolean,
+  sangAppUserId?: string,
+  sangAppMatchMethod?: "verified_email" | "verified_phone" | "manual" | "",
+  sangAppConflictReason?: string,
+  sangAppCheckedAt?: Timestamp,
+  accessPublishedAt?: Timestamp,
+  accessLastPublishedAt?: Timestamp,
+  accessLastPublishedBy?: string,
+  source?: "manual" | "csv_import" | "api",
+  createdAt: Timestamp,
+  updatedAt: Timestamp
 }
 ```
 
@@ -627,20 +795,26 @@ Created/updated by:
 - `createProgramPersonAndPass`
 - `issuePassForProgramPerson`
 - CSV import UI loops through rows and calls create flow.
+- `publishProgramPeopleAccess` links verified Sang users and writes mobile mirrors.
 - `scanPassToken` updates `passStatus` to `checkedIn`.
 
 Rules:
 
-- Read: active member.
-- Create: `people.import`.
-- Update: `people.import` or `passes.issue`.
-- Delete: not allowed.
+- Read: member with `people.import`, `passes.issue`, or `analytics.read` within organization/program/event assignment scope.
+- Write: false from client. Use Cloud Functions for create/update.
 
 Important behavior:
 
 - Every uploaded attendee/participant should have a row here, whether they are Sang users or not.
 - If a person is already a Sang user, link using `sangUserId`; do not skip CRM record.
-- If person is not a Sang user yet, keep row pending and link later when they sign up or scan/join.
+- If person is not a Sang user yet, keep row pending and link later when they sign up or the organizer publishes again.
+- `linkStatus` is the backend workflow status; `sangAppStatus` is the organizer-friendly match status shown in CRM.
+- `sangAppStatus == not_found` means email/phone was present but no verified Sang user matched at the time of check.
+- `sangAppStatus == missing_identity` means the row cannot be matched because email/phone is missing.
+- `eventAccessIds` is required for event-scoped reads and event gate access.
+- One person row stores all event access for that program. Do not create per-event subcollections for normal attendee/event access.
+- Event/program public profiles and CRM team members should select/create a People record first, then reference that person by `programPersonId`.
+- A person's base `programRoleId` should not be overwritten just because they are shown as a speaker/mentor/organizer somewhere. Use event-level `eventAccess.{eventId}.roleId` and the event's public `profiles[]` list for those extra responsibilities.
 
 Before changing:
 
@@ -648,26 +822,15 @@ Before changing:
 - Add dedupe rules before bulk import: likely unique key `programId + normalizedEmail` or `programId + normalizedPhone`.
 - Add import status/errors instead of silently failing row uploads.
 
-### `peProgramPeople/{programPersonId}/events/{eventId}`
+### Legacy: `peProgramPeople/{programPersonId}/events/{eventId}`
 
-Purpose: event-level assignment for a program person.
+Purpose: older event-level assignment idea.
 
-Document id:
+Current status:
 
-- `eventId`
-
-Main fields:
-
-```ts
-{
-  orgId: string,
-  programId: string,
-  eventId: string,
-  status: "registered" | "checked_in" | "waiting" | "next" | "presenting" | "completed" | "absent" | "disqualified",
-  createdAt: Timestamp,
-  updatedAt: Timestamp
-}
-```
+- Do not use for new people/event access.
+- Current implementation stores event access directly on `peProgramPeople/{programPersonId}` as `eventAccess`, `eventAccessIds`, `eventAccessList`, and `eventRoleKeys`.
+- If old subcollection docs exist, they can be safely ignored after migration/cleanup.
 
 Created by:
 
@@ -675,9 +838,8 @@ Created by:
 
 Rules:
 
-- Read: active member.
-- Create/update: `people.import`.
-- Delete: not allowed.
+- Read: member with `people.import`, `passes.issue`, or `analytics.read` within the specific event scope.
+- Write: false from client. Use Cloud Functions.
 
 Important behavior:
 
@@ -705,11 +867,15 @@ Main fields:
   programPersonId: string,
   tokenHash: string,
   qrPayload: string, // SANGPASS1:{token}
+  passCode: string, // 8-digit display/support code, not used for scan validation
   status: "issued" | "checkedIn" | "revoked",
   delivery: {
     channel: "manual" | "email" | "sms" | "app",
     status: "notSent" | "sent" | "failed"
   },
+  qrUpdatedAt?: Timestamp,
+  qrUpdatedBy?: string,
+  qrRotationCount?: number,
   createdAt: Timestamp,
   updatedAt: Timestamp
 }
@@ -723,10 +889,11 @@ Created by:
 Updated by:
 
 - `scanPassToken`
+- `issuePassForProgramPerson` when organizer refreshes a QR. Existing pass docs are updated in place so `passId` stays stable.
 
 Rules:
 
-- Read: active member.
+- Read: member with `passes.issue` and organization/program scope. Event-scoped members should scan through Cloud Functions, not read all pass docs.
 - Write: false from client. Use Cloud Functions.
 
 Important behavior:
@@ -817,7 +984,7 @@ Created by:
 
 Rules:
 
-- Read: active member.
+- Read: member with `checkin.scan` or `analytics.read` within organization/program/event scope.
 - Write: false from client.
 
 Important behavior:
@@ -841,6 +1008,7 @@ Main fields currently written by UI:
 {
   orgId: string,
   programId: string,
+  eventIds: string[],
   fileName: string,
   rowCount: number,
   successCount: number,
@@ -853,13 +1021,14 @@ Main fields currently written by UI:
 
 Rules:
 
-- Read: active member.
-- Create: `people.import`.
+- Read: member with `people.import`, `passes.issue`, or `analytics.read` within organization/program/event import scope.
+- Create: `people.import` within organization/program/event import scope.
 - Update/delete: false.
 
 Important behavior:
 
 - Current CSV import creates records client-side after looped callable creates people/passes.
+- Import history now stores `eventIds` so event-scoped importers can write logs only for their assigned event.
 
 Before changing:
 
@@ -1063,12 +1232,87 @@ match /eventAccess/{programId} {
 
 Purpose:
 
-- Future Sang mobile app can read event/program access summary under its own user document.
+- Sang mobile app reads event/program access summary under its own user document.
+- The same document now includes `passQrPayload`, so the Sang app can render the attendee entry QR without reading `pePasses`.
 
 Current status:
 
-- Planned integration point.
-- Main CRM currently uses `peProgramPeople.sangUserId` plan, but linking is not fully implemented yet.
+- Implemented as the mobile mirror for linked attendees/participants.
+- Written by `createProgramPersonAndPass` when an imported person already matches a verified Sang user.
+- Written/refreshed by `publishProgramPeopleAccess`.
+- Written by `claimMyEventAccess` when Sang user claims matching uploaded rows after login.
+- Written/refreshed by `issuePassForProgramPerson` when a pass is issued or rotated.
+
+`claimMyEventAccess` identity sources:
+
+- Firebase Auth verified email.
+- Firebase Auth phone number.
+- `users/{uid}.verifiedEmail`.
+- `users/{uid}.verifiedPhone`.
+
+Current mirror shape:
+
+```ts
+users/{uid}/eventAccess/{programId}
+{
+  uid: string,
+  orgId: string,
+  programId: string,
+  programPersonId: string,
+  passId: string,
+  passQrPayload: 'SANGPASS1:{token}',
+  passCode: '48291370',
+  passStatus: string,
+  programName: string,
+  programType: string,
+  mode: string,
+  status: string,
+  startDate: Timestamp | null,
+  endDate: Timestamp | null,
+  timezone: string,
+  venueName: string,
+  city: string,
+  address: string,
+  latitude?: number,
+  longitude?: number,
+  logoUrl: string,
+  bannerUrl: string,
+  posterUrl: string,
+  description: string,
+  personName: string,
+  personKind: string,
+  programRoleId: string,
+  programRoleName: string,
+  linkStatus: string,
+  linkMethod: string,
+  allowedEventIds: string[],
+  eventAccess: Record<string, {
+    eventId: string,
+    eventNameSnapshot: string,
+    roleId: string,
+    roleName: string,
+    status: string
+  }>,
+  eventAccessList: Array<{
+    eventId: string,
+    eventNameSnapshot: string,
+    roleId: string,
+    roleName: string,
+    status: string
+  }>,
+  eventRoleKeys: string[],
+  eventCount: number,
+  nextScheduleTitle: string,
+  nextScheduleAt: Timestamp | null,
+  updatedAt: Timestamp
+}
+```
+
+Important:
+
+- Mobile should use this mirror as the primary Events tab source.
+- Mobile should not read `pePasses` directly.
+- Program scan-to-join is intentionally not implemented.
 
 ## Storage Structure
 
@@ -1111,13 +1355,13 @@ Before changing:
 `updateOrganization`
 
 - Updates organization profile fields.
-- Requires `team.write`.
+- Requires organization-scoped `team.write`.
 - Writes audit log.
 
 `setActiveOrganization`
 
 - Sets `peUsers/{uid}.activeOrgId`.
-- Requires `program.read` in target org.
+- Requires `program.read` in target org. Organization/program/event scope is accepted because this only switches active org.
 
 `claimTeamAccess`
 
@@ -1131,13 +1375,39 @@ Before changing:
 `createRole`
 
 - Upserts role doc under organization.
-- Requires `roles.write`.
+- Requires organization-scoped `roles.write`.
+- Team roles need at least one permission; audience roles store empty permissions.
+- Writes audit log.
+
+`deleteRole`
+
+- Tombstones the role with `status: deleted`.
+- Requires organization-scoped `roles.write`.
+- Blocks team role delete while active/invited members use it.
+- For audience roles, removes the role from event allow-lists.
 - Writes audit log.
 
 `inviteTeamMember`
 
 - Creates invited team member row.
-- Requires `team.write`.
+- Requires organization-scoped `team.write`.
+- Validates role is an active team role.
+- Validates assigned scope: organization, program, or event.
+- Writes audit log.
+
+`updateTeamMember`
+
+- Updates name, role, scope, and status.
+- Requires organization-scoped `team.write`.
+- Blocks owner downgrade, self-disable, and moving claimed members back to invited.
+- Writes audit log.
+
+`deleteTeamMember`
+
+- Soft-deletes the team member by setting `status: deleted`.
+- Requires organization-scoped `team.write`.
+- Blocks owner delete and self-delete.
+- Removes org from linked `peUsers.organizationIds` if the member already has a `uid`.
 - Writes audit log.
 
 ### Programs/Events
@@ -1145,105 +1415,117 @@ Before changing:
 `createProgram`
 
 - Creates `pePrograms/{programId}`.
-- Creates `peProgramContent/{programId}`.
-- Requires `program.write`.
+- Initializes program-level content placeholders on `pePrograms/{programId}`: `schedule`, `infoSections`, `fieldDefinitions`.
+- Requires organization-scoped `program.write`.
 - Writes audit log.
 
 `updateProgram`
 
 - Updates selected program.
 - Validates program belongs to org.
-- Requires `program.write`.
+- Requires `program.write` with organization or matching program scope.
 - Writes audit log.
 
 `deleteProgram`
 
 - Soft-archives program by setting `status: archived`.
-- Requires `program.write`.
+- Requires `program.write` with organization or matching program scope.
 - Writes audit log.
 
 `createEvent`
 
 - Creates `peEvents/{eventId}`.
 - Validates parent program.
-- Requires `event.write`.
+- Requires `event.write` with organization or matching program scope.
 - Writes audit log.
 
 `updateEvent`
 
 - Updates event.
 - Validates event belongs to org and program.
-- Requires `event.write`.
+- Requires `event.write` with organization, matching program, or matching event scope.
 - Writes audit log.
 
 `deleteEvent`
 
 - Hard-deletes event doc currently.
-- Requires `event.write`.
+- Requires `event.write` with organization, matching program, or matching event scope.
 - Writes audit log.
 
 ### Schedule
 
 `createScheduleItem`
 
-- Creates `peEventScheduleItems/{scheduleItemId}`.
+- Creates `peEventScheduleDashboard/{scheduleItemId}`.
 - Validates program and optional event.
-- Requires `event.write`.
-- Updates event schedule summary if `eventId` exists.
+- Requires `event.write` with organization, matching program, or matching event scope.
+- Upserts selected/typed venue and room into `peProgramVenues/{programId}`.
+- Does not publish to mobile automatically.
 - Writes audit log.
 
 `updateScheduleItem`
 
 - Updates schedule item.
-- Requires `event.write`.
+- Requires `event.write` with organization, matching program, or matching event scope.
+- Upserts selected/typed venue and room into `peProgramVenues/{programId}`.
+- Does not publish to mobile automatically.
 - Writes audit log.
 
 `deleteScheduleItem`
 
 - Deletes schedule item.
-- Requires `event.write`.
+- Requires `event.write` with organization, matching program, or matching event scope.
+- Does not publish to mobile automatically.
 - Writes audit log.
 
-### Program Join QR
+`publishProgramSchedule`
 
-`createProgramJoinLink`
-
-- Creates `peProgramJoinLinks/{joinLinkId}`.
-- Stores `tokenHash`.
-- Returns `qrPayload: SANGPROGRAM1:{token}`.
-- Requires `program.write`.
+- Reads `peEventScheduleDashboard` for the selected program.
+- Excludes draft, cancelled, and staff-only rows.
+- Nests child rows under their parent schedule item as `workshops`.
+- Writes metadata to `peProgramSchedule/{programId}`.
+- Writes actual schedule rows to `peProgramSchedulePages/{pageId}`.
+- Deletes the old `items` field from `peProgramSchedule/{programId}` to avoid duplicate storage.
+- Requires `event.write` with organization or matching program scope.
 - Writes audit log.
-
-Pending:
-
-- `joinProgramByQr`
-- approval queue
-- revoke/edit join links
-- join analytics
 
 ### People/Passes/Check-In
 
 `createProgramPersonAndPass`
 
 - Creates `peProgramPeople/{programPersonId}`.
-- Creates event assignment subdocs.
+- Stores all event access on the person document using `eventAccess`, `eventAccessIds`, `eventAccessList`, and `eventRoleKeys`.
 - Creates `pePasses/{passId}`.
 - Returns `qrPayload: SANGPASS1:{token}`.
-- Requires both `people.import` and `passes.issue`.
+- Requires both `people.import` and `passes.issue` with organization, matching program, or matching event scope.
+- Writes audit log.
+
+`publishProgramPeopleAccess`
+
+- Organizer action from People roster.
+- Requires `people.import` for the selected program.
+- Reads all `peProgramPeople` for the program.
+- Matches verified Sang users by `users.verifiedEmail` and `users.verifiedPhone`.
+- Updates `peProgramPeople.sangUserId/sangUid/linkStatus/linkMethod`.
+- Ensures every linked person has an issued pass.
+- Writes/refreshes `users/{uid}/eventAccess/{programId}`.
+- Refreshes `pePrograms.peopleDirectoryRoles` for app filters.
+- Sends best-effort FCM notification through top-level `devices` tokens.
 - Writes audit log.
 
 `issuePassForProgramPerson`
 
-- Creates new pass for an existing program person.
-- Updates person `passId/passStatus`.
-- Requires `passes.issue`.
+- Creates a pass if the person does not have one.
+- If the person already has `passId`, updates the same `pePasses/{passId}` with a new token hash, QR payload, pass code, `qrUpdatedAt`, `qrUpdatedBy`, and `qrRotationCount`.
+- Keeps `passId` stable so `peProgramPeople` and `users/{uid}/eventAccess/{programId}` do not need a pass id replacement.
+- Requires `passes.issue` with organization, matching program, or matching event scope.
 - Writes audit log.
 
 `createScannerSession`
 
 - Creates `peScannerSessions/{scannerSessionId}`.
 - Returns raw scanner token once.
-- Requires `checkin.scan`.
+- Requires `checkin.scan` with organization, matching program, or matching event scope.
 
 `scanPassToken`
 
@@ -1262,12 +1544,24 @@ Current CRM index definitions:
 peTeamMembers: orgId ASC, uid ASC, status ASC
 peTeamMembers: email ASC, status ASC
 pePrograms: orgId ASC, startDate ASC
+peEvents: orgId ASC, programId ASC
 peEvents: programId ASC, startDateTime ASC
-peEventScheduleItems: programId ASC, startsAt ASC
-peProgramJoinLinks: programId ASC, status ASC
+peEventScheduleDashboard: orgId ASC, programId ASC
+peEventScheduleDashboard: orgId ASC, eventId ASC
+peEventScheduleDashboard: programId ASC, startsAt ASC
+peProgramVenues: orgId ASC, programId ASC
+peProgramPartners: orgId ASC, programId ASC
+peProgramPartners: programId ASC, sortOrder ASC
+peProgramPeople: orgId ASC, programId ASC
+peProgramPeople: orgId ASC, eventAccessIds ARRAY_CONTAINS
 peProgramPeople: programId ASC, kind ASC
+peProgramPeople: programId ASC, normalizedEmail ASC
+peProgramPeople: programId ASC, normalizedPhone ASC
 peProgramPeople: orgId ASC, email ASC
+pePasses: orgId ASC, programId ASC
 pePasses: tokenHash ASC, status ASC
+peCheckIns: orgId ASC, programId ASC
+peCheckIns: orgId ASC, eventId ASC
 peCheckIns: programId ASC, createdAt DESC
 peScannerSessions: scannerUid ASC, status ASC, expiresAt ASC
 peExports: orgId ASC, createdAt DESC
@@ -1281,24 +1575,56 @@ Before adding queries:
 
 ## Firestore Read Model In Frontend
 
-`useCrmData` currently listens by active `orgId`:
+`CrmApp` first resolves active CRM access:
 
 ```ts
 peOrganizations/{orgId}
+peOrganizations/{orgId}/roles
+peTeamMembers where orgId == activeOrgId && uid == auth.uid && status == active
+```
+
+Then it chooses permission-aware and scope-aware queries:
+
+```txt
+Organization scope:
 pePrograms where orgId == activeOrgId
 peEvents where orgId == activeOrgId
-peEventScheduleItems where orgId == activeOrgId
-peProgramJoinLinks where orgId == activeOrgId
+peEventScheduleDashboard where orgId == activeOrgId
+peProgramVenues where orgId == activeOrgId
+peProgramPartners where orgId == activeOrgId
 peProgramPeople where orgId == activeOrgId
 pePasses where orgId == activeOrgId
 peCheckIns where orgId == activeOrgId
-peTeamMembers where orgId == activeOrgId
-peOrganizations/{orgId}/roles
+peTeamMembers where orgId == activeOrgId, only when role can manage team
+
+Program scope:
+pePrograms where orgId == activeOrgId && documentId == member.programId
+peEvents where orgId == activeOrgId && programId == member.programId
+peEventScheduleDashboard where orgId == activeOrgId && programId == member.programId
+peProgramVenues where orgId == activeOrgId && documentId == member.programId
+peProgramPartners where orgId == activeOrgId && programId == member.programId
+peProgramPeople where orgId == activeOrgId && programId == member.programId
+pePasses where orgId == activeOrgId && programId == member.programId
+peCheckIns where orgId == activeOrgId && programId == member.programId
+
+Event scope:
+pePrograms where orgId == activeOrgId && documentId == member.programId
+peEvents where orgId == activeOrgId && documentId == member.eventId
+peEventScheduleDashboard where orgId == activeOrgId && eventId == member.eventId
+peProgramVenues where orgId == activeOrgId && documentId == member.programId
+peProgramPeople where orgId == activeOrgId && eventAccessIds array-contains member.eventId
+peCheckIns where orgId == activeOrgId && eventId == member.eventId
+no direct pePasses/team list query
 ```
 
 Important:
 
 - This is simple and good for MVP.
+- Workspace catalog queries run for roles with `program.read`, `program.write`, `event.write`, `team.write`, `people.import`, `passes.issue`, `checkin.scan`, or `analytics.read`.
+- People queries run only for roles with `people.import`, `passes.issue`, or `analytics.read`.
+- Pass queries run only for roles with `passes.issue`.
+- Check-in queries run only for roles with `checkin.scan` or `analytics.read`.
+- Firestore rules are not filters. Any new frontend query must include enough `where` clauses to match the scoped rule.
 - For very large events, move to route-level lazy queries:
   - Dashboard: summaries only.
   - Events route: selected program events.
@@ -1327,7 +1653,7 @@ Important:
 2. UI uploads images to Storage and receives download URLs.
 3. `createProgram` creates:
    - `pePrograms/{programId}`
-   - `peProgramContent/{programId}`
+   - starter fields on the program document: `schedule`, `infoSections`, `fieldDefinitions`
    - audit log
 4. Program appears in chooser/dashboard.
 
@@ -1341,9 +1667,12 @@ Important:
 ### Organizer Adds Schedule
 
 1. User opens event detail.
-2. User creates schedule item.
-3. `createScheduleItem` creates `peEventScheduleItems/{scheduleItemId}`.
-4. Function updates event summary fields.
+2. User creates schedule item and selects an existing venue/room or types a new one.
+3. `createScheduleItem` creates `peEventScheduleDashboard/{scheduleItemId}`.
+4. Function upserts reusable venue/room data in `peProgramVenues/{programId}`.
+5. Organizer can keep adding/editing/deleting rows without affecting the Sang mobile schedule.
+6. Organizer clicks "Publish schedule".
+7. `publishProgramSchedule` rebuilds `peProgramSchedule/{programId}` and `peProgramSchedulePages/{pageId}` for Sang mobile/audience reads.
 
 ### Organizer Imports People
 
@@ -1352,9 +1681,11 @@ Important:
 3. For each row, UI calls `createProgramPersonAndPass`.
 4. Function creates:
    - `peProgramPeople/{programPersonId}`
-   - event assignment subdocs if event ids provided
+   - event access fields directly on the person document
    - `pePasses/{passId}`
 5. UI creates `peImports/{importId}` with import summary.
+6. Organizer clicks Publish to Sang.
+7. `publishProgramPeopleAccess` links matching verified Sang users, writes `users/{uid}/eventAccess/{programId}`, and sends notifications where possible.
 
 ### Gate Check-In
 
@@ -1365,23 +1696,6 @@ Important:
 5. Function hashes token and finds pass by `tokenHash`.
 6. Function creates `peCheckIns/{checkInId}`.
 7. If first valid scan, pass/person become checked in.
-
-### Program Join QR
-
-Current implemented:
-
-1. Organizer opens Settings.
-2. Organizer creates program join QR.
-3. `createProgramJoinLink` creates `peProgramJoinLinks/{joinLinkId}`.
-4. UI displays `SANGPROGRAM1:{token}` QR.
-
-Pending:
-
-1. Sang mobile scans QR.
-2. App calls `joinProgramByQr`.
-3. Function validates token/status/expiry/limits/mode.
-4. Function creates or updates `peProgramPeople`.
-5. If request mode, organizer approval queue handles approval/rejection.
 
 ## Planned Collections Not Implemented Yet
 
@@ -1428,66 +1742,6 @@ Required work:
 - Notify-next action to Sang users.
 - Timeline events.
 - Result management.
-
-### `peProgramPartners/{partnerId}`
-
-Purpose: patrons, sponsors, exhibitors, media partners, institutional partners.
-
-Recommended fields:
-
-```ts
-{
-  orgId: string,
-  programId: string,
-  type: "patron" | "sponsor" | "exhibitor" | "media_partner" | "institutional_partner" | "custom",
-  tier: string,
-  name: string,
-  logoUrl: string,
-  website: string,
-  contactPerson?: string,
-  contactEmail?: string,
-  benefits?: string[],
-  displayOrder: number,
-  visibility: "public" | "staffOnly" | "hidden",
-  status: "active" | "draft" | "archived",
-  createdAt: Timestamp,
-  updatedAt: Timestamp
-}
-```
-
-Important:
-
-- Do not store all sponsors in one giant program document array.
-- Keep only summary fields on `pePrograms`, such as `partnerCount` and `featuredPartners`.
-
-### `peProgramJoinRequests/{requestId}`
-
-Purpose: approval queue for request-based QR joins.
-
-Recommended fields:
-
-```ts
-{
-  orgId: string,
-  programId: string,
-  joinLinkId: string,
-  sangUserId: string,
-  category: string,
-  requestedEventIds: string[],
-  status: "pending" | "approved" | "rejected" | "cancelled",
-  reviewedBy?: string,
-  reviewedAt?: Timestamp,
-  createdAt: Timestamp,
-  updatedAt: Timestamp
-}
-```
-
-Required work:
-
-- `joinProgramByQr`
-- Approval/rejection callable
-- Organizer approval UI
-- Mobile app pending/approved state
 
 ### `peActivityLogs/{activityId}` Or Timeline Subcollections
 
@@ -1579,18 +1833,15 @@ firebase deploy --only hosting:sang-event-crm --project sang-d8b93 --non-interac
 
 Priority 1:
 
-- Implement `joinProgramByQr` and mobile app scan-to-join consume flow.
-- Add approval queue for `request_approval` mode.
-- Add revoke/edit controls for program join links.
+- Wire Sang mobile app to read `users/{uid}/eventAccess/{programId}` and show published CRM programs.
+- Confirm mobile pass display and scanner handoff for `SANGPASS1:{token}`.
+- Run full roster publish smoke test with verified email/phone matches.
 
 Priority 2:
 
-- Implement Sang user linking for uploaded people:
-  - normalize email/phone
-  - match existing Sang users
-  - set `sangUserId`
-  - handle pending/conflict/manual review
-  - link future signups
+- Add CSV bulk import progress/error handling so large rosters do not silently fail.
+- Add scheduled/triggered future-signup linking so newly created Sang users can claim existing CRM rows automatically.
+- Add notification delivery status tracking for roster publish.
 
 Priority 3:
 
@@ -1603,11 +1854,11 @@ Priority 3:
 
 Priority 4:
 
-- Implement patrons/sponsors:
-  - `peProgramPartners`
-  - logo upload
-  - tier sorting
-  - public display settings
+- Add sponsor/patron engagement reports later if needed:
+  - booth visits
+  - sponsor lead export
+  - patron profile taps
+  - website click analytics
 
 Priority 5:
 
@@ -1633,10 +1884,10 @@ Last verified on 2026-08-08:
   - program update
   - event create
   - schedule item create
-  - secure program join QR create
   - cleanup
+
+(This run also exercised secure program join QR create. That feature was removed on 2026-08-12 and no longer applies.)
 
 Known gap:
 
 - Full visible signed-in browser walkthrough was not completed because the local in-app browser connector failed during verification.
-

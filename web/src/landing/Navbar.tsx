@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { AnimatePresence } from 'framer-motion'
 import { Menu, Sparkles, X } from 'lucide-react'
-import { motion } from './primitives'
+import { motion } from './motion'
 
 const links = [
   { label: 'Platform', href: '#platform' },

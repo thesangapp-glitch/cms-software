@@ -14,20 +14,115 @@ function peActiveMemberPath(orgId) {
   return /databases/$(database)/documents/peTeamMembers/$(orgId + '_' + request.auth.uid);
 }
 
+function peMember(orgId) {
+  return get(peActiveMemberPath(orgId)).data;
+}
+
 function peIsActiveMember(orgId) {
   return request.auth != null
     && exists(peActiveMemberPath(orgId))
-    && get(peActiveMemberPath(orgId)).data.status == 'active';
+    && peMember(orgId).status == 'active';
 }
 
 function peRolePermissions(orgId) {
-  let member = get(peActiveMemberPath(orgId)).data;
+  let member = peMember(orgId);
   return get(/databases/$(database)/documents/peOrganizations/$(orgId)/roles/$(member.roleId)).data.permissions;
 }
 
 function peHasPermission(orgId, permission) {
   return peIsActiveMember(orgId)
+    && peRolePermissions(orgId) is list
     && (permission in peRolePermissions(orgId) || '*' in peRolePermissions(orgId));
+}
+
+function peHasOrgPermission(orgId, permission) {
+  return peHasPermission(orgId, permission)
+    && peMember(orgId).scope == 'organization';
+}
+
+function peCanReadWorkspaceCatalog(orgId) {
+  return peHasPermission(orgId, 'program.read')
+    || peHasPermission(orgId, 'program.write')
+    || peHasPermission(orgId, 'event.write')
+    || peHasPermission(orgId, 'team.write')
+    || peHasPermission(orgId, 'people.import')
+    || peHasPermission(orgId, 'passes.issue')
+    || peHasPermission(orgId, 'checkin.scan')
+    || peHasPermission(orgId, 'analytics.read');
+}
+
+function peCanReadPeople(orgId) {
+  return peHasPermission(orgId, 'people.import')
+    || peHasPermission(orgId, 'passes.issue')
+    || peHasPermission(orgId, 'analytics.read');
+}
+
+function peCanReadPasses(orgId) {
+  return peHasPermission(orgId, 'passes.issue');
+}
+
+function peCanReadCheckIns(orgId) {
+  return peHasPermission(orgId, 'checkin.scan')
+    || peHasPermission(orgId, 'analytics.read');
+}
+
+function peCanAccessProgram(orgId, programId) {
+  return peIsActiveMember(orgId)
+    && (
+      peMember(orgId).scope == 'organization'
+      || ((peMember(orgId).scope == 'program' || peMember(orgId).scope == 'event') && peMember(orgId).programId == programId)
+    );
+}
+
+function peCanAccessProgramData(orgId, programId) {
+  return peIsActiveMember(orgId)
+    && (
+      peMember(orgId).scope == 'organization'
+      || (peMember(orgId).scope == 'program' && peMember(orgId).programId == programId)
+    );
+}
+
+function peCanAccessEvent(orgId, programId, eventId) {
+  return peIsActiveMember(orgId)
+    && (
+      peMember(orgId).scope == 'organization'
+      || (peMember(orgId).scope == 'program' && peMember(orgId).programId == programId)
+      || (peMember(orgId).scope == 'event' && peMember(orgId).programId == programId && peMember(orgId).eventId == eventId)
+    );
+}
+
+function peCanAccessPerson(orgId, programId, eventAccessIds) {
+  return peIsActiveMember(orgId)
+    && (
+      peMember(orgId).scope == 'organization'
+      || (peMember(orgId).scope == 'program' && peMember(orgId).programId == programId)
+      || (
+        peMember(orgId).scope == 'event'
+        && peMember(orgId).programId == programId
+        && eventAccessIds is list
+        && peMember(orgId).eventId in eventAccessIds
+      )
+    );
+}
+
+function peCanCreateImport(orgId, programId, eventIds) {
+  return peHasPermission(orgId, 'people.import')
+    && (
+      peMember(orgId).scope == 'organization'
+      || (peMember(orgId).scope == 'program' && peMember(orgId).programId == programId)
+      || (
+        peMember(orgId).scope == 'event'
+        && peMember(orgId).programId == programId
+        && eventIds is list
+        && eventIds.size() == 1
+        && eventIds[0] == peMember(orgId).eventId
+      )
+    );
+}
+
+function peMobileHasProgramAccess(programId) {
+  return request.auth != null
+    && exists(/databases/$(database)/documents/users/$(request.auth.uid)/eventAccess/$(programId));
 }
 
 match /peUsers/{uid} {
@@ -39,89 +134,115 @@ match /peUsers/{uid} {
 match /peOrganizations/{orgId} {
   allow read: if peIsActiveMember(orgId);
   allow create: if request.auth != null && request.resource.data.ownerUid == request.auth.uid;
-  allow update: if peHasPermission(orgId, 'team.write');
+  allow update: if peHasOrgPermission(orgId, 'team.write')
+    && request.resource.data.ownerUid == resource.data.ownerUid;
   allow delete: if false;
 
   match /roles/{roleId} {
     allow read: if peIsActiveMember(orgId);
-    allow create, update, delete: if peHasPermission(orgId, 'roles.write');
-  }
-}
-
-match /peTeamMembers/{teamMemberId} {
-  allow read: if peIsActiveMember(resource.data.orgId)
-    || (request.auth != null && resource.data.uid == request.auth.uid);
-  allow create, update: if peHasPermission(request.resource.data.orgId, 'team.write');
-  allow delete: if false;
-}
-
-match /pePrograms/{programId} {
-  allow read: if peIsActiveMember(resource.data.orgId);
-  allow create: if peHasPermission(request.resource.data.orgId, 'program.write');
-  allow update: if peHasPermission(resource.data.orgId, 'program.write');
-  allow delete: if false;
-}
-
-match /peEvents/{eventId} {
-  allow read: if peIsActiveMember(resource.data.orgId);
-  allow create: if peHasPermission(request.resource.data.orgId, 'event.write');
-  allow update: if peHasPermission(resource.data.orgId, 'event.write');
-  allow delete: if false;
-}
-
-match /peProgramContent/{programId} {
-  allow read: if peIsActiveMember(resource.data.orgId);
-  allow create, update: if peHasPermission(request.resource.data.orgId, 'program.write')
-    || peHasPermission(resource.data.orgId, 'program.write');
-  allow delete: if false;
-}
-
-match /peProgramContentSections/{sectionId} {
-  allow read: if peIsActiveMember(resource.data.orgId);
-  allow create, update: if peHasPermission(request.resource.data.orgId, 'program.write')
-    || peHasPermission(resource.data.orgId, 'program.write');
-  allow delete: if false;
-}
-
-match /peEventScheduleItems/{scheduleItemId} {
-  allow read: if peIsActiveMember(resource.data.orgId);
-  allow write: if false;
-}
-
-match /peProgramJoinLinks/{joinLinkId} {
-  allow read: if peIsActiveMember(resource.data.orgId);
-  allow write: if false;
-}
-
-match /peProgramPeople/{programPersonId} {
-  allow read: if peIsActiveMember(resource.data.orgId);
-  allow create: if peHasPermission(request.resource.data.orgId, 'people.import');
-  allow update: if peHasPermission(resource.data.orgId, 'people.import')
-    || peHasPermission(resource.data.orgId, 'passes.issue');
-  allow delete: if false;
-
-  match /events/{eventId} {
-    allow read: if peIsActiveMember(resource.data.orgId);
-    allow create, update: if peHasPermission(request.resource.data.orgId, 'people.import')
-      || peHasPermission(resource.data.orgId, 'people.import');
+    allow create: if peHasOrgPermission(orgId, 'roles.write')
+      && request.resource.data.orgId == orgId;
+    allow update: if peHasOrgPermission(orgId, 'roles.write')
+      && request.resource.data.orgId == resource.data.orgId;
     allow delete: if false;
   }
 }
 
-match /peTeams/{teamId} {
-  allow read: if peIsActiveMember(resource.data.orgId);
-  allow create, update: if peHasPermission(request.resource.data.orgId, 'people.import')
-    || peHasPermission(resource.data.orgId, 'people.import');
+match /peTeamMembers/{teamMemberId} {
+  allow read: if (peHasOrgPermission(resource.data.orgId, 'team.write'))
+    || (request.auth != null && resource.data.uid == request.auth.uid);
+  allow create: if peHasOrgPermission(request.resource.data.orgId, 'team.write');
+  allow update: if peHasOrgPermission(resource.data.orgId, 'team.write')
+    && request.resource.data.orgId == resource.data.orgId;
   allow delete: if false;
 }
 
+match /pePrograms/{programId} {
+  allow read: if (peCanReadWorkspaceCatalog(resource.data.orgId)
+    && peCanAccessProgram(resource.data.orgId, programId))
+    || peMobileHasProgramAccess(programId);
+  allow create: if peHasOrgPermission(request.resource.data.orgId, 'program.write');
+  allow update: if peHasPermission(resource.data.orgId, 'program.write')
+    && peCanAccessProgramData(resource.data.orgId, programId)
+    && request.resource.data.orgId == resource.data.orgId;
+  allow delete: if false;
+}
+
+match /peEvents/{eventId} {
+  allow read: if peCanReadWorkspaceCatalog(resource.data.orgId)
+    && peCanAccessEvent(resource.data.orgId, resource.data.programId, eventId);
+  allow create: if peHasPermission(request.resource.data.orgId, 'event.write')
+    && peCanAccessProgramData(request.resource.data.orgId, request.resource.data.programId);
+  allow update: if peHasPermission(resource.data.orgId, 'event.write')
+    && peCanAccessEvent(resource.data.orgId, resource.data.programId, eventId)
+    && request.resource.data.orgId == resource.data.orgId
+    && request.resource.data.programId == resource.data.programId;
+  allow delete: if false;
+}
+
+match /peProgramMobileEvents/{programId} {
+  allow read: if (peCanReadWorkspaceCatalog(resource.data.orgId)
+    && peCanAccessProgram(resource.data.orgId, programId))
+    || peMobileHasProgramAccess(programId);
+  allow write: if false;
+}
+
+match /peEventScheduleDashboard/{scheduleItemId} {
+  allow read: if peCanReadWorkspaceCatalog(resource.data.orgId)
+    && peCanAccessEvent(resource.data.orgId, resource.data.programId, resource.data.eventId);
+  allow write: if false;
+}
+
+match /peProgramSchedule/{programId} {
+  allow read: if peCanReadWorkspaceCatalog(resource.data.orgId)
+    && peCanAccessProgram(resource.data.orgId, programId);
+  allow write: if false;
+}
+
+match /peProgramSchedulePages/{pageId} {
+  allow read: if peCanReadWorkspaceCatalog(resource.data.orgId)
+    && peCanAccessProgram(resource.data.orgId, resource.data.programId);
+  allow write: if false;
+}
+
+match /peProgramVenues/{programId} {
+  allow read: if peCanReadWorkspaceCatalog(resource.data.orgId)
+    && peCanAccessProgram(resource.data.orgId, programId);
+  allow write: if false;
+}
+
+match /peProgramPartners/{partnerId} {
+  allow read: if (peCanReadWorkspaceCatalog(resource.data.orgId)
+    && peCanAccessProgram(resource.data.orgId, resource.data.programId))
+    || peMobileHasProgramAccess(resource.data.programId);
+  allow write: if false;
+}
+
+match /pePrograms/{programId}/peoplePublic/{programPersonId} {
+  allow read, write: if false;
+}
+
+match /peProgramPeople/{programPersonId} {
+  allow read: if peCanReadPeople(resource.data.orgId)
+    && peCanAccessPerson(resource.data.orgId, resource.data.programId, resource.data.eventAccessIds);
+  allow write: if false;
+}
+
+match /peTeams/{teamId} {
+  allow read: if peCanReadPeople(resource.data.orgId)
+    && peCanAccessEvent(resource.data.orgId, resource.data.programId, resource.data.eventId);
+  allow write: if false;
+}
+
 match /pePasses/{passId} {
-  allow read: if peIsActiveMember(resource.data.orgId);
+  allow read: if peCanReadPasses(resource.data.orgId)
+    && peCanAccessProgramData(resource.data.orgId, resource.data.programId);
   allow write: if false;
 }
 
 match /peCheckIns/{checkInId} {
-  allow read: if peIsActiveMember(resource.data.orgId);
+  allow read: if peCanReadCheckIns(resource.data.orgId)
+    && peCanAccessEvent(resource.data.orgId, resource.data.programId, resource.data.eventId);
   allow write: if false;
 }
 
@@ -131,28 +252,38 @@ match /peScannerSessions/{scannerSessionId} {
 }
 
 match /peAnalyticsSummaries/{summaryId} {
-  allow read: if peIsActiveMember(resource.data.orgId);
+  allow read: if peHasPermission(resource.data.orgId, 'analytics.read')
+    && peCanAccessEvent(resource.data.orgId, resource.data.programId, resource.data.eventId);
   allow write: if false;
 }
 
 match /peAnalyticsBuckets/{bucketId} {
-  allow read: if peIsActiveMember(resource.data.orgId);
+  allow read: if peHasPermission(resource.data.orgId, 'analytics.read')
+    && peCanAccessEvent(resource.data.orgId, resource.data.programId, resource.data.eventId);
   allow write: if false;
 }
 
 match /peAuditLogs/{logId} {
-  allow read: if peHasPermission(resource.data.orgId, 'analytics.read');
+  allow read: if peHasOrgPermission(resource.data.orgId, 'analytics.read');
   allow write: if false;
 }
 
 match /peImports/{importId} {
-  allow read: if peIsActiveMember(resource.data.orgId);
-  allow create: if peHasPermission(request.resource.data.orgId, 'people.import');
+  allow read: if peCanReadPeople(resource.data.orgId)
+    && peCanAccessPerson(resource.data.orgId, resource.data.programId, resource.data.eventIds);
+  allow create: if peCanCreateImport(request.resource.data.orgId, request.resource.data.programId, request.resource.data.eventIds);
   allow update: if false;
   allow delete: if false;
 }
 
 match /peExports/{exportId} {
-  allow read: if peIsActiveMember(resource.data.orgId);
+  allow read: if peHasPermission(resource.data.orgId, 'exports.create')
+    && peCanAccessProgramData(resource.data.orgId, resource.data.programId);
   allow write: if false;
+}
+
+// Email verification codes. Written/read only by Cloud Functions (admin SDK).
+// Never exposed to clients — the raw code must not be readable.
+match /peEmailOtps/{uid} {
+  allow read, write: if false;
 }

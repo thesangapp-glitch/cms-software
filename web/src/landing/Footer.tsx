@@ -1,4 +1,5 @@
-import { Reveal, motion, useReducedMotion } from './primitives'
+import { Reveal } from './primitives'
+import { motion, useReducedMotion } from './motion'
 
 const columns = [
   { title: 'Platform', links: ['SANG', 'Scanner', 'Organizer CRM', 'Analytics', 'Networking'] },
