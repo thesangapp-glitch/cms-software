@@ -1095,8 +1095,16 @@ function friendlyAuthMessage(error: unknown, fallback: string): string {
     case 'auth/popup-closed-by-user':
     case 'auth/cancelled-popup-request':
       return 'Sign-in was cancelled.'
-    default:
-      return error instanceof Error ? error.message : fallback
+    default: {
+      const raw = error instanceof Error ? error.message : ''
+      // Never surface low-level storage/IndexedDB failures ("Database is
+      // closing/hidden", etc.) as user-facing text — they're transient and
+      // retryable, not something the user did wrong.
+      if (/database|indexeddb|storage|closing|hidden|internal|quota/i.test(raw)) {
+        return 'Could not reach sign-in storage. Please try again.'
+      }
+      return raw || fallback
+    }
   }
 }
 
