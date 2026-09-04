@@ -8,10 +8,10 @@ export default defineConfig({
   resolve: {
     dedupe: ['react', 'react-dom'],
   },
-  // CMS is the main site, served at "/". Built into the shared monorepo dist so
-  // Cloudflare Pages serves it alongside the /app marketing site (see root package.json).
+  // The CRM is served at the root of its own host, https://events.sangapp.in/, from a
+  // Pages project separate from the marketing site at the apex (see root package.json).
   build: {
-    outDir: '../dist',
+    outDir: 'dist',
     emptyOutDir: true,
   },
 })

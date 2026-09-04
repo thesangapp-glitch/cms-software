@@ -9,8 +9,12 @@ functions/node_modules/
 
 # Build output
 dist/
+app-site/dist/
 web/dist/
 functions/lib/
+
+# Cloudflare / wrangler local state
+.wrangler/
 
 # Firebase local/deploy cache
 .firebase/
