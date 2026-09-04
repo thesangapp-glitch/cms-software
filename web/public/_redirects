@@ -1,15 +1,11 @@
-# Cloudflare Pages SPA fallbacks for the combined monorepo build.
-# Real files (assets, index.html) are served first; these only catch client-side routes.
+# Cloudflare Pages rules for the Sang Event CRM, served at the root of its own host
+# (https://events.sangapp.in/) from its own Pages project.
 #
-# The Sang app site (react-router / BrowserRouter) lives under /app. Two Cloudflare
-# gotchas shape these rules:
-#   1. A wildcard `/app/*  /app/index.html  200` is rejected as an infinite-loop redirect.
-#   2. A rewrite whose destination ends in `/index.html` gets auto-normalized to a 308
-#      redirect to the directory, which changes the URL and breaks the client route.
-# So we rewrite each /app route to the DIRECTORY `/app/` (already normalized -> served
-# as index.html with a 200, URL preserved, so react-router renders the right route).
-# Add a line here whenever the Sang site gains a new route.
-/app/privacy   /app/   200
+# Deliberately empty. The CRM is hash-routed (#/dashboard, #/events, …), so every route
+# is a request for "/" as far as the server is concerned and there is nothing to rewrite.
 #
-# The CMS at / is hash-routed, so this standard root SPA fallback covers it.
-/*             /index.html   200
+# Do NOT add a `/*  /index.html  200` SPA fallback: Pages rejects it as an infinite loop
+# (it strips "/index" and re-matches the rule) and silently ignores the whole line. And do
+# NOT "fix" it to `/*  /  200` either — these rules run BEFORE static-asset lookup, so that
+# form swallows /assets/*, /favicon.svg and /robots.txt and returns the HTML shell for
+# them. Unknown paths already fall back to index.html on their own.

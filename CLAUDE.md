@@ -20,10 +20,12 @@ QR links.
 web/          React 19 + Vite 8 + TypeScript + Tailwind 4 SPA. web/src/App.tsx is the
               entire CRM (~3100 lines, single file). web/src/landing/ is the marketing page.
               web/src/lib/firebase.ts inits Firebase from VITE_FIREBASE_* env (web/.env.local).
+app-site/     Separate React + Vite site: the Sang *app* (digital business card) marketing
+              site that owns sangapp.in. Unrelated to the CRM apart from sharing this repo.
 functions/    Firebase Cloud Functions (Node 22). functions/src/index.ts holds every
               callable — all privileged writes go here. Zod-validated, permission-checked,
               audit-logged.
-docs/         Authoritative Firestore data-structure + developer handoff.
+docs/         Authoritative Firestore data-structure + developer handoff, plus HOSTING.md.
 firestore.rules.eventcrm.partial     Rules PARTIAL — merged into the main Sang repo, not
                                      deployed from here.
 firestore.indexes.eventcrm.json      Index partial (same deploy caveat).
@@ -41,13 +43,34 @@ cd web && npm run build      # tsc -b && vite build
 cd functions && npm run build    # tsc
 cd functions && npm run serve    # build + emulators (functions:eventcrm, firestore, auth)
 
-# Deploy (from repo root; production project)
+# Deploy functions (from repo root; production project)
 firebase deploy --only functions --project sang-d8b93 --non-interactive
-firebase deploy --only hosting:sang-event-crm --project sang-d8b93 --non-interactive
+
+# Deploy the sites (Cloudflare Pages; from repo root)
+npm run build:crm && npm run deploy:crm    # CRM  → events.sangapp.in
+npm run build:app && npm run deploy:app    # app site → www.sangapp.in
 ```
 
 Before deploy: `web` lint + build pass, `functions` build passes. Deploy only the
 `eventcrm` functions codebase.
+
+## Hosting
+
+The two sites are **two separate Cloudflare Pages projects**, each serving the root of its
+own host. Read `docs/HOSTING.md` before touching anything deploy-related — in particular
+the `_redirects` rules, which have non-obvious Cloudflare behaviour (rules run before
+static-asset lookup, so a `/*` catch-all breaks every asset).
+
+| Site | Source | Pages project | Domain |
+|---|---|---|---|
+| Event CRM | `web/` | `sang-event-crm` | `events.sangapp.in` |
+| Sang app marketing site | `app-site/` | `cms-software` | `www.sangapp.in` |
+
+The CRM used to be served at `sangapp.in/` with the app site under `/app`; that split
+happened so the app site owns the apex. `/app*` still 301s to the new locations.
+
+Firebase Hosting (`sang-event-crm.web.app`, from `firebase.json`) is a legacy secondary
+target for the CRM. Cloudflare Pages is the live path.
 
 ## Architecture & conventions
 

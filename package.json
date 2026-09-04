@@ -1,11 +1,15 @@
 {
   "name": "sang-monorepo",
   "private": true,
-  "description": "Monorepo: Sang Event CRM (/) + Sang app marketing site (/app), built together for Cloudflare Pages.",
+  "description": "Monorepo: Sang app marketing site (www.sangapp.in) + Sang Event CRM (events.sangapp.in), built and deployed as two separate Cloudflare Pages projects.",
   "scripts": {
-    "build": "npm run build:web && npm run build:app",
-    "build:web": "cd web && npm ci && npm run build",
+    "build": "npm run build:app && npm run build:crm",
     "build:app": "cd app-site && npm ci && npm run build",
-    "preview": "npx --yes serve dist"
+    "build:crm": "cd web && npm ci && npm run build",
+    "deploy": "npm run deploy:app && npm run deploy:crm",
+    "deploy:app": "cd app-site && npx --yes wrangler pages deploy dist --project-name cms-software --branch main",
+    "deploy:crm": "cd web && npx --yes wrangler pages deploy dist --project-name sang-event-crm --branch main",
+    "preview:app": "npx --yes serve app-site/dist",
+    "preview:crm": "npx --yes serve web/dist"
   }
 }

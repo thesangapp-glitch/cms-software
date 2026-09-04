@@ -1,0 +1,26 @@
+# Cloudflare Pages rules for the Sang app marketing site, which now owns the apex
+# (https://www.sangapp.in/). Rules are evaluated top to bottom and the first match wins.
+#
+# IMPORTANT: on Pages these rules run BEFORE static-asset lookup, so a catch-all
+# `/*  /  200` would swallow /assets/*, /logo.png, /robots.txt and friends and hand back
+# the HTML shell for all of them. Never add a bare `/*` rule here. Unknown paths already
+# fall back to index.html on their own, so the catch-all buys nothing anyway.
+#
+# Static rules are listed before the splat rule: Pages matches them faster, and a splat
+# must not shadow a more specific path (/app/privacy vs /app/*).
+
+# Legacy paths. This site used to live under /app while the Event CRM owned "/", so store
+# listings and old inbound links still point at /app and /app/privacy.
+/app             /          301
+/app/            /          301
+/app/privacy     /privacy   301
+/app/privacy/    /privacy   301
+
+# Client-side routes (react-router BrowserRouter). Rewriting to "/index.html" is rejected
+# by Pages as an infinite loop (it strips "/index" and re-matches this rule), so rewrite to
+# the DIRECTORY "/" instead: already normalized, so it serves index.html with a 200 and the
+# URL is preserved for the router. Add a line here for every new route the site gains.
+/privacy         /          200
+
+# Anything else still under the old /app prefix goes home.
+/app/*           /          301
