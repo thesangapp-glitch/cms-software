@@ -1,5 +1,6 @@
 import { ArrowRight, LayoutDashboard, ScanLine, Server, Smartphone } from 'lucide-react'
-import { AnimatedNumber, Reveal, motion, useReducedMotion } from './primitives'
+import { motion, useReducedMotion } from './motion'
+import { AnimatedNumber, Reveal } from './primitives'
 
 const metrics = [
   { value: 5420, label: 'Registered' },
@@ -103,7 +104,7 @@ export function Hero({ onGetStarted, onExplore }: { onGetStarted: () => void; on
           >
             <div className="eos-dash-bar">
               <span className="eos-dash-dot" /><span className="eos-dash-dot" /><span className="eos-dash-dot" />
-              <span className="eos-dash-title">Organizer CRM · THOMSO 2027 · Live</span>
+              <span className="eos-dash-title">Organizer CRM · Flagship Program · Live</span>
               <span className="eos-dash-live"><i />LIVE</span>
             </div>
             <div className="eos-metric-grid">

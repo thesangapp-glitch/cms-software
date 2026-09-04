@@ -1,5 +1,11 @@
 import { initializeApp } from 'firebase/app'
-import { getAuth } from 'firebase/auth'
+import {
+  browserLocalPersistence,
+  browserPopupRedirectResolver,
+  browserSessionPersistence,
+  inMemoryPersistence,
+  initializeAuth,
+} from 'firebase/auth'
 import { getFirestore } from 'firebase/firestore'
 import { getFunctions } from 'firebase/functions'
 import { getStorage } from 'firebase/storage'
@@ -22,7 +28,17 @@ const firebaseConfig = {
 }
 
 export const firebaseApp = initializeApp(firebaseConfig)
-export const auth = getAuth(firebaseApp)
+
+// Firebase Auth defaults to IndexedDB for persistence. In some browser states
+// (page hidden/bfcache, an IndexedDB connection mid-close, certain privacy
+// modes) IndexedDB throws "Database is closing/hidden" during sign-in instead
+// of falling back — which blocked Google sign-in. Initialize Auth with a
+// localStorage-first persistence chain (falling back to session, then memory)
+// so it never depends on IndexedDB. localStorage still syncs auth across tabs.
+export const auth = initializeAuth(firebaseApp, {
+  persistence: [browserLocalPersistence, browserSessionPersistence, inMemoryPersistence],
+  popupRedirectResolver: browserPopupRedirectResolver,
+})
 export const db = getFirestore(firebaseApp)
 export const storage = getStorage(firebaseApp)
 export const functions = getFunctions(firebaseApp, import.meta.env.VITE_FIREBASE_FUNCTIONS_REGION || 'us-central1')

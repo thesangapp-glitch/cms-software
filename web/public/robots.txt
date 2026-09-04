@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://www.sangapp.in/sitemap.xml
+Sitemap: https://events.sangapp.in/sitemap.xml

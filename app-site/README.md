@@ -36,10 +36,21 @@ public/               logo/icons, robots.txt, sitemap.xml, SPA redirects
 
 ## Deploying
 
-Hosted on **Cloudflare Pages** with CI/CD: every push to `main` auto-builds (`npm run build`) and
-deploys to `sangapp.in`; pull requests get preview URLs. Full setup + custom-domain steps are in
-[`DEPLOYMENT.md`](./DEPLOYMENT.md). SPA fallback (`/privacy` on refresh) is handled by
-`public/_redirects`.
+This site owns the apex, `https://www.sangapp.in/`, and deploys to the `cms-software`
+Cloudflare Pages project. Run from the **repo root**, not from here:
 
-The canonical URL / Open Graph domain in `index.html` is set to `https://sangapp.in`. Update the
-store links in `src/site.js` when the App Store listing goes live.
+```bash
+npm run build:app
+npm run deploy:app
+```
+
+The Sang Event CRM (`../web`) is a separate site on `events.sangapp.in` with its own Pages
+project. Custom-domain setup, deploy details, and the `_redirects` gotchas are in
+[`../docs/HOSTING.md`](../docs/HOSTING.md).
+
+`public/_redirects` handles `/privacy` on refresh and 301s the legacy `/app` paths (this
+site used to be served under `/app`) to their new locations. Add a line there for every
+new route.
+
+The canonical URL / Open Graph domain in `index.html` is `https://www.sangapp.in`. Update
+the store links in `src/site.js` when the App Store listing goes live.
