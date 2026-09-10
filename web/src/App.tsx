@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import {
   Activity,
+  ArrowLeft,
   BadgeCheck,
   Bold,
   Building2,
@@ -11,6 +12,7 @@ import {
   ClipboardList,
   Download,
   Eye,
+  EyeOff,
   Heading2,
   Heading3,
   Italic,
@@ -51,6 +53,7 @@ import {
   createUserWithEmailAndPassword,
   GoogleAuthProvider,
   onAuthStateChanged,
+  sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signInWithPopup,
   signOut,
@@ -77,7 +80,7 @@ import { LandingPage } from './landing/LandingPage'
 
 // Check-in and analytics routes are intentionally out of scope for this release.
 // Backend scanPassToken/createScannerSession remain live; only the CRM surface is hidden.
-type RouteKey = 'dashboard' | 'events' | 'venues' | 'patrons' | 'programs' | 'settings' | 'roles' | 'team' | 'people'
+type RouteKey = 'dashboard' | 'events' | 'venues' | 'patrons' | 'programs' | 'programCreate' | 'settings' | 'roles' | 'team' | 'people'
 type PersonKind = string
 type ProgramMode = 'standalone' | 'multiEvent'
 type TeamScope = 'organization' | 'program' | 'event'
@@ -133,15 +136,48 @@ const programTypeOptions = [
   { value: 'custom', label: 'Custom' },
 ]
 
-const orgCategoryOptions = [
-  { value: 'College fest', label: 'College fest' },
-  { value: 'Conference', label: 'Conference' },
-  { value: 'Corporate event', label: 'Corporate event' },
-  { value: 'Event management agency', label: 'Event management agency' },
-  { value: 'College / university', label: 'College / university' },
-  { value: 'Startup event', label: 'Startup event' },
-  { value: 'Community event', label: 'Community event' },
+// Organization type taxonomy. Mirrors `orgTypes` in functions/src/index.ts —
+// the callable re-validates the slug, so keep the two lists in step.
+const orgTypeOptions = [
+  { value: 'college_university', label: 'College / university' },
+  { value: 'student_club', label: 'Student club or society' },
+  { value: 'company', label: 'Company / corporate team' },
+  { value: 'event_agency', label: 'Event management agency' },
+  { value: 'startup', label: 'Startup' },
+  { value: 'ngo', label: 'NGO / non-profit' },
+  { value: 'government', label: 'Government / public body' },
+  { value: 'community', label: 'Community or hobby group' },
+  { value: 'venue', label: 'Venue / property' },
+  { value: 'other', label: 'Other' },
 ]
+
+const defaultOrgType = 'college_university'
+
+// Organizations created before the taxonomy only carry the free-text `industry`
+// label, so fall back to matching that.
+function resolveOrgType(organization: { orgType?: string; industry?: string } | null | undefined) {
+  const slug = organization?.orgType
+  if (slug && orgTypeOptions.some((option) => option.value === slug)) return slug
+  const text = (organization?.industry || '').trim().toLowerCase()
+  if (!text) return 'other'
+  const exact = orgTypeOptions.find((option) => option.label.toLowerCase() === text)
+  if (exact) return exact.value
+  if (text.includes('college') || text.includes('university') || text.includes('fest')) return 'college_university'
+  if (text.includes('club') || text.includes('society')) return 'student_club'
+  if (text.includes('agency')) return 'event_agency'
+  if (text.includes('startup')) return 'startup'
+  if (text.includes('community')) return 'community'
+  if (text.includes('ngo') || text.includes('non-profit') || text.includes('nonprofit')) return 'ngo'
+  if (text.includes('government')) return 'government'
+  if (text.includes('venue')) return 'venue'
+  if (text.includes('corporate') || text.includes('company') || text.includes('conference')) return 'company'
+  return 'other'
+}
+
+function orgTypeLabel(organization: { orgType?: string; industry?: string } | null | undefined) {
+  const slug = resolveOrgType(organization)
+  return orgTypeOptions.find((option) => option.value === slug)?.label || 'Other'
+}
 
 const eventTypeOptions = [
   { value: 'session', label: 'Session / talk' },
@@ -370,6 +406,7 @@ type PeUser = {
 type Organization = {
   id: string
   name: string
+  orgType?: string
   industry?: string
   website?: string
   logoUrl?: string
@@ -697,6 +734,7 @@ const routeLabels: Record<RouteKey, string> = {
   venues: 'Venues',
   patrons: 'Patrons',
   programs: 'Programs',
+  programCreate: 'Create program',
   settings: 'Settings',
   roles: 'Roles',
   team: 'Team',
@@ -733,6 +771,8 @@ function canOpenRoute(route: RouteKey, role: Role | undefined, member: TeamMembe
       return hasPermission(role, 'program.write') && member.scope !== 'event'
     case 'programs':
       return hasPermission(role, 'program.write') && member.scope !== 'event'
+    case 'programCreate':
+      return hasPermission(role, 'program.write') && member.scope === 'organization'
     case 'settings':
       return (hasPermission(role, 'program.write') && member.scope !== 'event') || (hasPermission(role, 'team.write') && member.scope === 'organization')
     case 'roles':
@@ -935,8 +975,8 @@ function useAuthProfile() {
 
 const requestEmailOtpCallable = httpsCallable<void, { sent: boolean; alreadyVerified?: boolean }>(functions, 'requestEmailOtp')
 const verifyEmailOtpCallable = httpsCallable<{ code: string }, { verified: boolean }>(functions, 'verifyEmailOtp')
-const createOrganizationCallable = httpsCallable<{ displayName: string; orgName: string; industry: string; website: string; logoUrl: string; email: string }, { orgId: string }>(functions, 'createOrganization')
-const updateOrganizationCallable = httpsCallable<{ orgId: string; name: string; industry: string; website: string; logoUrl: string }, { orgId: string }>(functions, 'updateOrganization')
+const createOrganizationCallable = httpsCallable<{ displayName: string; orgName: string; orgType: string; website: string; logoUrl: string; email: string }, { orgId: string }>(functions, 'createOrganization')
+const updateOrganizationCallable = httpsCallable<{ orgId: string; name: string; orgType: string; website: string; logoUrl: string }, { orgId: string }>(functions, 'updateOrganization')
 const setActiveOrganizationCallable = httpsCallable<{ orgId: string }, { orgId: string }>(functions, 'setActiveOrganization')
 const claimTeamAccessCallable = httpsCallable<void, { claimedOrgIds: string[] }>(functions, 'claimTeamAccess')
 const createRoleCallable = httpsCallable<{ orgId: string; roleId: string; name: string; category: RoleCategory; description: string; permissions: string[] }, { roleId: string }>(functions, 'createRole')
@@ -944,7 +984,7 @@ const deleteRoleCallable = httpsCallable<{ orgId: string; roleId: string }, { ro
 const inviteTeamMemberCallable = httpsCallable<{ orgId: string; email: string; displayName: string; roleId: string; scope: TeamScope; programId?: string; eventId?: string; programPersonId?: string }, { teamMemberId: string }>(functions, 'inviteTeamMember')
 const updateTeamMemberCallable = httpsCallable<{ orgId: string; teamMemberId: string; displayName: string; roleId: string; scope: TeamScope; programId?: string; eventId?: string; status: 'active' | 'invited' | 'disabled' }, { teamMemberId: string }>(functions, 'updateTeamMember')
 const deleteTeamMemberCallable = httpsCallable<{ orgId: string; teamMemberId: string }, { teamMemberId: string }>(functions, 'deleteTeamMember')
-const createProgramCallable = httpsCallable<CreateProgramPayload, { programId: string }>(functions, 'createProgram')
+const createProgramCallable = httpsCallable<CreateProgramPayload, { programId: string; orgId: string }>(functions, 'createProgram')
 const updateProgramCallable = httpsCallable<Omit<Program, 'id'> & { programId: string }, { programId: string }>(functions, 'updateProgram')
 const deleteProgramCallable = httpsCallable<{ orgId: string; programId: string }, { programId: string }>(functions, 'deleteProgram')
 const saveProgramVenueCallable = httpsCallable<{ orgId: string; programId: string; venueId?: string; name: string; address: string; directionsNote?: string; latitude?: number; longitude?: number; rooms: Array<{ id?: string; name: string; floor?: string; capacity?: number }> }, { venueId: string }>(functions, 'saveProgramVenue')
@@ -967,23 +1007,31 @@ const blockProgramPersonAccessCallable = httpsCallable<{ orgId: string; programP
 const removeProgramPersonAccessCallable = httpsCallable<{ orgId: string; programPersonId: string; reason?: string }, { programPersonId: string; status: string; passStatus: string }>(functions, 'removeProgramPersonAccess')
 const unblockProgramPersonAccessCallable = httpsCallable<{ orgId: string; programPersonId: string; reason?: string }, { programPersonId: string; status: string; passStatus: string; passId: string; qrPayload: string; passCode: string; revokedPassId?: string }>(functions, 'unblockProgramPersonAccess')
 
-async function createOrganizationWithOwner(user: User, input: { displayName: string; orgName: string; industry: string; website: string; logoUrl: string }) {
+async function createOrganizationWithOwner(
+  user: User,
+  input: { displayName: string; orgName: string; orgType: string; website: string; logoUrl: string },
+  existingProfile?: PeUser | null,
+) {
   const response = await createOrganizationCallable({
     displayName: input.displayName.trim(),
     orgName: input.orgName.trim(),
-    industry: input.industry.trim(),
+    orgType: input.orgType,
     website: input.website.trim(),
     logoUrl: input.logoUrl.trim(),
     email: user.email || '',
   })
-  await updateProfile(user, { displayName: input.displayName.trim() })
+  if (user.displayName !== input.displayName.trim()) {
+    await updateProfile(user, { displayName: input.displayName.trim() })
+  }
 
   return {
     uid: user.uid,
     displayName: input.displayName.trim(),
     email: user.email || '',
     activeOrgId: response.data.orgId,
-    organizationIds: [response.data.orgId],
+    // Keep every organization the account already belongs to; the callable
+    // merges the same way server-side.
+    organizationIds: Array.from(new Set([...(existingProfile?.organizationIds || []), response.data.orgId])),
   }
 }
 
@@ -995,6 +1043,7 @@ function Shell({
   selectedProgram,
   visibleNavItems,
   onSwitchProgram,
+  onSwitchOrganization,
   user,
 }: {
   children: React.ReactNode
@@ -1004,6 +1053,7 @@ function Shell({
   selectedProgram: Program | null
   visibleNavItems: typeof navItems
   onSwitchProgram: () => void
+  onSwitchOrganization?: () => void
   user: User
 }) {
   return (
@@ -1016,6 +1066,14 @@ function Shell({
             <span>{selectedProgram?.name || organization?.name || 'Event OS'}</span>
           </div>
         </div>
+
+        {onSwitchOrganization && (
+          <button className="org-switch-button" onClick={onSwitchOrganization} type="button">
+            <Building2 size={15} />
+            <span>{organization?.name || 'Organization'}</span>
+            <small>Switch</small>
+          </button>
+        )}
 
         <nav className="nav-list" aria-label="Primary navigation">
           {visibleNavItems.map((item) => {
@@ -1108,17 +1166,51 @@ function friendlyAuthMessage(error: unknown, fallback: string): string {
   }
 }
 
+function GoogleLogo() {
+  // Official Google "G" mark — required by Google's branding guidelines for
+  // "Continue with Google" buttons.
+  return (
+    <svg aria-hidden="true" focusable="false" height="18" viewBox="0 0 18 18" width="18">
+      <path d="M17.64 9.2045c0-.6381-.0573-1.2518-.1636-1.8409H9v3.4814h4.8436c-.2086 1.125-.8427 2.0782-1.7959 2.7164v2.2581h2.9087c1.7018-1.5668 2.6836-3.874 2.6836-6.615z" fill="#4285F4" />
+      <path d="M9 18c2.43 0 4.4673-.806 5.9564-2.1805l-2.9087-2.2581c-.8059.54-1.8368.859-3.0477.859-2.344 0-4.3282-1.5831-5.036-3.7104H.9573v2.3318C2.4382 15.9832 5.4818 18 9 18z" fill="#34A853" />
+      <path d="M3.964 10.71c-.18-.54-.2822-1.1168-.2822-1.71 0-.5932.1023-1.17.2823-1.71V4.9582H.9573A8.9965 8.9965 0 0 0 0 9c0 1.4523.3477 2.8268.9573 4.0418L3.964 10.71z" fill="#FBBC05" />
+      <path d="M9 3.5795c1.3214 0 2.5077.4541 3.4405 1.346l2.5813-2.5814C13.4632.8918 11.426 0 9 0 5.4818 0 2.4382 2.0168.9573 4.9582L3.964 7.29C4.6718 5.1627 6.6559 3.5795 9 3.5795z" fill="#EA4335" />
+    </svg>
+  )
+}
+
+const authHighlights = [
+  { icon: CalendarDays, title: 'Programs and events', body: 'Plan the whole calendar, venues and schedule in one place.' },
+  { icon: Ticket, title: 'People and passes', body: 'Import guests, issue QR passes, and keep the list clean.' },
+  { icon: ShieldCheck, title: 'Roles that hold up', body: 'Owner, event lead, gate staff — every action permissioned.' },
+]
+
 function AuthPage({ onBack }: { onBack?: () => void }) {
   const [mode, setMode] = useState<'signin' | 'signup'>('signin')
   const [displayName, setDisplayName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const [loading, setLoading] = useState(false)
+  const [googleLoading, setGoogleLoading] = useState(false)
+
+  const busy = loading || googleLoading
+
+  function switchMode(next: 'signin' | 'signup') {
+    if (next === mode) return
+    setMode(next)
+    setError('')
+    setNotice('')
+    setPassword('')
+    setShowPassword(false)
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault()
     setError('')
+    setNotice('')
     setLoading(true)
 
     try {
@@ -1143,7 +1235,8 @@ function AuthPage({ onBack }: { onBack?: () => void }) {
 
   async function continueWithGoogle() {
     setError('')
-    setLoading(true)
+    setNotice('')
+    setGoogleLoading(true)
 
     try {
       const provider = new GoogleAuthProvider()
@@ -1152,84 +1245,165 @@ function AuthPage({ onBack }: { onBack?: () => void }) {
     } catch (authError) {
       setError(friendlyAuthMessage(authError, 'Google sign-in failed'))
     } finally {
+      setGoogleLoading(false)
+    }
+  }
+
+  async function resetPassword() {
+    setError('')
+    setNotice('')
+
+    if (!email.trim()) {
+      setError('Enter your email above, then tap “Forgot password?” again.')
+      return
+    }
+
+    setLoading(true)
+    try {
+      await sendPasswordResetEmail(auth, email.trim())
+      setNotice(`Password reset link sent to ${email.trim()}.`)
+    } catch (resetError) {
+      setError(friendlyAuthMessage(resetError, 'Could not send the reset link'))
+    } finally {
       setLoading(false)
     }
   }
 
   return (
     <main className="auth-screen">
-      <section className="auth-panel">
-        <div className="auth-copy">
+      <div className="auth-layout">
+        <aside className="auth-aside">
           <div className="brand-lockup large">
             <div className="brand-mark">S</div>
             <div>
               <strong>Sang Event CRM</strong>
-              <span>Premium event operations for real venues</span>
+              <span>Event operations, end to end</span>
             </div>
           </div>
-          <h1>Run every event from one polished CRM.</h1>
-          <p>
-            One CRM for festivals, conferences, corporate events, competitions, workshops, and standalone events.
-          </p>
-          <div className="event-type-grid" aria-label="Supported event types">
-            <span>Festivals</span>
-            <span>Conferences</span>
-            <span>Corporate</span>
-            <span>Competitions</span>
-            <span>Exhibitions</span>
-            <span>Workshops</span>
-          </div>
-        </div>
 
-        <form className="auth-card" onSubmit={submit}>
+          <div className="auth-aside-copy">
+            <h1>Run every event from one control room.</h1>
+            <p>Programs, guests, passes and gate check-in — for fests, conferences and corporate events.</p>
+          </div>
+
+          <ul className="auth-points">
+            {authHighlights.map((item) => (
+              <li key={item.title}>
+                <span className="auth-point-icon"><item.icon size={16} /></span>
+                <div>
+                  <strong>{item.title}</strong>
+                  <span>{item.body}</span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </aside>
+
+        <section className="auth-card">
           {onBack && (
             <button className="auth-back" onClick={onBack} type="button">
-              <ChevronRight size={15} style={{ transform: 'rotate(180deg)' }} />
+              <ArrowLeft size={15} />
               Back to site
             </button>
           )}
-          <div className="segmented">
-            <button className={mode === 'signin' ? 'selected' : ''} onClick={() => setMode('signin')} type="button">
-              Sign in
-            </button>
-            <button className={mode === 'signup' ? 'selected' : ''} onClick={() => setMode('signup')} type="button">
-              Create account
-            </button>
-          </div>
 
-          {mode === 'signup' && (
+          <header className="auth-card-head">
+            <h1>{mode === 'signin' ? 'Welcome back' : 'Create your account'}</h1>
+            <p>
+              {mode === 'signin'
+                ? 'Sign in to your Sang workspace.'
+                : 'Set up your organization in under a minute.'}
+            </p>
+          </header>
+
+          <button className="google-button" disabled={busy} onClick={continueWithGoogle} type="button">
+            {googleLoading ? <Loader2 className="spin" size={18} /> : <GoogleLogo />}
+            <span>Continue with Google</span>
+          </button>
+
+          <div className="auth-divider"><span>or</span></div>
+
+          <form className="auth-form" onSubmit={submit}>
+            {mode === 'signup' && (
+              <label>
+                Full name
+                <input
+                  autoComplete="name"
+                  placeholder="Ada Lovelace"
+                  value={displayName}
+                  onChange={(event) => setDisplayName(event.target.value)}
+                  required
+                />
+              </label>
+            )}
+
             <label>
-              Full name
-              <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} required />
+              Email
+              <input
+                autoComplete="email"
+                placeholder="you@company.com"
+                type="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                required
+              />
             </label>
-          )}
-          <label>
-            Email
-            <input autoComplete="email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} required />
-          </label>
-          <label>
-            Password
-            <input autoComplete={mode === 'signin' ? 'current-password' : 'new-password'} minLength={6} type="password" value={password} onChange={(event) => setPassword(event.target.value)} required />
-          </label>
 
-          {error && <p className="form-error">{error}</p>}
+            <label>
+              <span className="auth-label-row">
+                Password
+                {mode === 'signin' && (
+                  <button className="auth-link" disabled={busy} onClick={resetPassword} type="button">
+                    Forgot password?
+                  </button>
+                )}
+              </span>
+              <span className="auth-password">
+                <input
+                  autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
+                  minLength={6}
+                  placeholder={mode === 'signin' ? 'Your password' : 'At least 6 characters'}
+                  type={showPassword ? 'text' : 'password'}
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  required
+                />
+                <button
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  className="auth-password-toggle"
+                  onClick={() => setShowPassword((value) => !value)}
+                  type="button"
+                >
+                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </span>
+            </label>
 
-          <button className="secondary-button full-width" disabled={loading} onClick={continueWithGoogle} type="button">
-            <ShieldCheck size={17} />
-            Continue with Google
-          </button>
+            {error && <p className="form-error">{error}</p>}
+            {!error && notice && <p className="form-success">{notice}</p>}
 
-          <div className="divider"><span>or</span></div>
+            <button className="primary-button full-width auth-submit" disabled={busy} type="submit">
+              {loading ? <Loader2 className="spin" size={17} /> : null}
+              {mode === 'signin' ? 'Sign in' : 'Create account'}
+            </button>
+          </form>
 
-          <button className="primary-button" disabled={loading} type="submit">
-            {loading ? <Loader2 className="spin" size={17} /> : <Lock size={17} />}
-            {mode === 'signin' ? 'Open CRM' : 'Create CRM account'}
-          </button>
-        </form>
-      </section>
+          <p className="auth-switch">
+            {mode === 'signin' ? "Don't have an account?" : 'Already have an account?'}
+            <button
+              className="auth-link"
+              onClick={() => switchMode(mode === 'signin' ? 'signup' : 'signin')}
+              type="button"
+            >
+              {mode === 'signin' ? 'Create one' : 'Sign in'}
+            </button>
+          </p>
+        </section>
+      </div>
     </main>
   )
 }
+
 
 function VerifyEmailPage({ user, onVerified, onCancel }: { user: User; onVerified: () => void; onCancel: () => void }) {
   const [code, setCode] = useState('')
@@ -1330,7 +1504,7 @@ function VerifyEmailPage({ user, onVerified, onCancel }: { user: User; onVerifie
 function OnboardingPage({ user, onComplete }: { user: User; onComplete: (profile: PeUser) => void }) {
   const [displayName, setDisplayName] = useState(user.displayName || user.email?.split('@')[0] || '')
   const [orgName, setOrgName] = useState('')
-  const [industry, setIndustry] = useState('College fest')
+  const [orgType, setOrgType] = useState(defaultOrgType)
   const [website, setWebsite] = useState('')
   const [logoUrl, setLogoUrl] = useState('')
   const [loading, setLoading] = useState(false)
@@ -1353,7 +1527,7 @@ function OnboardingPage({ user, onComplete }: { user: User; onComplete: (profile
     setError('')
 
     try {
-      const profile = await createOrganizationWithOwner(user, { displayName, orgName, industry, website, logoUrl })
+      const profile = await createOrganizationWithOwner(user, { displayName, orgName, orgType, website, logoUrl })
       onComplete(profile)
     } catch (setupError) {
       setError(setupError instanceof Error ? setupError.message : 'Could not complete setup')
@@ -1395,9 +1569,9 @@ function OnboardingPage({ user, onComplete }: { user: User; onComplete: (profile
             <input placeholder="Your organization or event company" value={orgName} onChange={(event) => setOrgName(event.target.value)} required />
           </label>
           <label>
-            Event category
-            <select value={industry} onChange={(event) => setIndustry(event.target.value)}>
-              {orgCategoryOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            Organization type
+            <select value={orgType} onChange={(event) => setOrgType(event.target.value)}>
+              {orgTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
             </select>
           </label>
           <label>
@@ -2902,9 +3076,11 @@ function ProgramChooserPage({
 function OrganizationChooserPage({
   profile,
   onChoose,
+  onCreate,
 }: {
   profile: PeUser
   onChoose: (orgId: string) => void
+  onCreate?: () => void
 }) {
   const [organizations, setOrganizations] = useState<Organization[]>([])
   const [error, setError] = useState('')
@@ -2944,13 +3120,19 @@ function OrganizationChooserPage({
             <h1>Select the workspace to open</h1>
             <p>Your CRM dashboard opens inside one organization first, then inside one program.</p>
           </div>
+          {onCreate && (
+            <button className="primary-button" onClick={onCreate} type="button">
+              <Plus size={17} />
+              New organization
+            </button>
+          )}
         </div>
         <div className="program-choice-grid">
           {organizations.map((organization) => (
             <button className="program-choice-card org-choice-card" key={organization.id} onClick={() => onChoose(organization.id)} type="button">
               {organization.logoUrl ? <img alt="" src={organization.logoUrl} /> : <div className="program-choice-fallback"><Building2 size={24} /></div>}
               <strong>{organization.name}</strong>
-              <p>{organization.industry || 'Event organization'}</p>
+              <p>{orgTypeLabel(organization)}</p>
               <small><Link2 size={13} /> {organization.website || organization.id}</small>
               <div>
                 <span>Open workspace</span>
@@ -3682,25 +3864,95 @@ function DashboardPage({
   )
 }
 
-function ProgramsPage({
-  orgId,
-  uid,
-  programs,
-  events,
-  venueCatalogs,
-  onChoose,
-  canCreateProgram,
-  canDeleteProgram,
+type OrganizationOption = Organization & { canCreateProgram: boolean }
+
+// Loads every organization on the CRM profile plus whether this account may
+// create programs inside it. Each read is one the security rules already allow:
+// the organization doc (active member), the caller's own deterministic
+// `peTeamMembers/{orgId}_{uid}` row, and that member's role doc.
+function useOrganizationOptions(profile: PeUser, uid: string) {
+  const [options, setOptions] = useState<OrganizationOption[]>([])
+  const [loading, setLoading] = useState(true)
+  const organizationIdKey = (profile.organizationIds || []).join(',')
+
+  useEffect(() => {
+    let mounted = true
+    const organizationIds = organizationIdKey ? organizationIdKey.split(',') : []
+
+    async function loadOptions() {
+      if (organizationIds.length === 0) {
+        if (mounted) {
+          setOptions([])
+          setLoading(false)
+        }
+        return
+      }
+      setLoading(true)
+      const loaded = await Promise.all(organizationIds.map(async (orgId) => {
+        try {
+          const [orgSnapshot, memberSnapshot] = await Promise.all([
+            getDoc(doc(db, 'peOrganizations', orgId)),
+            getDoc(doc(db, 'peTeamMembers', `${orgId}_${uid}`)),
+          ])
+          if (!orgSnapshot.exists()) return null
+          const member = memberSnapshot.exists() ? (memberSnapshot.data() as TeamMember) : null
+          let canCreateProgram = false
+          if (member && member.status === 'active' && member.scope === 'organization') {
+            const roleSnapshot = await getDoc(doc(db, 'peOrganizations', orgId, 'roles', member.roleId))
+            const role = roleSnapshot.exists() ? ({ id: roleSnapshot.id, ...roleSnapshot.data() } as Role) : null
+            canCreateProgram = Boolean(role) && !isDeletedRole(role as Role) && hasPermission(role as Role, 'program.write')
+          }
+          return { id: orgSnapshot.id, ...orgSnapshot.data(), canCreateProgram } as OrganizationOption
+        } catch {
+          return null
+        }
+      }))
+      if (!mounted) return
+      setOptions(loaded.filter((option): option is OrganizationOption => option !== null))
+      setLoading(false)
+    }
+
+    loadOptions()
+    return () => {
+      mounted = false
+    }
+  }, [organizationIdKey, uid])
+
+  return { options, loading }
+}
+
+const NEW_ORGANIZATION_VALUE = '__new_organization__'
+
+function ProgramComposerPage({
+  user,
+  profile,
+  activeOrgId,
+  organizationOptions,
+  organizationsLoading,
+  onCreated,
+  onCancel,
 }: {
-  orgId: string
-  uid: string
-  programs: Program[]
-  events: ProgramEvent[]
-  venueCatalogs: ProgramVenueCatalog[]
-  onChoose?: (programId: string) => void
-  canCreateProgram: boolean
-  canDeleteProgram: boolean
+  user: User
+  profile: PeUser
+  activeOrgId: string
+  organizationOptions: OrganizationOption[]
+  organizationsLoading: boolean
+  onCreated: (result: { orgId: string; programId: string }) => void
+  onCancel: () => void
 }) {
+  const writableOrganizations = useMemo(
+    () => organizationOptions.filter((organization) => organization.canCreateProgram),
+    [organizationOptions],
+  )
+  const readOnlyOrganizations = organizationOptions.length - writableOrganizations.length
+
+  const [targetOrgId, setTargetOrgId] = useState('')
+  const [creatingOrganization, setCreatingOrganization] = useState(false)
+  const [newOrgName, setNewOrgName] = useState('')
+  const [newOrgType, setNewOrgType] = useState(defaultOrgType)
+  const [newOrgWebsite, setNewOrgWebsite] = useState('')
+  const [newOrgLogoUrl, setNewOrgLogoUrl] = useState('')
+
   const [name, setName] = useState('')
   const [tagline, setTagline] = useState('')
   const [mode, setMode] = useState<ProgramMode>('multiEvent')
@@ -3712,50 +3964,81 @@ function ProgramsPage({
   const [endTime, setEndTime] = useState('17:00')
   const [draftVenues, setDraftVenues] = useState<ProgramVenue[]>([])
   const [selectedVenueId, setSelectedVenueId] = useState('')
+  const [venueDraftOpen, setVenueDraftOpen] = useState(false)
   const [logoUrl, setLogoUrl] = useState('')
   const [bannerUrl, setBannerUrl] = useState('')
   const [posterUrl, setPosterUrl] = useState('')
   const [description, setDescription] = useState('')
   const [competitive, setCompetitive] = useState(false)
   const [resultsEnabled, setResultsEnabled] = useState(false)
-  const [createOpen, setCreateOpen] = useState(programs.length === 0 && canCreateProgram)
-  const [venueDraftOpen, setVenueDraftOpen] = useState(false)
-  const [editingProgramId, setEditingProgramId] = useState('')
   const [busy, setBusy] = useState(false)
-  const [deletingProgramId, setDeletingProgramId] = useState('')
+  const [step, setStep] = useState('')
   const [error, setError] = useState('')
-  const visiblePrograms = useMemo(() => programs.filter((program) => program.status !== 'archived'), [programs])
+
   const selectedDraftVenue = draftVenues.find((venue) => venue.id === selectedVenueId) || null
-  const editingProgram = visiblePrograms.find((program) => program.id === editingProgramId) || null
-  const editingVenueCatalog = editingProgram
-    ? venueCatalogs.find((catalog) => catalog.id === editingProgram.id || catalog.programId === editingProgram.id) || null
-    : null
 
+  // Default to the workspace the organizer is already in; if they cannot create
+  // programs anywhere yet, open on the new-organization form.
   useEffect(() => {
-    if (!canCreateProgram && createOpen) {
-      setCreateOpen(false)
+    if (organizationsLoading || targetOrgId || creatingOrganization) return
+    const preferred = writableOrganizations.find((organization) => organization.id === activeOrgId)
+      || writableOrganizations[0]
+    if (preferred) {
+      setTargetOrgId(preferred.id)
+    } else {
+      setCreatingOrganization(true)
     }
-  }, [canCreateProgram, createOpen])
+  }, [activeOrgId, creatingOrganization, organizationsLoading, targetOrgId, writableOrganizations])
 
-  useEffect(() => {
-    if (editingProgramId && !visiblePrograms.some((program) => program.id === editingProgramId)) {
-      setEditingProgramId('')
+  function selectOrganization(value: string) {
+    setError('')
+    if (value === NEW_ORGANIZATION_VALUE) {
+      setCreatingOrganization(true)
+      return
     }
-  }, [editingProgramId, visiblePrograms])
+    setCreatingOrganization(false)
+    setTargetOrgId(value)
+  }
 
-  async function createProgram(event: FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault()
     setError('')
-    if (!canCreateProgram) {
-      setError('You do not have access to create programs.')
+
+    if (creatingOrganization && newOrgName.trim().length < 2) {
+      setError('Give the new organization a name with at least 2 characters.')
+      return
+    }
+    if (!creatingOrganization && !targetOrgId) {
+      setError('Choose the organization this program belongs to.')
       return
     }
     if (!selectedDraftVenue) {
       setError('Add or choose the program venue before creating the program.')
       return
     }
+
     setBusy(true)
     try {
+      let orgId = targetOrgId
+
+      if (creatingOrganization) {
+        setStep('Creating organization')
+        const ownerName = (profile.displayName || user.displayName || user.email?.split('@')[0] || '').trim()
+        const created = await createOrganizationWithOwner(
+          user,
+          {
+            displayName: ownerName.length >= 2 ? ownerName : newOrgName.trim(),
+            orgName: newOrgName.trim(),
+            orgType: newOrgType,
+            website: newOrgWebsite.trim(),
+            logoUrl: newOrgLogoUrl.trim(),
+          },
+          profile,
+        )
+        orgId = created.activeOrgId
+      }
+
+      setStep('Creating program')
       const createPayload: CreateProgramPayload = {
         orgId,
         name: name.trim(),
@@ -3783,11 +4066,14 @@ function ProgramsPage({
         primaryVenue: serializeVenueForFunction(selectedDraftVenue),
       }
       const response = await createProgramCallable(createPayload)
+      const programId = response.data.programId
+
+      setStep('Saving venue library')
       const savedVenue = serializeVenueForFunction(selectedDraftVenue)
       try {
         await saveProgramVenueCallable({
           orgId,
-          programId: response.data.programId,
+          programId,
           venueId: savedVenue.id,
           name: savedVenue.name,
           address: savedVenue.address || savedVenue.name,
@@ -3802,95 +4088,132 @@ function ProgramsPage({
           })),
         })
       } catch (venueError) {
-        setError(`Program created, but venue library could not be saved: ${venueError instanceof Error ? venueError.message : 'Unable to save venue.'}`)
-        onChoose?.(response.data.programId)
-        return
+        setError(`Program created, but the venue library could not be saved: ${venueError instanceof Error ? venueError.message : 'Unable to save venue.'}`)
       }
-      setName('')
-      setTagline('')
-      setMode('multiEvent')
-      setProgramType('college_fest')
-      setCustomProgramType('')
-      setStartDate(nowDateInput())
-      setEndDate(nowDateInput())
-      setStartTime('09:00')
-      setEndTime('17:00')
-      setDraftVenues([])
-      setSelectedVenueId('')
-      setLogoUrl('')
-      setBannerUrl('')
-      setPosterUrl('')
-      setDescription('')
-      setCompetitive(false)
-      setResultsEnabled(false)
-      setCreateOpen(false)
-      onChoose?.(response.data.programId)
+
+      // Switch the workspace last, so a failed write never leaves the CRM
+      // pointing at an organization that has nothing in it.
+      if (orgId !== activeOrgId) {
+        setStep('Opening workspace')
+        await setActiveOrganizationCallable({ orgId })
+      }
+      onCreated({ orgId, programId })
     } catch (programError) {
       setError(programError instanceof Error ? programError.message : 'Unable to create program.')
     } finally {
+      setStep('')
       setBusy(false)
     }
   }
 
-  async function deleteProgramFromList(program: Program) {
-    const confirmed = window.confirm(`Delete "${program.name}"? It will be removed from active program screens, while past people, passes, and check-in history stay preserved.`)
-    if (!confirmed) return
-    setError('')
-    setDeletingProgramId(program.id)
-    try {
-      await deleteProgramCallable({ orgId, programId: program.id })
-    } catch (programError) {
-      setError(programError instanceof Error ? programError.message : 'Unable to delete program.')
-    } finally {
-      setDeletingProgramId('')
-    }
-  }
+  const organizationSelectValue = creatingOrganization ? NEW_ORGANIZATION_VALUE : targetOrgId
 
   return (
     <section className="page-stack">
       <section className="events-command command-premium">
         <div>
-          <span className="eyebrow">Programs</span>
-          <h1>Program command center</h1>
-          <p>Create conferences, college festivals, corporate events, competitions, or standalone programs. Each program owns its people, passes, events, schedule, QR, and analytics.</p>
+          <span className="eyebrow">New program</span>
+          <h1>Create a program</h1>
+          <p>Choose the organization that owns this program, then set the dates, venue, and artwork. Events, people, passes, and analytics all live inside it.</p>
         </div>
-        {canCreateProgram && (
-          <button className="primary-button" onClick={() => setCreateOpen(true)} type="button">
-            <Plus size={17} />
-            Create program
-          </button>
-        )}
+        <button className="secondary-button" onClick={onCancel} type="button">
+          Cancel
+        </button>
       </section>
 
-      {visiblePrograms.length === 0 ? (
-        <section className="panel premium-empty-panel">
-          <EmptyState title="No programs available" body={canCreateProgram ? 'Create the first program, upload artwork, set dates and venue, then add events and people from the workspace.' : 'No program has been assigned to this CRM account yet.'} />
-          {canCreateProgram && (
-            <button className="primary-button" onClick={() => setCreateOpen(true)} type="button">
-              <Plus size={17} />
-              Add first program
-            </button>
-          )}
-        </section>
-      ) : (
-        <div className="program-card-grid">
-          {visiblePrograms.map((program) => (
-            <ProgramBlock
-              deleting={deletingProgramId === program.id}
-              events={events.filter((programEvent) => programEvent.programId === program.id)}
-              key={program.id}
-              onDelete={canDeleteProgram ? deleteProgramFromList : undefined}
-              onEdit={canDeleteProgram ? setEditingProgramId : undefined}
-              onOpen={onChoose}
-              program={program}
-            />
-          ))}
-        </div>
-      )}
+      <form className="composer-layout" onSubmit={submit}>
+        <aside className="composer-rail">
+          <div className="composer-rail-head">
+            <span className="eyebrow">Organization</span>
+            <h2>Where does this program belong?</h2>
+            <p>Pick an organization you already run, or create a new one and add this program under it.</p>
+          </div>
 
-      <Modal eyebrow="Program setup" onClose={() => setCreateOpen(false)} open={createOpen && canCreateProgram} title="Create program" wide>
-        <form className="modal-form" onSubmit={createProgram}>
+          {organizationsLoading ? (
+            <p className="composer-rail-note"><Loader2 className="spin" size={14} /> Loading your organizations</p>
+          ) : (
+            <div className="org-option-list">
+              {writableOrganizations.map((organization) => {
+                const selected = !creatingOrganization && targetOrgId === organization.id
+                return (
+                  <button
+                    aria-pressed={selected}
+                    className={selected ? 'org-option selected' : 'org-option'}
+                    key={organization.id}
+                    onClick={() => selectOrganization(organization.id)}
+                    type="button"
+                  >
+                    {organization.logoUrl
+                      ? <img alt="" src={organization.logoUrl} />
+                      : <span className="org-option-mark"><Building2 size={16} /></span>}
+                    <span className="org-option-copy">
+                      <strong>{organization.name}</strong>
+                      <small>{orgTypeLabel(organization)}{organization.id === activeOrgId ? ' · open workspace' : ''}</small>
+                    </span>
+                    {selected && <Check size={16} />}
+                  </button>
+                )
+              })}
+
+              <button
+                aria-pressed={creatingOrganization}
+                className={creatingOrganization ? 'org-option org-option-new selected' : 'org-option org-option-new'}
+                onClick={() => selectOrganization(NEW_ORGANIZATION_VALUE)}
+                type="button"
+              >
+                <span className="org-option-mark"><Plus size={16} /></span>
+                <span className="org-option-copy">
+                  <strong>New organization</strong>
+                  <small>Create one now and own this program</small>
+                </span>
+                {creatingOrganization && <Check size={16} />}
+              </button>
+            </div>
+          )}
+
+          {creatingOrganization && (
+            <div className="org-new-form">
+              <label>
+                Organization name
+                <input
+                  placeholder="Your college, company, or event agency"
+                  value={newOrgName}
+                  onChange={(event) => setNewOrgName(event.target.value)}
+                />
+              </label>
+              <label>
+                Organization type
+                <select value={newOrgType} onChange={(event) => setNewOrgType(event.target.value)}>
+                  {orgTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </select>
+              </label>
+              <label>
+                Website
+                <input placeholder="https://" value={newOrgWebsite} onChange={(event) => setNewOrgWebsite(event.target.value)} />
+              </label>
+              <ImageUploader folder="organization-logos" label="Organization logo" onChange={setNewOrgLogoUrl} uid={user.uid} value={newOrgLogoUrl} />
+              <p className="composer-rail-note">You become the owner of this organization, with the default owner, event lead, gate staff, and analyst roles ready to assign.</p>
+            </div>
+          )}
+
+          {!organizationsLoading && readOnlyOrganizations > 0 && (
+            <p className="composer-rail-note">
+              {readOnlyOrganizations} more {readOnlyOrganizations === 1 ? 'organization is' : 'organizations are'} linked to this account, but your role there cannot create programs.
+            </p>
+          )}
+        </aside>
+
+        <div className="composer-form">
           <div className="form-grid two">
+            <label>
+              Organization
+              <select value={organizationSelectValue} onChange={(event) => selectOrganization(event.target.value)}>
+                {writableOrganizations.map((organization) => (
+                  <option key={organization.id} value={organization.id}>{organization.name}</option>
+                ))}
+                <option value={NEW_ORGANIZATION_VALUE}>+ Create a new organization</option>
+              </select>
+            </label>
             <label>
               Program name
               <input placeholder="Annual Tech Summit 2026" value={name} onChange={(event) => setName(event.target.value)} required />
@@ -3937,9 +4260,9 @@ function ProgramsPage({
           </div>
 
           <div className="form-grid three">
-            <ImageUploader folder="program-logos" label="Program logo" onChange={setLogoUrl} uid={uid} value={logoUrl} />
-            <ImageUploader folder="program-banners" label="Program banner" onChange={setBannerUrl} uid={uid} value={bannerUrl} />
-            <ImageUploader folder="program-posters" label="Program poster" onChange={setPosterUrl} uid={uid} value={posterUrl} />
+            <ImageUploader folder="program-logos" label="Program logo" onChange={setLogoUrl} uid={user.uid} value={logoUrl} />
+            <ImageUploader folder="program-banners" label="Program banner" onChange={setBannerUrl} uid={user.uid} value={bannerUrl} />
+            <ImageUploader folder="program-posters" label="Program poster" onChange={setPosterUrl} uid={user.uid} value={posterUrl} />
           </div>
 
           <ProgramVenueSelector
@@ -3972,16 +4295,17 @@ function ProgramsPage({
           {error && <p className="form-error">{error}</p>}
 
           <div className="action-row">
-            <button className="secondary-button" onClick={() => setCreateOpen(false)} type="button">
+            <button className="secondary-button" disabled={busy} onClick={onCancel} type="button">
               Cancel
             </button>
             <button className="primary-button" disabled={busy} type="submit">
               {busy ? <Loader2 className="spin" size={17} /> : <Plus size={17} />}
-              Create program
+              {busy ? step || 'Working' : 'Create program'}
             </button>
           </div>
-        </form>
-      </Modal>
+        </div>
+      </form>
+
       <DraftVenueLibraryModal
         onChange={setDraftVenues}
         onClose={() => setVenueDraftOpen(false)}
@@ -3989,9 +4313,107 @@ function ProgramsPage({
           setSelectedVenueId(venue.id)
           setVenueDraftOpen(false)
         }}
-        open={venueDraftOpen && createOpen}
+        open={venueDraftOpen}
         venues={draftVenues}
       />
+    </section>
+  )
+}
+
+function ProgramsPage({
+  orgId,
+  uid,
+  programs,
+  events,
+  venueCatalogs,
+  onChoose,
+  onCreateProgram,
+  canCreateProgram,
+  canDeleteProgram,
+}: {
+  orgId: string
+  uid: string
+  programs: Program[]
+  events: ProgramEvent[]
+  venueCatalogs: ProgramVenueCatalog[]
+  onChoose?: (programId: string) => void
+  onCreateProgram: () => void
+  canCreateProgram: boolean
+  canDeleteProgram: boolean
+}) {
+  const [editingProgramId, setEditingProgramId] = useState('')
+  const [deletingProgramId, setDeletingProgramId] = useState('')
+  const [error, setError] = useState('')
+  const visiblePrograms = useMemo(() => programs.filter((program) => program.status !== 'archived'), [programs])
+  const editingProgram = visiblePrograms.find((program) => program.id === editingProgramId) || null
+  const editingVenueCatalog = editingProgram
+    ? venueCatalogs.find((catalog) => catalog.id === editingProgram.id || catalog.programId === editingProgram.id) || null
+    : null
+
+  useEffect(() => {
+    if (editingProgramId && !visiblePrograms.some((program) => program.id === editingProgramId)) {
+      setEditingProgramId('')
+    }
+  }, [editingProgramId, visiblePrograms])
+
+  async function deleteProgramFromList(program: Program) {
+    const confirmed = window.confirm(`Delete "${program.name}"? It will be removed from active program screens, while past people, passes, and check-in history stay preserved.`)
+    if (!confirmed) return
+    setError('')
+    setDeletingProgramId(program.id)
+    try {
+      await deleteProgramCallable({ orgId, programId: program.id })
+    } catch (programError) {
+      setError(programError instanceof Error ? programError.message : 'Unable to delete program.')
+    } finally {
+      setDeletingProgramId('')
+    }
+  }
+
+  return (
+    <section className="page-stack">
+      <section className="events-command command-premium">
+        <div>
+          <span className="eyebrow">Programs</span>
+          <h1>Program command center</h1>
+          <p>Create conferences, college festivals, corporate events, competitions, or standalone programs. Each program owns its people, passes, events, schedule, QR, and analytics.</p>
+        </div>
+        {canCreateProgram && (
+          <button className="primary-button" onClick={onCreateProgram} type="button">
+            <Plus size={17} />
+            Create program
+          </button>
+        )}
+      </section>
+
+      {visiblePrograms.length === 0 ? (
+        <section className="panel premium-empty-panel">
+          <EmptyState title="No programs available" body={canCreateProgram ? 'Create the first program, upload artwork, set dates and venue, then add events and people from the workspace.' : 'No program has been assigned to this CRM account yet.'} />
+          {canCreateProgram && (
+            <button className="primary-button" onClick={onCreateProgram} type="button">
+              <Plus size={17} />
+              Add first program
+            </button>
+          )}
+        </section>
+      ) : (
+        <div className="program-card-grid">
+          {visiblePrograms.map((program) => (
+            <ProgramBlock
+              deleting={deletingProgramId === program.id}
+              events={events.filter((programEvent) => programEvent.programId === program.id)}
+              key={program.id}
+              onDelete={canDeleteProgram ? deleteProgramFromList : undefined}
+              onEdit={canDeleteProgram ? setEditingProgramId : undefined}
+              onOpen={onChoose}
+              program={program}
+            />
+          ))}
+        </div>
+      )}
+
+      {error && <p className="form-error">{error}</p>}
+
       <Modal
         eyebrow="Program editor"
         onClose={() => setEditingProgramId('')}
@@ -4996,14 +5418,14 @@ function SettingsPage({
   canManageProgram: boolean
 }) {
   const [orgName, setOrgName] = useState(organization?.name || '')
-  const [industry, setIndustry] = useState(organization?.industry || 'College fest')
+  const [orgType, setOrgType] = useState(() => resolveOrgType(organization))
   const [website, setWebsite] = useState(organization?.website || '')
   const [logoUrl, setLogoUrl] = useState(organization?.logoUrl || '')
   const [orgBusy, setOrgBusy] = useState(false)
 
   useEffect(() => {
     setOrgName(organization?.name || '')
-    setIndustry(organization?.industry || 'College fest')
+    setOrgType(resolveOrgType(organization))
     setWebsite(organization?.website || '')
     setLogoUrl(organization?.logoUrl || '')
   }, [organization])
@@ -5012,7 +5434,7 @@ function SettingsPage({
     event.preventDefault()
     setOrgBusy(true)
     try {
-      await updateOrganizationCallable({ orgId, name: orgName.trim(), industry, website: website.trim(), logoUrl: logoUrl.trim() })
+      await updateOrganizationCallable({ orgId, name: orgName.trim(), orgType, website: website.trim(), logoUrl: logoUrl.trim() })
     } finally {
       setOrgBusy(false)
     }
@@ -5044,9 +5466,9 @@ function SettingsPage({
               <input value={orgName} onChange={(event) => setOrgName(event.target.value)} required />
             </label>
             <label>
-              Organization category
-              <select value={industry} onChange={(event) => setIndustry(event.target.value)}>
-                {orgCategoryOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              Organization type
+              <select value={orgType} onChange={(event) => setOrgType(event.target.value)}>
+                {orgTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
               </select>
             </label>
             <label>
@@ -6637,6 +7059,9 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
   const people = useCollection<ProgramPerson>(peopleQuery, 'People')
   const passes = useCollection<PassRecord>(passesQuery, 'Passes')
   const members = useCollection<TeamMember>(membersQuery, 'Team')
+  const organizationOptions = useOrganizationOptions(profile, firebaseUser.uid)
+  const canCreateProgramSomewhere = organizationOptions.options.some((option) => option.canCreateProgram)
+  const canSwitchOrganization = (profile.organizationIds || []).length > 1
   const [organization, setOrganization] = useState<Organization | null>(null)
 
   useEffect(() => {
@@ -6668,14 +7093,18 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
 
   useEffect(() => {
     if (!currentMember || !currentRole || visibleNavItems.length === 0) return
+    // The composer can target an organization other than the open one, and
+    // creating a program there swaps the active workspace mid-flight. Judge it
+    // on "can create a program anywhere", not on the current organization's role.
+    if (route === 'programCreate' && (canCreateProgram || canCreateProgramSomewhere)) return
     if (!canOpenRoute(route, currentRole, currentMember)) {
       setRoute(visibleNavItems[0].key)
     }
-  }, [currentMember, currentRole, route, visibleNavItems])
+  }, [canCreateProgram, canCreateProgramSomewhere, currentMember, currentRole, route, visibleNavItems])
 
   const sortedPrograms = [...programs.rows].sort((a, b) => a.startDate.localeCompare(b.startDate))
   const selectedProgram = sortedPrograms.find((program) => program.id === selectedProgramId) || null
-  const shouldChooseProgram = !selectedProgram && sortedPrograms.length > 1 && route !== 'programs'
+  const shouldChooseProgram = !selectedProgram && sortedPrograms.length > 1 && route !== 'programs' && route !== 'programCreate'
   const activeProgram = selectedProgram || (sortedPrograms.length === 1 ? sortedPrograms[0] : null)
   const activeEvents = activeProgram ? events.rows.filter((event) => event.programId === activeProgram.id) : []
   const activeScheduleItems = activeProgram ? scheduleItems.rows.filter((item) => item.programId === activeProgram.id) : []
@@ -6697,6 +7126,16 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
     }
   }, [orgId, selectedProgramId, sortedPrograms])
 
+  const emptyOrgPromptedRef = useRef('')
+  useEffect(() => {
+    if (!orgId || programs.loading || !canCreateProgram) return
+    if (sortedPrograms.length > 0 || emptyOrgPromptedRef.current === orgId) return
+    emptyOrgPromptedRef.current = orgId
+    if (route !== 'programCreate') {
+      setRoute('programCreate')
+    }
+  }, [canCreateProgram, orgId, programs.loading, route, sortedPrograms.length])
+
   async function chooseOrganization(nextOrgId: string) {
     await setActiveOrganizationCallable({ orgId: nextOrgId })
     window.localStorage.setItem('sang-crm-org-choice-confirmed', nextOrgId)
@@ -6715,7 +7154,16 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
   }
 
   if (needsOrgChoice) {
-    return <OrganizationChooserPage onChoose={chooseOrganization} profile={profile} />
+    return (
+      <OrganizationChooserPage
+        onChoose={chooseOrganization}
+        onCreate={() => {
+          setNeedsOrgChoice(false)
+          setRoute('programCreate')
+        }}
+        profile={profile}
+      />
+    )
   }
 
   if (ownMemberships.loading || roles.loading) {
@@ -6746,6 +7194,19 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
     setRoute('dashboard')
   }
 
+  function openProgramComposer() {
+    setRoute('programCreate')
+  }
+
+  // A freshly created program becomes the open workspace, in its own organization.
+  function finishProgramCreation({ orgId: createdOrgId, programId }: { orgId: string; programId: string }) {
+    window.localStorage.setItem('sang-crm-org-choice-confirmed', createdOrgId)
+    setSelectedProgramId(programId)
+    window.localStorage.setItem('sang-crm-selected-program', programId)
+    setNeedsOrgChoice(false)
+    setRoute('dashboard')
+  }
+
   function chooseProgramInSettings(programId: string) {
     setSelectedProgramId(programId)
     window.localStorage.setItem('sang-crm-selected-program', programId)
@@ -6757,8 +7218,28 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
     window.localStorage.removeItem('sang-crm-selected-program')
   }
 
+  function switchOrganization() {
+    setNeedsOrgChoice(true)
+  }
+
+  if (route === 'programCreate' && (canCreateProgram || canCreateProgramSomewhere)) {
+    return (
+      <Shell onSwitchOrganization={canSwitchOrganization ? switchOrganization : undefined} onSwitchProgram={switchProgram} organization={organization} route={route} selectedProgram={null} setRoute={setRoute} user={firebaseUser} visibleNavItems={visibleNavItems}>
+        <ProgramComposerPage
+          activeOrgId={orgId}
+          onCancel={() => setRoute(sortedPrograms.length > 0 ? 'programs' : 'dashboard')}
+          onCreated={finishProgramCreation}
+          organizationOptions={organizationOptions.options}
+          organizationsLoading={organizationOptions.loading}
+          profile={profile}
+          user={firebaseUser}
+        />
+      </Shell>
+    )
+  }
+
   if (shouldChooseProgram) {
-    return <ProgramChooserPage canCreate={canCreateProgram} events={events.rows} onChoose={chooseProgram} onCreate={() => setRoute('programs')} programs={sortedPrograms} />
+    return <ProgramChooserPage canCreate={canCreateProgram} events={events.rows} onChoose={chooseProgram} onCreate={openProgramComposer} programs={sortedPrograms} />
   }
 
   if (!canOpenRoute(route, currentRole, currentMember)) {
@@ -6771,17 +7252,17 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
   }
 
   return (
-    <Shell onSwitchProgram={switchProgram} organization={organization} route={route} selectedProgram={activeProgram} setRoute={setRoute} user={firebaseUser} visibleNavItems={visibleNavItems}>
+    <Shell onSwitchOrganization={canSwitchOrganization ? switchOrganization : undefined} onSwitchProgram={switchProgram} organization={organization} route={route} selectedProgram={activeProgram} setRoute={setRoute} user={firebaseUser} visibleNavItems={visibleNavItems}>
       {programs.error || roles.error || ownMemberships.error || people.error || scheduleItems.error || venueCatalogs.error || partners.error || passes.error || members.error ? <p className="form-error">{programs.error || roles.error || ownMemberships.error || people.error || scheduleItems.error || venueCatalogs.error || partners.error || passes.error || members.error}</p> : null}
       {route === 'dashboard' && activeProgram && <ProgramWorkspaceDashboard events={activeEvents} orgId={orgId} people={activePeople} program={activeProgram} scheduleItems={activeScheduleItems} setRoute={setRoute} venueCatalog={activeVenueCatalog} />}
       {route === 'dashboard' && !activeProgram && <DashboardPage people={people.rows} programs={sortedPrograms} setRoute={setRoute} />}
       {route === 'events' && activeProgram && <EventsPage events={activeEvents} orgId={orgId} people={activePeople} program={activeProgram} roles={roles.rows} scheduleItems={activeScheduleItems} teamMembers={members.rows} uid={firebaseUser.uid} venueCatalog={activeVenueCatalog} />}
-      {route === 'events' && !activeProgram && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} venueCatalogs={venueCatalogs.rows} />}
+      {route === 'events' && !activeProgram && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} onCreateProgram={openProgramComposer} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} venueCatalogs={venueCatalogs.rows} />}
       {route === 'venues' && activeProgram && <VenuesPage orgId={orgId} program={activeProgram} venueCatalog={activeVenueCatalog} />}
-      {route === 'venues' && !activeProgram && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} venueCatalogs={venueCatalogs.rows} />}
+      {route === 'venues' && !activeProgram && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} onCreateProgram={openProgramComposer} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} venueCatalogs={venueCatalogs.rows} />}
       {route === 'patrons' && activeProgram && <PatronsPage orgId={orgId} partners={activePartners} program={activeProgram} uid={firebaseUser.uid} />}
-      {route === 'patrons' && !activeProgram && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} venueCatalogs={venueCatalogs.rows} />}
-      {route === 'programs' && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} venueCatalogs={venueCatalogs.rows} />}
+      {route === 'patrons' && !activeProgram && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} onCreateProgram={openProgramComposer} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} venueCatalogs={venueCatalogs.rows} />}
+      {route === 'programs' && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} onCreateProgram={openProgramComposer} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} venueCatalogs={venueCatalogs.rows} />}
       {route === 'settings' && <SettingsPage canManageOrganization={canManageOrganization} canManageProgram={canManageProgram} onProgramSelect={chooseProgramInSettings} orgId={orgId} organization={organization} program={activeProgram} programs={sortedPrograms} uid={firebaseUser.uid} venueCatalog={activeVenueCatalog} />}
       {route === 'roles' && <RolesPage orgId={orgId} roles={roles.rows} />}
       {route === 'team' && <TeamPage events={events.rows} members={members.rows} orgId={orgId} people={people.rows} programs={sortedPrograms} roles={roles.rows} />}
