@@ -40,9 +40,16 @@ Current selected workspace flow:
 3. If no user profile exists, the app runs `claimTeamAccess`.
 4. If no organization exists, onboarding creates one through `createOrganization`.
 5. If user has multiple organizations, user chooses one. `setActiveOrganization` stores `activeOrgId`.
+   The sidebar "Switch" control and the organization chooser both go through this callable.
 6. App loads active organization data and all program/event/people/pass/check-in data for that organization.
-7. If multiple programs exist, user chooses a program workspace.
-8. Dashboard, Events, People, Check-in, Analytics, and Settings work in selected organization plus selected program context.
+7. An organization with no programs sends the organizer straight to the program
+   composer (`#/programCreate`). The composer picks the owning organization — any
+   organization where the caller has organization-scoped `program.write`, or a new
+   one created inline — then calls `createOrganization` (only when new),
+   `createProgram`, `saveProgramVenue`, and finally `setActiveOrganization` so the
+   workspace only switches after every write succeeded.
+8. If multiple programs exist, user chooses a program workspace.
+9. Dashboard, Events, People, Check-in, Analytics, and Settings work in selected organization plus selected program context.
 
 ## Implemented Collections
 
@@ -99,7 +106,8 @@ Main fields:
 ```ts
 {
   name: string,
-  industry: string,
+  orgType: string,   // taxonomy slug, see below
+  industry: string,  // human label for orgType, kept for legacy readers
   website: string,
   logoUrl: string,
   ownerUid: string,
@@ -107,6 +115,18 @@ Main fields:
   updatedAt: Timestamp
 }
 ```
+
+Organization types (`orgType`), validated by Zod in `createOrganization`/`updateOrganization`:
+
+`college_university`, `student_club`, `company`, `event_agency`, `startup`, `ngo`,
+`government`, `community`, `venue`, `other`
+
+- The slug is the source of truth. `industry` is written as its display label so
+  documents created before the taxonomy keep rendering.
+- Organizations written before this taxonomy have no `orgType`; both the callable
+  and the CRM derive one from the legacy `industry` string.
+- The same list is duplicated in `web/src/App.tsx` (`orgTypeOptions`) and
+  `functions/src/index.ts` (`orgTypes`). Keep them in step.
 
 Created/updated by:
 
@@ -1346,11 +1366,15 @@ Before changing:
 
 `createOrganization`
 
-- Creates `peOrganizations/{orgId}`.
+- Creates `peOrganizations/{orgId}` with a validated `orgType`.
 - Creates default roles under `peOrganizations/{orgId}/roles`.
 - Creates active owner row `peTeamMembers/{orgId}_{uid}`.
-- Creates/sets `peUsers/{uid}`.
+- Merges into `peUsers/{uid}`: `organizationIds` uses `FieldValue.arrayUnion` and
+  `createdAt` is only written on first create, so one organizer can own several
+  organizations without losing earlier memberships.
+- Sets the new organization as `activeOrgId`.
 - Writes audit log.
+- Returns `{ orgId, orgType }`.
 
 `updateOrganization`
 

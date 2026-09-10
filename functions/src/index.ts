@@ -279,6 +279,51 @@ function requireUid(context: { auth?: { uid: string } }) {
   return uid
 }
 
+// Organization type taxonomy. `orgType` holds the stable slug; `industry` keeps
+// the human label so documents written before this taxonomy (and any reader
+// still using `industry`) stay correct.
+const orgTypes = [
+  { value: 'college_university', label: 'College / university' },
+  { value: 'student_club', label: 'Student club or society' },
+  { value: 'company', label: 'Company / corporate team' },
+  { value: 'event_agency', label: 'Event management agency' },
+  { value: 'startup', label: 'Startup' },
+  { value: 'ngo', label: 'NGO / non-profit' },
+  { value: 'government', label: 'Government / public body' },
+  { value: 'community', label: 'Community or hobby group' },
+  { value: 'venue', label: 'Venue / property' },
+  { value: 'other', label: 'Other' },
+] as const
+
+type OrgType = (typeof orgTypes)[number]['value']
+
+const orgTypeValues = orgTypes.map((option) => option.value) as [OrgType, ...OrgType[]]
+
+function orgTypeLabel(value: string) {
+  return orgTypes.find((option) => option.value === value)?.label || 'Other'
+}
+
+// Accepts the new slug, and falls back to reading one of the legacy free-text
+// `industry` values ("College fest", "Startup event", ...) written before the
+// taxonomy existed.
+function resolveOrgType(orgType: string | undefined, legacyIndustry: string): OrgType {
+  if (orgType && orgTypes.some((option) => option.value === orgType)) return orgType as OrgType
+  const text = legacyIndustry.trim().toLowerCase()
+  if (!text) return 'other'
+  const exact = orgTypes.find((option) => option.label.toLowerCase() === text)
+  if (exact) return exact.value
+  if (text.includes('college') || text.includes('university') || text.includes('fest')) return 'college_university'
+  if (text.includes('club') || text.includes('society')) return 'student_club'
+  if (text.includes('agency')) return 'event_agency'
+  if (text.includes('startup')) return 'startup'
+  if (text.includes('community')) return 'community'
+  if (text.includes('ngo') || text.includes('non-profit') || text.includes('nonprofit')) return 'ngo'
+  if (text.includes('government')) return 'government'
+  if (text.includes('venue')) return 'venue'
+  if (text.includes('corporate') || text.includes('company') || text.includes('conference')) return 'company'
+  return 'other'
+}
+
 function normalizeEmail(email: string) {
   return email.trim().toLowerCase()
 }
@@ -1538,12 +1583,14 @@ export const createOrganization = onCall(callableOptions, async (request) => {
     .object({
       displayName: z.string().min(2),
       orgName: z.string().min(2),
+      orgType: z.enum(orgTypeValues).optional(),
       industry: z.string().optional().default(''),
       website: z.string().optional().default(''),
       logoUrl: z.string().optional().default(''),
       email: z.string().optional().default(''),
     })
     .parse(request.data)
+  const orgType = resolveOrgType(input.orgType, input.industry)
   const ownerEmail = normalizeEmail(input.email || String(request.auth?.token.email || ''))
   if (ownerEmail && !z.string().email().safeParse(ownerEmail).success) {
     throw new HttpsError('invalid-argument', 'Use a valid owner email address.')
@@ -1554,7 +1601,8 @@ export const createOrganization = onCall(callableOptions, async (request) => {
 
   batch.set(orgRef, {
     name: input.orgName.trim(),
-    industry: input.industry.trim(),
+    orgType,
+    industry: orgTypeLabel(orgType),
     website: input.website.trim(),
     logoUrl: input.logoUrl.trim(),
     ownerUid: uid,
@@ -1576,19 +1624,27 @@ export const createOrganization = onCall(callableOptions, async (request) => {
     updatedAt: FieldValue.serverTimestamp(),
   })
 
-  batch.set(db.collection('peUsers').doc(uid), {
-    uid,
-    displayName: input.displayName.trim(),
-    email: ownerEmail,
-    activeOrgId: orgRef.id,
-    organizationIds: [orgRef.id],
-    createdAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp(),
-  })
+  // Merge, never replace: an organizer creating their second organization must
+  // keep every earlier membership (and their original createdAt).
+  const userRef = db.collection('peUsers').doc(uid)
+  const existingUser = await userRef.get()
+  batch.set(
+    userRef,
+    {
+      uid,
+      displayName: input.displayName.trim(),
+      ...(ownerEmail ? { email: ownerEmail } : {}),
+      activeOrgId: orgRef.id,
+      organizationIds: FieldValue.arrayUnion(orgRef.id),
+      ...(existingUser.exists ? {} : { createdAt: FieldValue.serverTimestamp() }),
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  )
 
   await batch.commit()
   await writeAudit({ orgId: orgRef.id, actorUid: uid, action: 'organization.create', entityPath: orgRef.path })
-  return { orgId: orgRef.id }
+  return { orgId: orgRef.id, orgType }
 })
 
 // Sends a 6-digit verification code to the email on the caller's account.
@@ -1657,14 +1713,19 @@ export const verifyEmailOtp = onCall(callableOptions, async (request) => {
 
   const email = (data.email as string) || request.auth?.token?.email || ''
   const displayName = (request.auth?.token?.name as string) || ''
-  await db.collection('peUsers').doc(uid).set(
+  const userRef = db.collection('peUsers').doc(uid)
+  const existingUser = await userRef.get()
+  await userRef.set(
     {
       uid,
       email: normalizeEmail(email),
       displayName,
       emailVerified: true,
-      organizationIds: [],
-      createdAt: FieldValue.serverTimestamp(),
+      // Seed the membership list only on first write — an invited user may have
+      // already claimed organizations through claimTeamAccess before verifying.
+      ...(existingUser.exists
+        ? {}
+        : { organizationIds: [], createdAt: FieldValue.serverTimestamp() }),
       updatedAt: FieldValue.serverTimestamp(),
     },
     { merge: true },
@@ -1679,6 +1740,7 @@ export const updateOrganization = onCall(callableOptions, async (request) => {
     .object({
       orgId: z.string().min(1),
       name: z.string().min(2),
+      orgType: z.enum(orgTypeValues).optional(),
       industry: z.string().optional().default(''),
       website: z.string().optional().default(''),
       logoUrl: z.string().optional().default(''),
@@ -1686,11 +1748,13 @@ export const updateOrganization = onCall(callableOptions, async (request) => {
     .parse(request.data)
 
   await assertPermission(uid, input.orgId, permissions.teamWrite)
+  const orgType = resolveOrgType(input.orgType, input.industry)
   const orgRef = db.collection('peOrganizations').doc(input.orgId)
   await orgRef.set(
     {
       name: input.name.trim(),
-      industry: input.industry.trim(),
+      orgType,
+      industry: orgTypeLabel(orgType),
       website: input.website.trim(),
       logoUrl: input.logoUrl.trim(),
       updatedAt: FieldValue.serverTimestamp(),
@@ -1698,7 +1762,7 @@ export const updateOrganization = onCall(callableOptions, async (request) => {
     { merge: true },
   )
   await writeAudit({ orgId: input.orgId, actorUid: uid, action: 'organization.update', entityPath: orgRef.path })
-  return { orgId: input.orgId }
+  return { orgId: input.orgId, orgType }
 })
 
 export const setActiveOrganization = onCall(callableOptions, async (request) => {
@@ -2160,7 +2224,7 @@ export const createProgram = onCall(callableOptions, async (request) => {
   }
   await batch.commit()
   await writeAudit({ orgId: input.orgId, actorUid: uid, action: 'program.create', entityPath: programRef.path })
-  return { programId: programRef.id }
+  return { programId: programRef.id, orgId: input.orgId }
 })
 
 export const updateProgram = onCall(callableOptions, async (request) => {
