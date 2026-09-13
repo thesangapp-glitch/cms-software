@@ -7,15 +7,18 @@ import {
   Building2,
   CalendarDays,
   Check,
+  ChevronDown,
+  ChevronLeft,
   ChevronRight,
+  ChevronsUpDown,
   Clock,
-  ClipboardList,
   Download,
   Eye,
   EyeOff,
   Heading2,
   Heading3,
   Italic,
+  Layers,
   LayoutDashboard,
   Link2,
   List,
@@ -24,6 +27,7 @@ import {
   Lock,
   LogOut,
   GitBranch,
+  Mail,
   MapPin,
   Pencil,
   Pilcrow,
@@ -34,6 +38,7 @@ import {
   Search,
   Settings,
   ShieldCheck,
+  Smartphone,
   Sparkles,
   Ticket,
   Trash2,
@@ -738,19 +743,28 @@ const routeLabels: Record<RouteKey, string> = {
   settings: 'Settings',
   roles: 'Roles',
   team: 'Team',
-  people: 'People',
+  people: 'People & passes',
 }
 
-const navItems = [
-  { key: 'dashboard' as const, icon: LayoutDashboard },
-  { key: 'events' as const, icon: CalendarDays },
-  { key: 'venues' as const, icon: MapPin },
-  { key: 'patrons' as const, icon: BadgeCheck },
-  { key: 'programs' as const, icon: CalendarDays },
-  { key: 'settings' as const, icon: Settings },
-  { key: 'roles' as const, icon: ShieldCheck },
-  { key: 'team' as const, icon: Users },
-  { key: 'people' as const, icon: ClipboardList },
+type NavGroup = 'program' | 'organization'
+
+const navGroupLabels: Record<NavGroup, string> = {
+  program: 'Program',
+  organization: 'Organization',
+}
+
+// Order matters: the first visible item is the fallback route when the current
+// route is not allowed for this member.
+const navItems: Array<{ key: RouteKey; icon: typeof LayoutDashboard; group: NavGroup }> = [
+  { key: 'dashboard', icon: LayoutDashboard, group: 'program' },
+  { key: 'events', icon: CalendarDays, group: 'program' },
+  { key: 'people', icon: Users, group: 'program' },
+  { key: 'venues', icon: MapPin, group: 'program' },
+  { key: 'patrons', icon: BadgeCheck, group: 'program' },
+  { key: 'programs', icon: Layers, group: 'organization' },
+  { key: 'team', icon: ShieldCheck, group: 'organization' },
+  { key: 'roles', icon: Lock, group: 'organization' },
+  { key: 'settings', icon: Settings, group: 'organization' },
 ]
 
 function hasPermission(role: Role | undefined, permission: string) {
@@ -1035,6 +1049,188 @@ async function createOrganizationWithOwner(
   }
 }
 
+function initialsFor(value: string | undefined, fallback = '?') {
+  const letters = (value || '')
+    .trim()
+    .split(/[\s@._-]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((word) => word[0])
+    .join('')
+  return (letters || fallback).toUpperCase()
+}
+
+function avatarClass(seed: string) {
+  let hash = 0
+  for (const char of seed) hash = (hash * 31 + char.charCodeAt(0)) % 6
+  return `avatar tone-${hash}`
+}
+
+const shortDateFormat = new Intl.DateTimeFormat('en-IN', { day: 'numeric', month: 'short' })
+const longDateFormat = new Intl.DateTimeFormat('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+const clockFormat = new Intl.DateTimeFormat('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false })
+
+// Date-only strings ("2026-03-14") parse as UTC in JS; pin them to local midnight.
+function parseLocalDate(value?: string) {
+  if (!value) return null
+  const date = new Date(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00` : value)
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+function formatDateRange(start?: string, end?: string) {
+  const startDate = parseLocalDate(start)
+  const endDate = parseLocalDate(end)
+  if (!startDate) return 'Dates pending'
+  if (!endDate || startDate.toDateString() === endDate.toDateString()) return longDateFormat.format(startDate)
+  return `${shortDateFormat.format(startDate)} – ${longDateFormat.format(endDate)}`
+}
+
+function formatEventWhen(start?: string, end?: string) {
+  const startDate = parseLocalDate(start)
+  if (!startDate) return 'Time pending'
+  const endDate = parseLocalDate(end)
+  if (endDate && startDate.toDateString() !== endDate.toDateString()) {
+    return `${shortDateFormat.format(startDate)} – ${shortDateFormat.format(endDate)}`
+  }
+  return /T\d/.test(start || '') ? `${shortDateFormat.format(startDate)} · ${clockFormat.format(startDate)}` : shortDateFormat.format(startDate)
+}
+
+// Sentence-case a stored status for display: "notIssued" → "Not issued", "live" → "Live".
+function statusLabel(value?: string) {
+  const words = (value || '').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').trim().toLowerCase()
+  return words ? words[0].toUpperCase() + words.slice(1) : ''
+}
+
+// Full start–end text for a single event, e.g. "10 Oct 2026 · 10:00 – 11:30".
+function formatEventSpan(start?: string, end?: string) {
+  const startDate = parseLocalDate(start)
+  if (!startDate) return 'Dates pending'
+  const withClock = (value: string | undefined, date: Date) => (/T\d/.test(value || '') ? `${longDateFormat.format(date)} · ${clockFormat.format(date)}` : longDateFormat.format(date))
+  const startText = withClock(start, startDate)
+  const endDate = parseLocalDate(end)
+  if (!endDate) return startText
+  if (startDate.toDateString() === endDate.toDateString()) {
+    return /T\d/.test(end || '') ? `${startText} – ${clockFormat.format(endDate)}` : startText
+  }
+  return `${startText} – ${withClock(end, endDate)}`
+}
+
+// Mirrors the per-section "changed after last mobile publish" checks.
+function programPublishState(program: Program, events: ProgramEvent[], people: ProgramPerson[], scheduleItems: ScheduleItem[]) {
+  const isPending = (items: Array<{ updatedAt?: unknown }>, publishedAt: unknown) => {
+    const publishedMs = timestampMs(publishedAt)
+    return Boolean(items.length && (!publishedMs || newestTimestamp(items) > publishedMs))
+  }
+  return {
+    events: isPending(events, program.eventsLastPublishedAt),
+    people: isPending(people, program.peopleLastPublishedAt),
+    schedule: isPending(scheduleItems, program.scheduleLastPublishedAt),
+  }
+}
+
+function LoadingScreen({ message, blocked = false }: { message: string; blocked?: boolean }) {
+  return (
+    <main aria-busy={!blocked} className="loading-screen" role="status">
+      <div className="loader-card">
+        <div className={blocked ? 'loader-mark blocked' : 'loader-mark'}>
+          {blocked ? null : <span aria-hidden="true" className="loader-ring" />}
+          <span className="loader-logo">{blocked ? <Lock size={20} /> : 'S'}</span>
+        </div>
+        <div className="loader-copy">
+          <strong>{blocked ? 'No CRM access' : 'Sang CRM'}</strong>
+          <span>{message}</span>
+        </div>
+        {blocked ? (
+          <button className="secondary-button compact-button" onClick={() => signOut(auth)} type="button">
+            <LogOut size={15} />
+            Sign out
+          </button>
+        ) : null}
+      </div>
+    </main>
+  )
+}
+
+// Callable failures arrive as FirebaseError with codes like "functions/internal";
+// their raw messages ("INTERNAL") are not meant for people.
+function errorMessage(error: unknown, fallback: string) {
+  const code = typeof error === 'object' && error !== null && 'code' in error ? String((error as { code?: unknown }).code) : ''
+  const base = fallback.replace(/\.$/, '')
+  switch (code) {
+    case 'functions/internal':
+    case 'functions/unknown':
+    case 'functions/invalid-argument':
+      return `${base}. Please check the details and try again.`
+    case 'functions/unavailable':
+    case 'functions/deadline-exceeded':
+      return 'The server could not be reached. Check your connection and try again.'
+    case 'functions/unauthenticated':
+      return 'Your session has expired. Please sign in again.'
+    default:
+      return error instanceof Error && error.message ? error.message : fallback
+  }
+}
+
+function PageHeader({ title, description, actions, children }: { title: ReactNode; description?: ReactNode; actions?: ReactNode; children?: ReactNode }) {
+  return (
+    <header className="page-header">
+      <div className="page-header-text">
+        {children}
+        <h1>{title}</h1>
+        {description ? <p>{description}</p> : null}
+      </div>
+      {actions ? <div className="page-header-actions">{actions}</div> : null}
+    </header>
+  )
+}
+
+function Drawer({
+  title,
+  description,
+  open,
+  onClose,
+  children,
+}: {
+  title: string
+  description?: string
+  open: boolean
+  onClose: () => void
+  children: ReactNode
+}) {
+  useEffect(() => {
+    if (!open) return
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => {
+      document.body.style.overflow = previousOverflow
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [onClose, open])
+
+  if (!open) return null
+
+  return (
+    <div className="drawer-backdrop" role="presentation">
+      <section aria-label={title} aria-modal="true" className="drawer" role="dialog">
+        <div className="drawer-head">
+          <div>
+            <h2>{title}</h2>
+            {description ? <p>{description}</p> : null}
+          </div>
+          <button aria-label="Close" className="icon-button ghost" onClick={onClose} title="Close" type="button">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="drawer-body">{children}</div>
+      </section>
+    </div>
+  )
+}
+
 function Shell({
   children,
   route,
@@ -1045,6 +1241,9 @@ function Shell({
   onSwitchProgram,
   onSwitchOrganization,
   user,
+  roleName,
+  navCounts,
+  pendingPublishCount = 0,
 }: {
   children: React.ReactNode
   route: RouteKey
@@ -1055,69 +1254,107 @@ function Shell({
   onSwitchProgram: () => void
   onSwitchOrganization?: () => void
   user: User
+  roleName?: string
+  navCounts?: Partial<Record<RouteKey, number>>
+  pendingPublishCount?: number
 }) {
+  const activeKey: RouteKey = route === 'programCreate' ? 'programs' : route
+  const groups = (Object.keys(navGroupLabels) as NavGroup[])
+    .map((group) => ({ group, items: visibleNavItems.filter((item) => item.group === group) }))
+    .filter((entry) => entry.items.length > 0)
+  const orgContent = (
+    <>
+      <span className="rail-org-mark">{organization?.logoUrl ? <img alt="" src={organization.logoUrl} /> : initialsFor(organization?.name, 'O')}</span>
+      <span className="rail-org-text">
+        <strong>{organization?.name || 'Organization'}</strong>
+        <small>{orgTypeLabel(organization)}</small>
+      </span>
+      {onSwitchOrganization ? <ChevronsUpDown size={15} /> : null}
+    </>
+  )
+
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand-lockup">
-          <div className="brand-mark">S</div>
+    <div className="workspace-shell">
+      <aside className="workspace-rail">
+        <div className="rail-brand">
+          <div className="rail-brand-mark">S</div>
           <div>
             <strong>Sang CRM</strong>
-            <span>{selectedProgram?.name || organization?.name || 'Event OS'}</span>
+            <span>Event OS</span>
           </div>
         </div>
 
-        {onSwitchOrganization && (
-          <button className="org-switch-button" onClick={onSwitchOrganization} type="button">
-            <Building2 size={15} />
-            <span>{organization?.name || 'Organization'}</span>
-            <small>Switch</small>
-          </button>
+        {onSwitchOrganization ? (
+          <button className="rail-org" onClick={onSwitchOrganization} title="Switch organization" type="button">{orgContent}</button>
+        ) : (
+          <div className="rail-org">{orgContent}</div>
         )}
 
-        <nav className="nav-list" aria-label="Primary navigation">
-          {visibleNavItems.map((item) => {
-            const Icon = item.icon
-            return (
-              <button
-                className={route === item.key ? 'nav-item active' : 'nav-item'}
-                key={item.key}
-                onClick={() => setRoute(item.key)}
-                type="button"
-                title={routeLabels[item.key]}
-              >
-                <Icon size={18} />
-                <span>{routeLabels[item.key]}</span>
-              </button>
-            )
-          })}
+        <nav aria-label="Primary navigation" className="rail-navs">
+          {groups.map(({ group, items }) => (
+            <div className="rail-group" key={group}>
+              <div className="rail-group-label">{navGroupLabels[group]}</div>
+              <div className="rail-nav">
+                {items.map((item) => {
+                  const Icon = item.icon
+                  const count = navCounts?.[item.key]
+                  return (
+                    <button
+                      aria-current={activeKey === item.key ? 'page' : undefined}
+                      className={activeKey === item.key ? 'rail-link active' : 'rail-link'}
+                      key={item.key}
+                      onClick={() => setRoute(item.key)}
+                      type="button"
+                    >
+                      <Icon size={17} strokeWidth={1.8} />
+                      <span>{routeLabels[item.key]}</span>
+                      {count ? <small>{formatCount(count)}</small> : null}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          ))}
         </nav>
 
-        <button className="secondary-button sidebar-signout" onClick={() => signOut(auth)} type="button">
-          <LogOut size={16} />
-          Sign out
-        </button>
+        <div className="rail-spacer" />
+        <div className="rail-user">
+          <span className="rail-avatar">{user.photoURL ? <img alt="" referrerPolicy="no-referrer" src={user.photoURL} /> : initialsFor(user.displayName || user.email || '', 'U')}</span>
+          <span className="rail-user-text">
+            <strong>{user.displayName || user.email || 'Signed in'}</strong>
+            <small>{roleName || user.email}</small>
+          </span>
+          <button aria-label="Sign out" className="rail-signout" onClick={() => signOut(auth)} title="Sign out" type="button">
+            <LogOut size={16} />
+          </button>
+        </div>
       </aside>
 
-      <main className="main-surface">
-        <header className="topbar">
-          <div>
-            <span className="eyebrow">{organization?.name || 'Event operations'}</span>
-            <h1>{routeLabels[route]}</h1>
-          </div>
-          <div className="topbar-actions">
-            {selectedProgram && (
-              <button className="program-context-button" onClick={onSwitchProgram} type="button">
-                <span>{selectedProgram.name}</span>
-                <small>Switch program</small>
-              </button>
-            )}
-            <div className="user-pill">
-              <span>{user.displayName || user.email}</span>
-            </div>
-          </div>
+      <main className="workspace-main">
+        <header className="workspace-topbar">
+          <nav aria-label="Breadcrumb" className="crumbs">
+            <span className="crumb-org">{organization?.name || 'Organization'}</span>
+            <span className="crumb-sep">/</span>
+            {selectedProgram ? (
+              <>
+                <button className="crumb-program" onClick={onSwitchProgram} title="Switch program" type="button">
+                  <span className={`status-dot ${selectedProgram.status}`} />
+                  <span>{selectedProgram.name}</span>
+                  <ChevronDown size={14} />
+                </button>
+                <span className="crumb-sep">/</span>
+              </>
+            ) : null}
+            <span className="crumb-current">{routeLabels[route]}</span>
+          </nav>
+          {pendingPublishCount > 0 ? (
+            <button className="publish-chip" onClick={() => setRoute('dashboard')} title="Open publishing on the dashboard" type="button">
+              <UploadCloud size={14} />
+              {pendingPublishCount} section{pendingPublishCount === 1 ? '' : 's'} not published to Sang app
+            </button>
+          ) : null}
         </header>
-        {children}
+        <div className="workspace-content">{children}</div>
       </main>
     </div>
   )
@@ -1420,7 +1657,7 @@ function VerifyEmailPage({ user, onVerified, onCancel }: { user: User; onVerifie
       await requestEmailOtpCallable()
       setInfo(`We sent a 6-digit code to ${user.email}. It expires in 10 minutes.`)
     } catch (sendError) {
-      const message = sendError instanceof Error ? sendError.message : 'Could not send the code.'
+      const message = errorMessage(sendError, 'Could not send the code.')
       // On the automatic first send, a cooldown just means a code is already on its way.
       if (isInitial && /wait a few seconds/i.test(message)) {
         setInfo(`We sent a 6-digit code to ${user.email}. It expires in 10 minutes.`)
@@ -1448,7 +1685,7 @@ function VerifyEmailPage({ user, onVerified, onCancel }: { user: User; onVerifie
       await user.reload()
       onVerified()
     } catch (verifyError) {
-      setError(verifyError instanceof Error ? verifyError.message : 'Verification failed.')
+      setError(errorMessage(verifyError, 'Verification failed.'))
     } finally {
       setLoading(false)
     }
@@ -1516,7 +1753,7 @@ function OnboardingPage({ user, onComplete }: { user: User; onComplete: (profile
     try {
       await signOut(auth)
     } catch (signOutError) {
-      setError(signOutError instanceof Error ? signOutError.message : 'Could not sign out')
+      setError(errorMessage(signOutError, 'Could not sign out'))
       setLoading(false)
     }
   }
@@ -1530,7 +1767,7 @@ function OnboardingPage({ user, onComplete }: { user: User; onComplete: (profile
       const profile = await createOrganizationWithOwner(user, { displayName, orgName, orgType, website, logoUrl })
       onComplete(profile)
     } catch (setupError) {
-      setError(setupError instanceof Error ? setupError.message : 'Could not complete setup')
+      setError(errorMessage(setupError, 'Could not complete setup'))
     } finally {
       setLoading(false)
     }
@@ -1653,12 +1890,6 @@ function richTextToPlainText(value?: string) {
   const wrapper = document.createElement('div')
   wrapper.innerHTML = sanitizeRichText(value)
   return wrapper.textContent?.replace(/\s+/g, ' ').trim() || ''
-}
-
-function RichTextPreview({ value, fallback }: { value?: string; fallback: string }) {
-  const safeValue = sanitizeRichText(value || '')
-  if (!safeValue) return <p>{fallback}</p>
-  return <div className="rich-text-preview" dangerouslySetInnerHTML={{ __html: safeValue }} />
 }
 
 function RichTextEditor({
@@ -1870,7 +2101,7 @@ function ImageUploader({
       const url = await uploadEventImage(uid, file, folder)
       onChange(url)
     } catch (uploadError) {
-      setError(uploadError instanceof Error ? uploadError.message : 'Image upload failed.')
+      setError(errorMessage(uploadError, 'Image upload failed.'))
     } finally {
       setUploading(false)
     }
@@ -2167,7 +2398,7 @@ function VenueLibraryModal({
       setDirectionsNote('')
       setRooms([{ name: '', floor: '', capacity: '' }])
     } catch (venueError) {
-      setError(venueError instanceof Error ? venueError.message : 'Unable to save venue.')
+      setError(errorMessage(venueError, 'Unable to save venue.'))
     } finally {
       setBusy(false)
     }
@@ -2188,7 +2419,7 @@ function VenueLibraryModal({
         setRooms([{ name: '', floor: '', capacity: '' }])
       }
     } catch (venueError) {
-      setError(venueError instanceof Error ? venueError.message : 'Unable to delete venue.')
+      setError(errorMessage(venueError, 'Unable to delete venue.'))
     } finally {
       setBusy(false)
     }
@@ -2833,7 +3064,7 @@ function EventProfilesEditor({
       onChange(nextProfiles)
       resetProfileDraft(sourceMode)
     } catch (addError) {
-      setProfileError(addError instanceof Error ? addError.message : 'Unable to add this profile.')
+      setProfileError(errorMessage(addError, 'Unable to add this profile.'))
     } finally {
       setProfileBusy(false)
     }
@@ -3007,69 +3238,116 @@ function EventProfilesEditor({
   )
 }
 
+function ChooserFrame({ children, narrow = false }: { children: ReactNode; narrow?: boolean }) {
+  const email = auth.currentUser?.email || ''
+  return (
+    <main className="chooser-page">
+      <header className="chooser-topbar">
+        <div className="chooser-brand">
+          <div className="brand-mark">S</div>
+          <strong>Sang CRM</strong>
+        </div>
+        <div className="chooser-account">
+          {email ? <span>{email}</span> : null}
+          <button className="secondary-button compact-button" onClick={() => signOut(auth)} type="button">
+            <LogOut size={15} />
+            Sign out
+          </button>
+        </div>
+      </header>
+      <section className={narrow ? 'chooser-body narrow' : 'chooser-body'}>{children}</section>
+    </main>
+  )
+}
+
 function ProgramChooserPage({
   programs,
   events,
+  people = [],
+  organization,
   onChoose,
   onCreate,
+  onSwitchOrganization,
   canCreate,
 }: {
   programs: Program[]
   events: ProgramEvent[]
+  people?: ProgramPerson[]
+  organization?: Organization | null
   onChoose: (programId: string) => void
   onCreate: () => void
+  onSwitchOrganization?: () => void
   canCreate: boolean
 }) {
   return (
-    <main className="main-surface chooser-surface">
-      <section className="program-chooser">
-        <div className="chooser-head">
-          <div>
-            <span className="eyebrow">Choose workspace</span>
-            <h1>Select a program to manage</h1>
-            <p>Dashboard, event list, people import, check-in, and analytics open inside the selected program.</p>
-          </div>
+    <ChooserFrame>
+      <div className="page-header">
+        <div className="chooser-title">
+          {organization ? (
+            <div className="chooser-context">
+              <span className="org-mark small">{organization.logoUrl ? <img alt="" src={organization.logoUrl} /> : initialsFor(organization.name, 'O')}</span>
+              <strong>{organization.name}</strong>
+              {onSwitchOrganization ? (
+                <>
+                  <span>·</span>
+                  <button className="text-link" onClick={onSwitchOrganization} type="button">Switch organization</button>
+                </>
+              ) : null}
+            </div>
+          ) : null}
+          <h1>Choose a program</h1>
+          <p>Events, people, passes and publishing all open inside the program you pick.</p>
+        </div>
+        {canCreate && (
+          <button className="primary-button" onClick={onCreate} type="button">
+            <Plus size={16} />
+            Create program
+          </button>
+        )}
+      </div>
+
+      {programs.length === 0 ? (
+        <section className="panel premium-empty-panel">
+          <EmptyState title="No programs available" body={canCreate ? 'Create your first conference, college fest, corporate event, competition, workshop, or standalone event.' : 'No program has been assigned to this CRM account yet.'} />
           {canCreate && (
             <button className="primary-button" onClick={onCreate} type="button">
-              <Plus size={17} />
-              Create program
+              <Plus size={16} />
+              Create first program
             </button>
           )}
-        </div>
-
-        {programs.length === 0 ? (
-          <section className="panel">
-            <EmptyState title="No programs available" body={canCreate ? 'Create your first conference, college fest, corporate event, competition, workshop, or standalone event.' : 'No program has been assigned to this CRM account yet.'} />
-            {canCreate && (
-              <button className="primary-button" onClick={onCreate} type="button">
-                <Plus size={17} />
-                Create first program
-              </button>
-            )}
-          </section>
-        ) : (
-          <div className="program-choice-grid">
-            {programs.map((program) => {
-              const programEvents = events.filter((item) => item.programId === program.id)
-              const aboutPreview = richTextToPlainText(program.description)
-              return (
-                <button className="program-choice-card" key={program.id} onClick={() => onChoose(program.id)} type="button">
-                  {program.bannerUrl || program.posterUrl ? <img alt="" src={program.bannerUrl || program.posterUrl} /> : <div className="program-choice-fallback"><CalendarDays size={24} /></div>}
-                  <span className={`status ${program.status}`}>{program.status}</span>
-                  <strong>{program.name}</strong>
-                  <p>{aboutPreview || `${programEvents.length} events ready to manage.`}</p>
-                  <small><MapPin size={13} /> {program.venueName || 'Venue pending'} {program.city ? `- ${program.city}` : ''}</small>
-                  <div>
-                    <span>{programEvents.length} events</span>
-                    <ChevronRight size={18} />
+        </section>
+      ) : (
+        <div className="program-grid">
+          {programs.map((program) => {
+            const eventCount = events.filter((item) => item.programId === program.id).length
+            const peopleCount = people.filter((person) => person.programId === program.id && personAccessState(person) !== 'removed').length
+            const artwork = program.bannerUrl || program.posterUrl
+            return (
+              <button className="program-card" key={program.id} onClick={() => onChoose(program.id)} type="button">
+                <div className="program-card-art">{artwork ? <img alt="" src={artwork} /> : <CalendarDays size={22} />}</div>
+                <div className="program-card-body">
+                  <div className="program-card-title">
+                    <strong>{program.name}</strong>
+                    <span className={`status ${program.status}`}>{statusLabel(program.status)}</span>
                   </div>
-                </button>
-              )
-            })}
-          </div>
-        )}
-      </section>
-    </main>
+                  <div className="meta-row">
+                    <span><CalendarDays size={13} />{formatDateRange(program.startDate, program.endDate)}</span>
+                    <span><MapPin size={13} />{[program.venueName || 'Venue pending', program.city].filter(Boolean).join(' · ')}</span>
+                  </div>
+                </div>
+                <div className="program-card-foot">
+                  <span>
+                    <b>{formatCount(eventCount)}</b> event{eventCount === 1 ? '' : 's'}
+                    {people.length ? <> · <b>{formatCount(peopleCount)}</b> people</> : null}
+                  </span>
+                  <span>Open<ChevronRight size={15} /></span>
+                </div>
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </ChooserFrame>
   )
 }
 
@@ -3079,10 +3357,13 @@ function OrganizationChooserPage({
   onCreate,
 }: {
   profile: PeUser
-  onChoose: (orgId: string) => void
+  onChoose: (orgId: string) => void | Promise<void>
   onCreate?: () => void
 }) {
   const [organizations, setOrganizations] = useState<Organization[]>([])
+  const [loaded, setLoaded] = useState(false)
+  const [unavailableCount, setUnavailableCount] = useState(0)
+  const [choosingId, setChoosingId] = useState('')
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -3101,9 +3382,8 @@ function OrganizationChooserPage({
         .filter((snapshot): snapshot is NonNullable<typeof snapshot> => Boolean(snapshot?.exists()))
         .map((snapshot) => ({ id: snapshot.id, ...snapshot.data() }) as Organization)
       setOrganizations(visibleOrganizations)
-      if (visibleOrganizations.length < profile.organizationIds.length) {
-        setError('Some saved workspaces are no longer available for this account.')
-      }
+      setUnavailableCount(Math.max(0, profile.organizationIds.length - visibleOrganizations.length))
+      setLoaded(true)
     }
     loadOrganizations()
     return () => {
@@ -3111,39 +3391,63 @@ function OrganizationChooserPage({
     }
   }, [profile.organizationIds])
 
+  async function choose(orgId: string) {
+    setError('')
+    setChoosingId(orgId)
+    try {
+      await onChoose(orgId)
+    } catch (chooseError) {
+      const message = chooseError instanceof Error ? chooseError.message : ''
+      setError(/permission/i.test(message)
+        ? "You don't have access to this organization yet. Ask its owner to give you a role."
+        : message || 'Unable to open this organization.')
+      setChoosingId('')
+    }
+  }
+
   return (
-    <main className="main-surface chooser-surface">
-      <section className="program-chooser">
-        <div className="chooser-head">
-          <div>
-            <span className="eyebrow">Choose organization</span>
-            <h1>Select the workspace to open</h1>
-            <p>Your CRM dashboard opens inside one organization first, then inside one program.</p>
+    <ChooserFrame narrow>
+      <div className="chooser-title">
+        <h1>Choose an organization</h1>
+        <p>{loaded && organizations.length > 1 ? `You belong to ${organizations.length} organizations. ` : ''}Pick one to open — you can switch any time from the sidebar.</p>
+      </div>
+      <section className="card org-list">
+        {!loaded ? (
+          <div className="card-state">
+            <Loader2 className="spin" size={16} />
+            Loading organizations
           </div>
-          {onCreate && (
-            <button className="primary-button" onClick={onCreate} type="button">
-              <Plus size={17} />
-              New organization
-            </button>
-          )}
-        </div>
-        <div className="program-choice-grid">
-          {organizations.map((organization) => (
-            <button className="program-choice-card org-choice-card" key={organization.id} onClick={() => onChoose(organization.id)} type="button">
-              {organization.logoUrl ? <img alt="" src={organization.logoUrl} /> : <div className="program-choice-fallback"><Building2 size={24} /></div>}
-              <strong>{organization.name}</strong>
-              <p>{orgTypeLabel(organization)}</p>
-              <small><Link2 size={13} /> {organization.website || organization.id}</small>
-              <div>
-                <span>Open workspace</span>
-                <ChevronRight size={18} />
-              </div>
-            </button>
-          ))}
-        </div>
-        {error && <p className="form-error">{error}</p>}
+        ) : null}
+        {organizations.map((organization) => (
+          <button className="org-row" disabled={choosingId !== ''} key={organization.id} onClick={() => void choose(organization.id)} type="button">
+            <span className="org-mark">{organization.logoUrl ? <img alt="" src={organization.logoUrl} /> : initialsFor(organization.name, 'O')}</span>
+            <span className="org-row-text">
+              <strong>
+                {organization.name}
+                {organization.id === profile.activeOrgId ? <span className="tag">Last opened</span> : null}
+              </strong>
+              <small>{[orgTypeLabel(organization), organization.website].filter(Boolean).join(' · ')}</small>
+            </span>
+            {choosingId === organization.id ? <Loader2 className="spin" size={18} /> : <ChevronRight size={18} />}
+          </button>
+        ))}
       </section>
-    </main>
+      {error && <p className="form-error">{error}</p>}
+      {unavailableCount > 0 ? (
+        <p className="muted-note">
+          {unavailableCount === 1 ? '1 workspace you were added to is' : `${unavailableCount} workspaces you were added to are`} no longer available.
+        </p>
+      ) : null}
+      {onCreate && (
+        <div className="chooser-footer">
+          <span>Running something new?</span>
+          <button className="secondary-button" onClick={onCreate} type="button">
+            <Plus size={16} />
+            New organization
+          </button>
+        </div>
+      )}
+    </ChooserFrame>
   )
 }
 
@@ -3164,7 +3468,14 @@ function ProgramWorkspaceDashboard({
   venueCatalog?: ProgramVenueCatalog | null
   setRoute: (route: RouteKey) => void
 }) {
-  const issuedPasses = people.filter((person) => person.passStatus === 'issued' || person.passStatus === 'checkedIn').length
+  const hasPass = (person: ProgramPerson) => person.passStatus === 'issued' || person.passStatus === 'checkedIn'
+  const issuedPasses = people.filter(hasPass).length
+  const passCoverage = people.length ? Math.round((issuedPasses / people.length) * 100) : 0
+  const passesLeft = people.filter((person) => personAccessState(person) === 'active' && !hasPass(person)).length
+  const liveEvents = events.filter((item) => item.status === 'live').length
+  const draftEvents = events.filter((item) => item.status === 'draft').length
+  const venueCount = venueCatalog?.venues?.length || 0
+  const artwork = program.bannerUrl || program.posterUrl || program.logoUrl
   const [publishing, setPublishing] = useState<'events' | 'people' | 'schedule' | ''>('')
   const [publishNotice, setPublishNotice] = useState('')
   const [publishError, setPublishError] = useState('')
@@ -3172,18 +3483,26 @@ function ProgramWorkspaceDashboard({
   const [connectionAnalytics, setConnectionAnalytics] = useState<ProgramConnectionAnalytics | null>(null)
   const [connectionAnalyticsLoading, setConnectionAnalyticsLoading] = useState(false)
   const [connectionAnalyticsError, setConnectionAnalyticsError] = useState('')
-  const eventsPublishedAt = timestampMs(program.eventsLastPublishedAt)
-  const peoplePublishedAt = timestampMs(program.peopleLastPublishedAt)
-  const schedulePublishedAt = timestampMs(program.scheduleLastPublishedAt)
-  const eventsPublishPending = Boolean(events.length && (!eventsPublishedAt || newestTimestamp(events) > eventsPublishedAt))
-  const peoplePublishPending = Boolean(people.length && (!peoplePublishedAt || newestTimestamp(people) > peoplePublishedAt))
-  const schedulePublishPending = Boolean(scheduleItems.length && (!schedulePublishedAt || newestTimestamp(scheduleItems) > schedulePublishedAt))
-  const pendingMessages = [
-    eventsPublishPending ? 'Events changed after the last mobile publish.' : '',
-    peoplePublishPending ? 'People/pass access changed after the last mobile publish.' : '',
-    schedulePublishPending ? 'Schedule changed after the last mobile publish.' : '',
-  ].filter(Boolean)
+  const publishState = programPublishState(program, events, people, scheduleItems)
   const latestConnectionAt = connectionAnalytics?.recentConnections[0]?.connectedAt || connectionAnalytics?.eventBreakdown[0]?.lastConnectionAt || ''
+  const upcomingEvents = [...events].sort((a, b) => (a.startDateTime || '').localeCompare(b.startDateTime || '')).slice(0, 5)
+  const maxConnections = Math.max(1, ...(connectionAnalytics?.eventBreakdown.map((item) => item.connectionCount) || []))
+
+  const publishRows = [
+    { kind: 'events' as const, label: 'Events', icon: CalendarDays, count: events.length, pending: publishState.events, publishedAt: program.eventsLastPublishedAt },
+    { kind: 'people' as const, label: 'People & pass access', icon: Users, count: people.length, pending: publishState.people, publishedAt: program.peopleLastPublishedAt },
+    { kind: 'schedule' as const, label: 'Schedule', icon: Clock, count: scheduleItems.length, pending: publishState.schedule, publishedAt: program.scheduleLastPublishedAt },
+  ]
+
+  const setupItems = [
+    { label: 'Program profile', route: 'settings' as RouteKey, done: Boolean(artwork || richTextToPlainText(program.description)), detail: artwork ? 'Artwork added' : 'Add artwork' },
+    { label: 'Venues saved', route: 'venues' as RouteKey, done: venueCount > 0, detail: venueCount ? `${formatCount(venueCount)} venue${venueCount === 1 ? '' : 's'}` : 'Add a venue' },
+    { label: 'Events added', route: 'events' as RouteKey, done: events.length > 0, detail: events.length ? `${formatCount(events.length)} event${events.length === 1 ? '' : 's'}` : 'Add an event' },
+    { label: 'People imported', route: 'people' as RouteKey, done: people.length > 0, detail: people.length ? `${formatCount(people.length)} people` : 'Import people' },
+    { label: 'Passes issued', route: 'people' as RouteKey, done: people.length > 0 && passesLeft === 0, detail: people.length === 0 ? 'Add people first' : passesLeft ? `Issue ${formatCount(passesLeft)} more` : 'Everyone active' },
+  ]
+  const setupDone = setupItems.filter((item) => item.done).length
+  const setupPercent = Math.round((setupDone / setupItems.length) * 100)
 
   const loadConnectionAnalytics = useCallback(async () => {
     const requestId = analyticsRequestRef.current + 1
@@ -3197,7 +3516,7 @@ function ProgramWorkspaceDashboard({
       }
     } catch (analyticsFailure) {
       if (analyticsRequestRef.current === requestId) {
-        setConnectionAnalyticsError(analyticsFailure instanceof Error ? analyticsFailure.message : 'Unable to load connection analytics.')
+        setConnectionAnalyticsError(errorMessage(analyticsFailure, 'Unable to load connection analytics.'))
       }
     } finally {
       if (analyticsRequestRef.current === requestId) {
@@ -3228,153 +3547,244 @@ function ProgramWorkspaceDashboard({
         setPublishNotice(`Published ${formatCount(response.data.itemCount)} schedule item${response.data.itemCount === 1 ? '' : 's'} in ${formatCount(response.data.pageCount)} page${response.data.pageCount === 1 ? '' : 's'}.`)
       }
     } catch (publishFailure) {
-      setPublishError(publishFailure instanceof Error ? publishFailure.message : 'Unable to publish right now.')
+      setPublishError(errorMessage(publishFailure, 'Unable to publish right now.'))
     } finally {
       setPublishing('')
     }
   }
 
   return (
-    <section className="page-stack">
-      <section className="workspace-hero">
-        {program.bannerUrl || program.posterUrl ? <img alt="" src={program.bannerUrl || program.posterUrl} /> : <div className="program-art-fallback"><CalendarDays size={28} /></div>}
-        <div>
-          <span className="eyebrow">{program.mode === 'standalone' ? 'Standalone program' : 'Selected program'}</span>
-          <h1>{program.name}</h1>
-          <RichTextPreview fallback="Program workspace is ready. Add events, import people, issue passes, and track check-ins from here." value={program.description} />
-          <div className="workspace-meta">
-            <span><CalendarDays size={14} /> {program.startDate} to {program.endDate}</span>
-            <span><MapPin size={14} /> {program.venueName || 'Venue pending'} {program.city ? `- ${program.city}` : ''}</span>
+    <>
+      <header className="ws-header">
+        <div className="ws-art">{artwork ? <img alt="" src={artwork} /> : initialsFor(program.name, 'P')}</div>
+        <div className="ws-title">
+          <div className="ws-title-row">
+            <h1>{program.name}</h1>
+            <span className={`status ${program.status}`}>{statusLabel(program.status)}</span>
+          </div>
+          <div className="meta-row">
+            <span><CalendarDays size={14} />{formatDateRange(program.startDate, program.endDate)}</span>
+            <span><MapPin size={14} />{[program.venueName || 'Venue pending', program.city].filter(Boolean).join(' · ')}</span>
+            <span><Layers size={14} />{program.mode === 'standalone' ? 'Standalone program' : 'Multi-event program'}</span>
           </div>
         </div>
-        <button className="primary-button" onClick={() => setRoute('events')} type="button">
-          <CalendarDays size={17} />
-          Open events
-        </button>
-      </section>
-
-      <section className="dashboard-publish-panel">
-        <div className="dashboard-publish-copy">
-          <span className="eyebrow">Mobile app publishing</span>
-          <h2>Keep Sang app data live</h2>
-          <p>Publish after editing events, people access, or schedule so attendees see the latest version.</p>
-        </div>
-        <div className="dashboard-publish-actions">
-          <button className={`secondary-button ${eventsPublishPending ? 'publish-button-pending' : ''}`} disabled={publishing !== '' || events.length === 0} onClick={() => runDashboardPublish('events')} type="button">
-            {publishing === 'events' ? <Loader2 className="spin" size={16} /> : <UploadCloud size={16} />}
-            Publish events
+        <div className="page-header-actions">
+          <button className="secondary-button" onClick={() => setRoute('settings')} type="button">
+            <Pencil size={15} />
+            Program profile
           </button>
-          <button className={`secondary-button ${peoplePublishPending ? 'publish-button-pending' : ''}`} disabled={publishing !== '' || people.length === 0} onClick={() => runDashboardPublish('people')} type="button">
-            {publishing === 'people' ? <Loader2 className="spin" size={16} /> : <BadgeCheck size={16} />}
-            Publish people
-          </button>
-          <button className={`secondary-button ${schedulePublishPending ? 'publish-button-pending' : ''}`} disabled={publishing !== '' || scheduleItems.length === 0} onClick={() => runDashboardPublish('schedule')} type="button">
-            {publishing === 'schedule' ? <Loader2 className="spin" size={16} /> : <Clock size={16} />}
-            Publish schedule
+          <button className="primary-button" onClick={() => setRoute('events')} type="button">
+            <CalendarDays size={15} />
+            Open events
           </button>
         </div>
-        {pendingMessages.length ? (
-          <div className="publish-reminder">
-            <ShieldCheck size={17} />
-            <div>
-              <strong>Publish reminder</strong>
-              {pendingMessages.map((message) => <span key={message}>{message}</span>)}
-            </div>
-          </div>
-        ) : null}
-        {publishNotice ? <p className="form-success">{publishNotice}</p> : null}
-        {publishError ? <p className="form-error">{publishError}</p> : null}
-      </section>
+      </header>
 
-      <div className="stats-grid">
-        <Stat icon={CalendarDays} label="Events" value={formatCount(events.length)} detail={program.mode === 'standalone' ? 'Optional sub-events' : 'Inside this program'} />
-        <Stat icon={BadgeCheck} label="Passes issued" value={formatCount(issuedPasses)} detail="For selected program" />
-        <Stat icon={Users} label="People" value={formatCount(people.length)} detail="Attendees, participants, staff" />
+      <div className="kpi-grid">
+        <article className="card kpi">
+          <span>Events</span>
+          <strong>{formatCount(events.length)}</strong>
+          <small>{events.length ? `${formatCount(liveEvents)} live · ${formatCount(draftEvents)} draft` : program.mode === 'standalone' ? 'Optional sub-events' : 'None added yet'}</small>
+        </article>
+        <article className="card kpi">
+          <span>People</span>
+          <strong>{formatCount(people.length)}</strong>
+          <small>Attendees, participants, staff</small>
+        </article>
+        <article className="card kpi">
+          <span>Passes issued</span>
+          <strong>{formatCount(issuedPasses)}</strong>
+          <div className="meter"><i style={{ width: `${passCoverage}%` }} /></div>
+          <small>{people.length ? `${passCoverage}% of people have a pass` : 'Issued as people are added'}</small>
+        </article>
+        <article className="card kpi">
+          <span>Connections made</span>
+          <strong>{connectionAnalytics ? formatCount(connectionAnalytics.totalConnections) : '—'}</strong>
+          <small>{connectionAnalytics ? `${formatCount(connectionAnalytics.uniquePeopleCount)} unique Sang users` : connectionAnalyticsLoading ? 'Loading…' : 'Not available right now'}</small>
+        </article>
       </div>
 
-      <section className="panel analytics-panel">
-        <div className="panel-heading">
-          <div>
-            <span className="eyebrow">Networking analytics</span>
-            <h2>Connections made at this program</h2>
+      <div className="ws-grid">
+        <section className="card">
+          <div className="card-head">
+            <div>
+              <h2>Events</h2>
+              <p>{events.length ? 'Sorted by start time' : 'Sessions, contests, talks and workshops'}</p>
+            </div>
+            {events.length ? (
+              <button className="text-link" onClick={() => setRoute('events')} type="button">
+                View all
+                <ChevronRight size={15} />
+              </button>
+            ) : null}
           </div>
-          <button className="secondary-button" disabled={connectionAnalyticsLoading} onClick={() => void loadConnectionAnalytics()} type="button">
-            {connectionAnalyticsLoading ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
-            Refresh
-          </button>
+          {events.length === 0 ? (
+            <EmptyState title="Add the first event" body="Create sessions, contests, talks, workshops, zones, or gates inside this program." />
+          ) : (
+            <div>
+              <div className="data-row head next-events-row">
+                <span>Event</span>
+                <span>When</span>
+                <span>Venue</span>
+                <span>Status</span>
+              </div>
+              {upcomingEvents.map((programEvent) => (
+                <button className="data-row next-events-row" key={programEvent.id} onClick={() => setRoute('events')} type="button">
+                  <span className="cell-main">
+                    <strong>{programEvent.name}</strong>
+                    <small>{optionLabel(eventTypeOptions, programEvent.eventType, programEvent.eventType || 'Event')}</small>
+                  </span>
+                  <span className="cell-text tabular">{formatEventWhen(programEvent.startDateTime, programEvent.endDateTime)}</span>
+                  <span className="cell-text cell-muted">{programEvent.venueName || program.venueName || 'Venue pending'}</span>
+                  <span className={`status ${programEvent.status}`}>{statusLabel(programEvent.status)}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <div className="ws-side">
+          <section className="card">
+            <div className="card-head">
+              <div>
+                <h2>Sang app publishing</h2>
+                <p>Attendees see the last published version</p>
+              </div>
+            </div>
+            <div className="publish-rows">
+              {publishRows.map((row) => {
+                const Icon = row.icon
+                const state = row.count === 0
+                  ? 'Nothing to publish yet'
+                  : row.pending
+                    ? timestampMs(row.publishedAt) ? 'Changed since last publish' : 'Not published yet'
+                    : 'Up to date'
+                return (
+                  <div className={row.pending ? 'publish-row pending' : 'publish-row'} key={row.kind}>
+                    <span className="publish-row-icon"><Icon size={16} /></span>
+                    <span className="publish-row-text">
+                      <strong>{row.label}</strong>
+                      <small><span className={`status-dot ${row.pending ? 'draft' : row.count ? 'live' : ''}`} />{state}</small>
+                    </span>
+                    <button
+                      className={`secondary-button compact-button ${row.pending ? 'publish-button-pending' : ''}`}
+                      disabled={publishing !== '' || row.count === 0}
+                      onClick={() => void runDashboardPublish(row.kind)}
+                      type="button"
+                    >
+                      {publishing === row.kind ? <Loader2 className="spin" size={14} /> : <UploadCloud size={14} />}
+                      Publish
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+            {publishNotice || publishError ? (
+              <div className="card-messages">
+                {publishNotice ? <p className="form-success">{publishNotice}</p> : null}
+                {publishError ? <p className="form-error">{publishError}</p> : null}
+              </div>
+            ) : null}
+          </section>
+
+          <section className="card">
+            <div className="card-head">
+              <div>
+                <h2>Setup</h2>
+                <p>{setupDone} of {setupItems.length} done</p>
+              </div>
+              <span className="muted-note tabular">{setupPercent}%</span>
+            </div>
+            <div className="setup-list">
+              <div className="meter green"><i style={{ width: `${setupPercent}%` }} /></div>
+              {setupItems.map((item) => (
+                <div className={item.done ? 'setup-item done' : 'setup-item'} key={item.label}>
+                  <span className="setup-check"><Check size={12} strokeWidth={3} /></span>
+                  <span>{item.label}</span>
+                  {item.done ? (
+                    <small>{item.detail}</small>
+                  ) : (
+                    <button className="text-link setup-action" onClick={() => setRoute(item.route)} type="button">{item.detail}</button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <section className="card">
+        <div className="card-head">
+          <div>
+            <h2>Networking</h2>
+            <p>Sang-to-Sang connections made at this program</p>
+          </div>
+          <div className="card-head-actions">
+            {connectionAnalytics?.generatedAt ? <span className="muted-note">Updated {formatAnalyticsTimestamp(connectionAnalytics.generatedAt)}</span> : null}
+            <button aria-label="Refresh connection analytics" className="icon-button" disabled={connectionAnalyticsLoading} onClick={() => void loadConnectionAnalytics()} title="Refresh" type="button">
+              {connectionAnalyticsLoading ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}
+            </button>
+          </div>
         </div>
 
-        {connectionAnalyticsError ? <p className="form-error">{connectionAnalyticsError}</p> : null}
+        {connectionAnalyticsError ? <p className="form-error table-message">{connectionAnalyticsError}</p> : null}
 
         {connectionAnalyticsLoading && !connectionAnalytics ? (
-          <div className="analytics-loading">
-            <Loader2 className="spin" size={18} />
-            <span>Loading connection analytics</span>
+          <div className="card-state">
+            <Loader2 className="spin" size={16} />
+            Loading connection analytics
           </div>
         ) : connectionAnalytics && connectionAnalytics.totalConnections > 0 ? (
           <>
-            <div className="analytics-stat-grid">
-              <div>
-                <span>Total connections</span>
-                <strong>{formatCount(connectionAnalytics.totalConnections)}</strong>
-                <small>Confirmed Sang-to-Sang connections</small>
-              </div>
-              <div>
-                <span>Unique Sang users</span>
-                <strong>{formatCount(connectionAnalytics.uniquePeopleCount)}</strong>
-                <small>People involved in those connections</small>
-              </div>
-              <div>
-                <span>Latest activity</span>
-                <strong>{formatAnalyticsTimestamp(latestConnectionAt)}</strong>
-                <small>{connectionAnalytics.generatedAt ? `Updated ${formatAnalyticsTimestamp(connectionAnalytics.generatedAt)}` : 'Refresh when needed'}</small>
-              </div>
-            </div>
-
             {connectionAnalytics.limitReached ? (
-              <div className="publish-reminder analytics-limit-note">
-                <ShieldCheck size={17} />
-                <div>
-                  <strong>Large program detected</strong>
-                  <span>This report is showing the first 1,000 connection records. Export reporting can handle larger totals later.</span>
-                </div>
+              <div className="card-note">
+                <ShieldCheck size={15} />
+                Large program: this report shows the first 1,000 connection records.
               </div>
             ) : null}
-
-            <div className="analytics-columns">
+            <div className="net-grid">
               <section>
-                <div className="mini-section-heading">
-                  <strong>Event breakdown</strong>
-                  <span>{formatCount(connectionAnalytics.eventBreakdown.length)} event{connectionAnalytics.eventBreakdown.length === 1 ? '' : 's'}</span>
+                <div className="net-totals">
+                  <div>
+                    <span>Total connections</span>
+                    <strong>{formatCount(connectionAnalytics.totalConnections)}</strong>
+                  </div>
+                  <div>
+                    <span>Unique Sang users</span>
+                    <strong>{formatCount(connectionAnalytics.uniquePeopleCount)}</strong>
+                  </div>
+                  <div>
+                    <span>Latest activity</span>
+                    <strong>{formatAnalyticsTimestamp(latestConnectionAt)}</strong>
+                  </div>
                 </div>
-                <div className="list-stack">
-                  {connectionAnalytics.eventBreakdown.map((eventStat) => (
-                    <div className="row-item analytics-row" key={eventStat.eventId || eventStat.eventName}>
-                      <div>
-                        <strong>{eventStat.eventName}</strong>
-                        <span>{formatCount(eventStat.uniquePeopleCount)} unique user{eventStat.uniquePeopleCount === 1 ? '' : 's'} - latest {formatAnalyticsTimestamp(eventStat.lastConnectionAt)}</span>
-                      </div>
-                      <span className="analytics-count-pill">{formatCount(eventStat.connectionCount)}</span>
-                    </div>
-                  ))}
+                <div className="net-label">
+                  <span>Connections by event</span>
+                  <span>Unique users</span>
                 </div>
+                {connectionAnalytics.eventBreakdown.map((eventStat) => (
+                  <div className="bar-list-row" key={eventStat.eventId || eventStat.eventName}>
+                    <span title={eventStat.eventName}>{eventStat.eventName}</span>
+                    <span className="bar-track">
+                      <i style={{ width: `calc((100% - 64px) * ${(eventStat.connectionCount / maxConnections).toFixed(4)})` }} />
+                      <b>{formatCount(eventStat.connectionCount)}</b>
+                    </span>
+                    <span>{formatCount(eventStat.uniquePeopleCount)}</span>
+                  </div>
+                ))}
               </section>
-
               <section>
-                <div className="mini-section-heading">
-                  <strong>Recent activity</strong>
+                <div className="net-label">
+                  <span>Recent activity</span>
                   <span>Last {formatCount(connectionAnalytics.recentConnections.length)}</span>
                 </div>
-                <div className="list-stack">
-                  {connectionAnalytics.recentConnections.map((connection, index) => (
-                    <div className="row-item compact" key={`${connection.eventId || connection.eventName}-${connection.connectedAt || index}`}>
-                      <div>
-                        <strong>{connection.eventName || program.name}</strong>
-                        <span><Link2 size={13} /> {formatAnalyticsTimestamp(connection.connectedAt)}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                {connectionAnalytics.recentConnections.map((connection, index) => (
+                  <div className="activity-row" key={`${connection.eventId || connection.eventName}-${connection.connectedAt || index}`}>
+                    <span className="activity-icon"><Link2 size={13} /></span>
+                    <span>New connection at <strong>{connection.eventName || program.name}</strong></span>
+                    <small>{formatAnalyticsTimestamp(connection.connectedAt)}</small>
+                  </div>
+                ))}
               </section>
             </div>
           </>
@@ -3382,77 +3792,7 @@ function ProgramWorkspaceDashboard({
           <EmptyState title="No event connections yet" body="When attendees connect through Sang during this program, totals and event-wise counts will appear here." />
         )}
       </section>
-
-      <div className="quick-action-grid">
-        <button className="quick-action" onClick={() => setRoute('settings')} type="button">
-          <Settings size={20} />
-          <span>
-            <strong>Program profile</strong>
-            <small>Logo, banner, dates, type, entry rules</small>
-          </span>
-        </button>
-        <button className="quick-action" onClick={() => setRoute('people')} type="button">
-          <Users size={20} />
-          <span>
-            <strong>People and passes</strong>
-            <small>Upload attendees, participants, staff</small>
-          </span>
-        </button>
-        <button className="quick-action" onClick={() => setRoute('venues')} type="button">
-          <MapPin size={20} />
-          <span>
-            <strong>Venues</strong>
-            <small>{venueCatalog?.venues?.length ? `${venueCatalog.venues.length} saved venues and halls` : 'Save halls, rooms, stages'}</small>
-          </span>
-        </button>
-      </div>
-
-      <div className="split-grid">
-        <section className="panel">
-          <div className="panel-heading">
-            <div>
-              <span className="eyebrow">Next work</span>
-              <h2>Events</h2>
-            </div>
-            <button className="icon-button" onClick={() => setRoute('events')} title="Open events" type="button">
-              <ChevronRight size={18} />
-            </button>
-          </div>
-
-          {events.length === 0 ? (
-            <EmptyState title="Add the first event" body="Create sessions, contests, talks, workshops, zones, or gates inside this selected program." />
-          ) : (
-            <div className="list-stack">
-              {events.slice(0, 4).map((programEvent) => (
-                <div className="row-item" key={programEvent.id}>
-                  <div>
-                    <strong>{programEvent.name}</strong>
-                    <span>{programEvent.venueName || program.venueName || 'Venue pending'} {programEvent.locationNote ? `- ${programEvent.locationNote}` : ''}</span>
-                  </div>
-                  <span className={`status ${programEvent.status}`}>{programEvent.status}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-
-        <section className="panel">
-          <div className="panel-heading">
-            <div>
-              <span className="eyebrow">Setup readiness</span>
-              <h2>Operations snapshot</h2>
-            </div>
-            <ClipboardList size={20} />
-          </div>
-          <div className="ops-list">
-            <div><Check size={16} /> Program workspace selected</div>
-            <div><Check size={16} /> Default roles available</div>
-            <div><Check size={16} /> Event model active</div>
-            <div className={people.length ? '' : 'muted'}><Check size={16} /> People import {people.length ? 'started' : 'pending'}</div>
-          </div>
-        </section>
-      </div>
-    </section>
+    </>
   )
 }
 
@@ -3626,7 +3966,7 @@ function PatronsPage({
       })
       resetForm()
     } catch (partnerError) {
-      setError(partnerError instanceof Error ? partnerError.message : 'Unable to save patron.')
+      setError(errorMessage(partnerError, 'Unable to save patron.'))
     } finally {
       setBusy(false)
     }
@@ -3641,7 +3981,7 @@ function PatronsPage({
       await deleteProgramPartnerCallable({ orgId, programId: program.id, partnerId: partner.id })
       if (editingPartner?.id === partner.id) resetForm()
     } catch (partnerError) {
-      setError(partnerError instanceof Error ? partnerError.message : 'Unable to delete patron.')
+      setError(errorMessage(partnerError, 'Unable to delete patron.'))
     } finally {
       setBusy(false)
     }
@@ -3798,69 +4138,92 @@ function DashboardPage({
   programs,
   people,
   setRoute,
+  onCreateProgram,
 }: {
   programs: Program[]
   people: ProgramPerson[]
   setRoute: (route: RouteKey) => void
+  onCreateProgram?: () => void
 }) {
   const livePrograms = programs.filter((program) => program.status === 'live').length
   const issuedPasses = people.filter((person) => person.passStatus === 'issued' || person.passStatus === 'checkedIn').length
-  const latestPrograms = programs.slice(0, 4)
+  const latestPrograms = programs.slice(0, 5)
 
   return (
-    <section className="page-stack">
-      <div className="stats-grid">
-        <Stat icon={CalendarDays} label="Programs" value={formatCount(programs.length)} detail={`${livePrograms} live`} />
-        <Stat icon={BadgeCheck} label="Passes issued" value={formatCount(issuedPasses)} detail="Across selected organization" />
-        <Stat icon={Users} label="People" value={formatCount(people.length)} detail="Attendees, participants, staff" />
+    <>
+      <PageHeader
+        actions={onCreateProgram ? (
+          <button className="primary-button" onClick={onCreateProgram} type="button">
+            <Plus size={15} />
+            Create program
+          </button>
+        ) : undefined}
+        description="Organization overview across every program."
+        title="Overview"
+      />
+
+      <div className="kpi-grid">
+        <article className="card kpi">
+          <span>Programs</span>
+          <strong>{formatCount(programs.length)}</strong>
+          <small>{formatCount(livePrograms)} live</small>
+        </article>
+        <article className="card kpi">
+          <span>People</span>
+          <strong>{formatCount(people.length)}</strong>
+          <small>Attendees, participants, staff</small>
+        </article>
+        <article className="card kpi">
+          <span>Passes issued</span>
+          <strong>{formatCount(issuedPasses)}</strong>
+          <small>Across this organization</small>
+        </article>
       </div>
 
-      <div className="split-grid">
-        <section className="panel">
-          <div className="panel-heading">
-            <div>
-              <span className="eyebrow">Next work</span>
-              <h2>Programs</h2>
-            </div>
-            <button className="icon-button" onClick={() => setRoute('programs')} title="Open programs" type="button">
-              <ChevronRight size={18} />
+      <section className="card">
+        <div className="card-head">
+          <div>
+            <h2>Programs</h2>
+            <p>Conferences, fests, competitions and workshops</p>
+          </div>
+          {programs.length ? (
+            <button className="text-link" onClick={() => setRoute('programs')} type="button">
+              View all
+              <ChevronRight size={15} />
             </button>
-          </div>
-
-          {latestPrograms.length === 0 ? (
+          ) : null}
+        </div>
+        {latestPrograms.length === 0 ? (
+          <div className="empty-with-action">
             <EmptyState title="Create the first program" body="Start with the main event container. If it has sessions, contests, talks, or workshops, add them inside as events." />
-          ) : (
-            <div className="list-stack">
-              {latestPrograms.map((program) => (
-                <div className="row-item" key={program.id}>
-                  <div>
-                    <strong>{program.name}</strong>
-                    <span>{program.venueName || 'Venue pending'} · {program.city || 'City pending'}</span>
-                  </div>
-                  <span className={`status ${program.status}`}>{program.status}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-
-        <section className="panel">
-          <div className="panel-heading">
-            <div>
-              <span className="eyebrow">Setup readiness</span>
-              <h2>Operations snapshot</h2>
-            </div>
-            <ClipboardList size={20} />
+            {onCreateProgram ? (
+              <button className="primary-button" onClick={onCreateProgram} type="button">
+                <Plus size={15} />
+                Create program
+              </button>
+            ) : null}
           </div>
-          <div className="ops-list">
-            <div><Check size={16} /> Organization workspace ready</div>
-            <div><Check size={16} /> Default roles available</div>
-            <div><Check size={16} /> Program/event model active</div>
-            <div className={people.length ? '' : 'muted'}><Check size={16} /> People import {people.length ? 'started' : 'pending'}</div>
+        ) : (
+          <div>
+            <div className="data-row head program-rows">
+              <span>Program</span>
+              <span>Venue</span>
+              <span>Status</span>
+            </div>
+            {latestPrograms.map((program) => (
+              <button className="data-row program-rows" key={program.id} onClick={() => setRoute('programs')} type="button">
+                <span className="cell-main">
+                  <strong>{program.name}</strong>
+                  <small>{formatDateRange(program.startDate, program.endDate)}</small>
+                </span>
+                <span className="cell-text cell-muted">{[program.venueName || 'Venue pending', program.city].filter(Boolean).join(' · ')}</span>
+                <span className={`status ${program.status}`}>{statusLabel(program.status)}</span>
+              </button>
+            ))}
           </div>
-        </section>
-      </div>
-    </section>
+        )}
+      </section>
+    </>
   )
 }
 
@@ -4088,7 +4451,7 @@ function ProgramComposerPage({
           })),
         })
       } catch (venueError) {
-        setError(`Program created, but the venue library could not be saved: ${venueError instanceof Error ? venueError.message : 'Unable to save venue.'}`)
+        setError(`Program created, but the venue library could not be saved: ${errorMessage(venueError, 'Unable to save venue.')}`)
       }
 
       // Switch the workspace last, so a failed write never leaves the CRM
@@ -4099,7 +4462,7 @@ function ProgramComposerPage({
       }
       onCreated({ orgId, programId })
     } catch (programError) {
-      setError(programError instanceof Error ? programError.message : 'Unable to create program.')
+      setError(errorMessage(programError, 'Unable to create program.'))
     } finally {
       setStep('')
       setBusy(false)
@@ -4364,7 +4727,7 @@ function ProgramsPage({
     try {
       await deleteProgramCallable({ orgId, programId: program.id })
     } catch (programError) {
-      setError(programError instanceof Error ? programError.message : 'Unable to delete program.')
+      setError(errorMessage(programError, 'Unable to delete program.'))
     } finally {
       setDeletingProgramId('')
     }
@@ -4451,59 +4814,65 @@ function ProgramBlock({
 }) {
   const programTypeLabel = optionLabel(programTypeOptions, program.programType, 'Program')
   const heroImage = program.bannerUrl || program.posterUrl || program.logoUrl
-  const visibleEvents = events.slice(0, 3)
+  const visibleEvents = [...events].sort((a, b) => (a.startDateTime || '').localeCompare(b.startDateTime || '')).slice(0, 3)
   const aboutPreview = program.tagline || richTextToPlainText(program.description)
 
   return (
-    <article className="program-card-premium">
-      <div className="program-hero">
-        {heroImage ? <img alt="" src={heroImage} /> : <div className="program-art-fallback"><CalendarDays size={26} /></div>}
-        <div>
-          <span className="eyebrow">{program.mode === 'standalone' ? 'Standalone event' : programTypeLabel}</span>
-          <strong>{program.name}</strong>
-          <p>{aboutPreview || 'No about section added yet.'}</p>
-          <span><MapPin size={14} /> {program.venueName || 'Venue pending'} {program.city ? `· ${program.city}` : ''}</span>
-          {program.latitude && program.longitude && <span>{program.latitude.toFixed(5)}, {program.longitude.toFixed(5)}</span>}
+    <article className="card program-block">
+      <div className="program-block-main">
+        <div className="program-block-art">{heroImage ? <img alt="" src={heroImage} /> : initialsFor(program.name, 'P')}</div>
+        <div className="program-block-text">
+          <div className="program-card-title">
+            <strong>{program.name}</strong>
+            <span className={`status ${program.status}`}>{statusLabel(program.status)}</span>
+          </div>
+          <span className="program-block-type">{program.mode === 'standalone' ? 'Standalone event' : programTypeLabel}</span>
+          {aboutPreview ? <p>{aboutPreview}</p> : null}
+          <div className="meta-row">
+            <span><CalendarDays size={13} />{formatDateRange(program.startDate, program.endDate)}</span>
+            <span><MapPin size={13} />{[program.venueName || 'Venue pending', program.city].filter(Boolean).join(' · ')}</span>
+          </div>
         </div>
-        <span className={`status ${program.status}`}>{program.mode === 'standalone' ? 'standalone' : `${events.length} events`}</span>
       </div>
 
-      {events.length > 0 && (
-        <div className="event-card-grid">
+      {events.length > 0 ? (
+        <div className="program-block-events">
+          <div className="net-label">
+            <span>Events</span>
+            <span>{formatCount(events.length)}</span>
+          </div>
           {visibleEvents.map((programEvent) => (
-            <div className="event-card" key={programEvent.id}>
-              {programEvent.posterUrl ? <img alt="" src={programEvent.posterUrl} /> : <div className="event-card-fallback"><CalendarDays size={20} /></div>}
-              <div>
+            <div className="program-block-event" key={programEvent.id}>
+              <span className="thumb small">{programEvent.posterUrl ? <img alt="" src={programEvent.posterUrl} /> : <CalendarDays size={14} />}</span>
+              <span className="cell-main">
                 <strong>{programEvent.name}</strong>
-                <span><MapPin size={13} />{programEvent.venueName || program.venueName || 'Venue pending'}</span>
-                {programEvent.locationNote && <p>{programEvent.locationNote}</p>}
-                {programEvent.latitude && programEvent.longitude && <small>{programEvent.latitude.toFixed(5)}, {programEvent.longitude.toFixed(5)}</small>}
-              </div>
-              <span className={`status ${programEvent.status}`}>{programEvent.status}</span>
+                <small>{formatEventWhen(programEvent.startDateTime, programEvent.endDateTime)} · {programEvent.venueName || program.venueName || 'Venue pending'}</small>
+              </span>
+              <span className={`status ${programEvent.status}`}>{statusLabel(programEvent.status)}</span>
             </div>
           ))}
-          {events.length > visibleEvents.length && <div className="event-card more-card">+{events.length - visibleEvents.length} more events</div>}
+          {events.length > visibleEvents.length ? <span className="muted-note">+{formatCount(events.length - visibleEvents.length)} more events</span> : null}
         </div>
-      )}
-      <div className="program-card-footer">
-        <span><QrCode size={14} /> One program QR/pass</span>
+      ) : null}
+
+      <div className="program-block-foot">
+        <span className="inline-icon-text"><QrCode size={14} />One QR pass per person</span>
         <div className="program-card-actions">
+          {onDelete && (
+            <button aria-label={`Delete ${program.name}`} className="icon-button ghost danger-icon" disabled={deleting} onClick={() => onDelete(program)} title="Delete program" type="button">
+              {deleting ? <Loader2 className="spin" size={15} /> : <Trash2 size={15} />}
+            </button>
+          )}
           {onEdit && (
-            <button className="secondary-button" onClick={() => onEdit(program.id)} type="button">
-              <Pencil size={16} />
+            <button className="secondary-button compact-button" onClick={() => onEdit(program.id)} type="button">
+              <Pencil size={14} />
               Edit
             </button>
           )}
           {onOpen && (
-            <button className="secondary-button" onClick={() => onOpen(program.id)} type="button">
+            <button className="primary-button compact-button" onClick={() => onOpen(program.id)} type="button">
               Open workspace
-              <ChevronRight size={16} />
-            </button>
-          )}
-          {onDelete && (
-            <button className="danger-button subtle-button" disabled={deleting} onClick={() => onDelete(program)} type="button">
-              {deleting ? <Loader2 className="spin" size={15} /> : <Trash2 size={15} />}
-              Delete
+              <ChevronRight size={15} />
             </button>
           )}
         </div>
@@ -4564,6 +4933,10 @@ function EventsPage({
   const [venueModalOpen, setVenueModalOpen] = useState(false)
   const [error, setError] = useState('')
   const [publishNotice, setPublishNotice] = useState('')
+
+  const [eventsView, setEventsView] = useState<'events' | 'schedule'>('events')
+  const [eventSearch, setEventSearch] = useState('')
+  const [eventStatusFilter, setEventStatusFilter] = useState<'all' | ProgramEvent['status']>('all')
 
   const matchEventVenueId = useCallback((name: string, latitude?: number, longitude?: number) => findVenueId(savedVenues, { name, latitude, longitude }), [savedVenues])
 
@@ -4678,8 +5051,11 @@ function EventsPage({
         locationNote: locationNote.trim(),
         directionsNote: directionsNote.trim(),
         posterUrl: posterUrl.trim(),
-        latitude,
-        longitude,
+        // Venues saved without a map pin come back from Firestore as null. The
+        // callable schema only accepts a number or a missing key, and the
+        // Functions client serializes undefined as null, so omit the keys.
+        ...(typeof latitude === 'number' ? { latitude } : {}),
+        ...(typeof longitude === 'number' ? { longitude } : {}),
         address: eventVenueAddress.trim() || venueName.trim(),
         entryScope,
         mobileVisible,
@@ -4693,7 +5069,7 @@ function EventsPage({
       setSelectedEventId(response.data.eventId)
       setEditing(false)
     } catch (eventError) {
-      setError(eventError instanceof Error ? eventError.message : 'Unable to create event')
+      setError(errorMessage(eventError, 'Unable to create event'))
     } finally {
       setBusy(false)
     }
@@ -4728,8 +5104,11 @@ function EventsPage({
         locationNote: locationNote.trim(),
         directionsNote: directionsNote.trim(),
         posterUrl: posterUrl.trim(),
-        latitude,
-        longitude,
+        // Venues saved without a map pin come back from Firestore as null. The
+        // callable schema only accepts a number or a missing key, and the
+        // Functions client serializes undefined as null, so omit the keys.
+        ...(typeof latitude === 'number' ? { latitude } : {}),
+        ...(typeof longitude === 'number' ? { longitude } : {}),
         address: eventVenueAddress.trim() || venueName.trim(),
         entryScope,
         mobileVisible,
@@ -4743,7 +5122,7 @@ function EventsPage({
       })
       setEditing(false)
     } catch (eventError) {
-      setError(eventError instanceof Error ? eventError.message : 'Unable to save event')
+      setError(errorMessage(eventError, 'Unable to save event'))
     } finally {
       setBusy(false)
     }
@@ -4760,7 +5139,7 @@ function EventsPage({
       setSelectedEventId('')
       setEditing(false)
     } catch (eventError) {
-      setError(eventError instanceof Error ? eventError.message : 'Unable to delete event')
+      setError(errorMessage(eventError, 'Unable to delete event'))
     } finally {
       setBusy(false)
     }
@@ -4774,7 +5153,7 @@ function EventsPage({
       const response = await publishProgramEventsCallable({ orgId, programId: program.id })
       setPublishNotice(`Published ${formatCount(response.data.itemCount)} event${response.data.itemCount === 1 ? '' : 's'} to Sang app.`)
     } catch (publishError) {
-      setError(publishError instanceof Error ? publishError.message : 'Unable to publish events to Sang app.')
+      setError(errorMessage(publishError, 'Unable to publish events to Sang app.'))
     } finally {
       setPublishingEvents(false)
     }
@@ -4813,31 +5192,29 @@ function EventsPage({
   if (selectedEvent || editing) {
     return (
       <section className="page-stack event-full-page">
-        <section className="events-command">
-          <div>
-            <span className="eyebrow">{program.name}</span>
-            <h1>{formTitle}</h1>
-            <p>{selectedEvent && !editing ? 'Event workspace, schedule, speakers, access, and venue planning.' : 'Create or update event details before building the schedule.'}</p>
-          </div>
-          <div className="action-row">
-            <button className="secondary-button" onClick={() => { setSelectedEventId(''); setEditing(false) }} type="button">
-              <ChevronRight className="flip-icon" size={16} />
-              Back to events
-            </button>
-            {selectedEvent && !editing && (
-              <button className="secondary-button" onClick={() => setEditing(true)} type="button">
-                <Pencil size={16} />
-                Edit
-              </button>
-            )}
-            {selectedEvent && (
+        <PageHeader
+          actions={selectedEvent ? (
+            <>
+              {!editing && (
+                <button className="secondary-button" onClick={() => setEditing(true)} type="button">
+                  <Pencil size={15} />
+                  Edit
+                </button>
+              )}
               <button className="danger-button" disabled={busy} onClick={deleteSelectedEvent} type="button">
-                <Trash2 size={16} />
+                <Trash2 size={15} />
                 Delete
               </button>
-            )}
-          </div>
-        </section>
+            </>
+          ) : undefined}
+          description={selectedEvent && !editing ? 'Event workspace, schedule, speakers, access, and venue planning.' : 'Create or update event details before building the schedule.'}
+          title={selectedEvent && !editing ? 'Event details' : formTitle}
+        >
+          <button className="back-link" onClick={() => { setSelectedEventId(''); setEditing(false) }} type="button">
+            <ChevronLeft size={15} />
+            Back to events
+          </button>
+        </PageHeader>
 
         <section className="panel event-detail-panel full-event-panel">
           {error && <p className="form-error">{error}</p>}
@@ -4846,10 +5223,10 @@ function EventsPage({
               <div className="event-read-view">
                 {selectedEvent.posterUrl ? <img alt="" src={selectedEvent.posterUrl} /> : <div className="event-card-fallback"><CalendarDays size={22} /></div>}
                 <div>
-                  <span className={`status ${selectedEvent.status}`}>{selectedEvent.status}</span>
+                  <span className={`status ${selectedEvent.status}`}>{statusLabel(selectedEvent.status)}</span>
                   <h1>{selectedEvent.name}</h1>
                   <p>{selectedEvent.locationNote || 'No location note added yet.'}</p>
-                  <span><CalendarDays size={14} /> {selectedEvent.startDateTime || 'Start pending'} to {selectedEvent.endDateTime || 'End pending'}</span>
+                  <span><CalendarDays size={14} /> {formatEventSpan(selectedEvent.startDateTime, selectedEvent.endDateTime)}</span>
                   <span><MapPin size={14} /> {selectedEvent.venueName || program.venueName || 'Venue pending'}</span>
                   <span><Ticket size={14} /> Uses the program pass; event access is checked during scan</span>
                   <span><BadgeCheck size={14} /> Results: {selectedEvent.resultsEnabled ? 'enabled' : 'not enabled'}</span>
@@ -5006,61 +5383,154 @@ function EventsPage({
     )
   }
 
-  return (
-    <section className="page-stack">
-      <section className="events-command">
-        <div>
-          <span className="eyebrow">{program.name}</span>
-          <h1>Events</h1>
-          <p>Manage sessions, competitions, talks, workshops, venue zones, and gate-specific activities inside this program.</p>
-        </div>
-        <div className="command-actions">
-          <button className="secondary-button" disabled={publishingEvents || events.length === 0} onClick={publishEvents} type="button">
-            {publishingEvents ? <Loader2 className="spin" size={17} /> : <UploadCloud size={17} />}
-            Publish events
-          </button>
-          <button className="primary-button" onClick={startCreate} type="button">
-            <Plus size={17} />
-            Add event
-          </button>
-        </div>
-      </section>
-      {publishNotice ? <p className="form-success">{publishNotice}</p> : null}
+  const eventSearchTerm = eventSearch.trim().toLowerCase()
+  const visibleEvents = [...events]
+    .filter((programEvent) => eventStatusFilter === 'all' || programEvent.status === eventStatusFilter)
+    .filter((programEvent) => !eventSearchTerm || [programEvent.name, programEvent.venueName, programEvent.eventType].some((value) => (value || '').toLowerCase().includes(eventSearchTerm)))
+    .sort((a, b) => (a.startDateTime || '').localeCompare(b.startDateTime || ''))
+  const eventsPublishPending = programPublishState(program, events, [], []).events
 
-      {events.length === 0 && !editing ? (
-        <section className="panel">
+  function openEvent(eventId: string) {
+    setSelectedEventId(eventId)
+    setEditing(false)
+  }
+
+  return (
+    <>
+      <PageHeader
+        actions={(
+          <>
+            <button className={`secondary-button ${eventsPublishPending ? 'publish-button-pending' : ''}`} disabled={publishingEvents || events.length === 0} onClick={publishEvents} type="button">
+              {publishingEvents ? <Loader2 className="spin" size={15} /> : <UploadCloud size={15} />}
+              Publish events
+            </button>
+            <button className="primary-button" onClick={startCreate} type="button">
+              <Plus size={15} />
+              Add event
+            </button>
+          </>
+        )}
+        description={`Sessions, competitions, talks and workshops inside ${program.name}.`}
+        title="Events"
+      />
+      {publishNotice ? <p className="form-success">{publishNotice}</p> : null}
+      {error ? <p className="form-error">{error}</p> : null}
+
+      <div className="tabs" role="tablist">
+        <button aria-selected={eventsView === 'events'} className={eventsView === 'events' ? 'tab active' : 'tab'} onClick={() => setEventsView('events')} role="tab" type="button">
+          Events
+          <small>{formatCount(events.length)}</small>
+        </button>
+        <button aria-selected={eventsView === 'schedule'} className={eventsView === 'schedule' ? 'tab active' : 'tab'} onClick={() => setEventsView('schedule')} role="tab" type="button">
+          Schedule
+          <small>{formatCount(scheduleItems.length)}</small>
+        </button>
+      </div>
+
+      {eventsView === 'schedule' ? (
+        <ScheduleManager
+          events={events}
+          orgId={orgId}
+          program={program}
+          roles={roles}
+          scheduleItems={scheduleItems}
+          venueCatalog={venueCatalog}
+        />
+      ) : events.length === 0 ? (
+        <section className="panel premium-empty-panel">
           <EmptyState title="No events yet" body="Add events with poster, schedule, venue, and map coordinates. Standalone programs can still use this for talks, gates, zones, or agenda items." />
           <button className="primary-button" onClick={startCreate} type="button">
-            <Plus size={17} />
+            <Plus size={15} />
             Add first event
           </button>
         </section>
       ) : (
-        <section className="event-workspace">
-          <div className="event-gallery">
-            {events.map((programEvent) => (
-              <button className={selectedEventId === programEvent.id ? 'event-tile active' : 'event-tile'} key={programEvent.id} onClick={() => { setSelectedEventId(programEvent.id); setEditing(false) }} type="button">
-                {programEvent.posterUrl ? <img alt="" src={programEvent.posterUrl} /> : <div className="event-tile-fallback"><CalendarDays size={20} /></div>}
-                <div>
-                  <strong>{programEvent.name}</strong>
-                  <span>{programEvent.venueName || program.venueName || 'Venue pending'}</span>
-                  <small>{programEvent.mobileVisible === false ? 'Hidden from Sang app' : 'Visible after publish'}</small>
-                </div>
-                <ChevronRight size={17} />
-              </button>
-            ))}
+        <>
+          <div className="toolbar">
+            <div className="toolbar-filters">
+              <label className="search-field">
+                <Search size={15} />
+                <input aria-label="Search events" onChange={(changeEvent) => setEventSearch(changeEvent.target.value)} placeholder="Search events" type="search" value={eventSearch} />
+              </label>
+              <select aria-label="Filter events by status" className="filter-select" onChange={(changeEvent) => setEventStatusFilter(changeEvent.target.value as 'all' | ProgramEvent['status'])} value={eventStatusFilter}>
+                <option value="all">All statuses</option>
+                <option value="live">Live</option>
+                <option value="draft">Draft</option>
+                <option value="completed">Completed</option>
+              </select>
+            </div>
+            <span className="toolbar-count">
+              {visibleEvents.length === events.length ? `${formatCount(events.length)} event${events.length === 1 ? '' : 's'}` : `${formatCount(visibleEvents.length)} of ${formatCount(events.length)} events`}
+            </span>
           </div>
-        </section>
+
+          <section className="card data-table-card">
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Event</th>
+                    <th>When</th>
+                    <th>Venue</th>
+                    <th>In Sang app</th>
+                    <th>Schedule</th>
+                    <th>Status</th>
+                    <th aria-label="Open" className="actions-col" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleEvents.map((programEvent) => {
+                    const scheduleCount = scheduleItems.filter((item) => item.eventId === programEvent.id).length
+                    const visibleInApp = programEvent.mobileVisible !== false
+                    return (
+                      <tr className="clickable" key={programEvent.id} onClick={() => openEvent(programEvent.id)}>
+                        <td>
+                          <div className="person-cell">
+                            <span className="thumb">{programEvent.posterUrl ? <img alt="" src={programEvent.posterUrl} /> : <CalendarDays size={16} />}</span>
+                            <span className="cell-main">
+                              <strong>{programEvent.name}</strong>
+                              <small>{optionLabel(eventTypeOptions, programEvent.eventType, programEvent.eventType || 'Event')}</small>
+                            </span>
+                          </div>
+                        </td>
+                        <td className="tabular">{formatEventWhen(programEvent.startDateTime, programEvent.endDateTime)}</td>
+                        <td className="cell-muted">{programEvent.venueName || program.venueName || 'Venue pending'}</td>
+                        <td>
+                          <span className={visibleInApp ? 'inline-icon-text on' : 'inline-icon-text'}>
+                            {visibleInApp ? <Smartphone size={14} /> : <EyeOff size={14} />}
+                            {visibleInApp ? 'Visible' : 'Hidden'}
+                          </span>
+                        </td>
+                        <td className="cell-muted tabular">{scheduleCount ? `${formatCount(scheduleCount)} item${scheduleCount === 1 ? '' : 's'}` : '—'}</td>
+                        <td><span className={`status ${programEvent.status}`}>{statusLabel(programEvent.status)}</span></td>
+                        <td className="actions-col">
+                          <button
+                            aria-label={`Open ${programEvent.name}`}
+                            className="icon-button ghost"
+                            onClick={(clickEvent) => {
+                              clickEvent.stopPropagation()
+                              openEvent(programEvent.id)
+                            }}
+                            type="button"
+                          >
+                            <ChevronRight size={16} />
+                          </button>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                  {visibleEvents.length === 0 ? (
+                    <tr>
+                      <td className="cell-muted" colSpan={7}>No events match these filters.</td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </>
       )}
-      <ScheduleManager
-        events={events}
-        orgId={orgId}
-        program={program}
-        roles={roles}
-        scheduleItems={scheduleItems}
-        venueCatalog={venueCatalog}
-      />
-    </section>
+    </>
   )
 }
 
@@ -5164,7 +5634,7 @@ function ScheduleManager({
       const response = await publishProgramScheduleCallable({ orgId, programId: program.id })
       window.alert(`Schedule published. ${formatCount(response.data.itemCount)} mobile items, ${formatCount(response.data.pageCount)} page${response.data.pageCount === 1 ? '' : 's'}.`)
     } catch (publishError) {
-      setError(publishError instanceof Error ? publishError.message : 'Unable to publish schedule.')
+      setError(errorMessage(publishError, 'Unable to publish schedule.'))
     } finally {
       setPublishing(false)
     }
@@ -5222,7 +5692,7 @@ function ScheduleManager({
       }
       setRows([createDraftRow()])
     } catch (scheduleError) {
-      setError(scheduleError instanceof Error ? scheduleError.message : 'Unable to add schedule rows.')
+      setError(errorMessage(scheduleError, 'Unable to add schedule rows.'))
     } finally {
       setBusy(false)
     }
@@ -5366,7 +5836,7 @@ function ScheduleManager({
               <span className="timeline-dot" />
               <div className="schedule-item-main">
                 <div className="schedule-item-top">
-                  <span className={`status ${item.status}`}>{item.status}</span>
+                  <span className={`status ${item.status}`}>{statusLabel(item.status)}</span>
                   <small>{item.type === 'custom' && item.customTypeLabel ? item.customTypeLabel : optionLabel(scheduleTypeOptions, item.type)}</small>
                 </div>
                 <strong>{item.title}</strong>
@@ -5768,7 +6238,7 @@ function RolesPage({ orgId, roles }: { orgId: string; roles: Role[] }) {
       setDescription('')
       if (category === 'team') setSelected(['program.read'])
     } catch (createError) {
-      setError(createError instanceof Error ? createError.message : 'Unable to save role.')
+      setError(errorMessage(createError, 'Unable to save role.'))
     }
   }
 
@@ -5780,13 +6250,15 @@ function RolesPage({ orgId, roles }: { orgId: string; roles: Role[] }) {
     try {
       await deleteRoleCallable({ orgId, roleId })
     } catch (deleteError) {
-      setError(deleteError instanceof Error ? deleteError.message : 'Unable to delete role.')
+      setError(errorMessage(deleteError, 'Unable to delete role.'))
     } finally {
       setDeletingRoleId('')
     }
   }
 
   return (
+    <>
+    <PageHeader description="Decide what each team role can see and change across the CRM." title="Roles" />
     <section className="page-grid">
       <form className="panel form-panel" onSubmit={createRole}>
         <div className="panel-heading">
@@ -5884,6 +6356,7 @@ function RolesPage({ orgId, roles }: { orgId: string; roles: Role[] }) {
         </div>
       </section>
     </section>
+    </>
   )
 }
 
@@ -5914,6 +6387,9 @@ function TeamPage({ orgId, roles, programs, events, members, people }: { orgId: 
   const [editProgramId, setEditProgramId] = useState('')
   const [editEventId, setEditEventId] = useState('')
   const [editStatus, setEditStatus] = useState<'active' | 'invited' | 'disabled'>('active')
+  const [inviteOpen, setInviteOpen] = useState(false)
+  const [memberSearch, setMemberSearch] = useState('')
+  const [memberStatusFilter, setMemberStatusFilter] = useState<'all' | 'active' | 'invited' | 'disabled'>('all')
   const lookupProgramId = scope === 'organization' ? profileProgramId : programId
   const selectedPerson = people.find((person) => person.id === selectedPersonId) || null
   const lookupPeople = useMemo(() => programPeopleForLookup(people, lookupProgramId), [lookupProgramId, people])
@@ -6068,8 +6544,9 @@ function TeamPage({ orgId, roles, programs, events, members, people }: { orgId: 
         programPersonId: teamPerson.programPersonId,
       })
       resetTeamPersonDraft()
+      setInviteOpen(false)
     } catch (inviteError) {
-      setError(inviteError instanceof Error ? inviteError.message : 'Unable to add member.')
+      setError(errorMessage(inviteError, 'Unable to add member.'))
     }
   }
 
@@ -6091,7 +6568,7 @@ function TeamPage({ orgId, roles, programs, events, members, people }: { orgId: 
       })
       setEditingMember(null)
     } catch (updateError) {
-      setError(updateError instanceof Error ? updateError.message : 'Unable to update member.')
+      setError(errorMessage(updateError, 'Unable to update member.'))
     } finally {
       setBusyMemberId('')
     }
@@ -6105,167 +6582,239 @@ function TeamPage({ orgId, roles, programs, events, members, people }: { orgId: 
     try {
       await deleteTeamMemberCallable({ orgId, teamMemberId: member.id })
     } catch (deleteError) {
-      setError(deleteError instanceof Error ? deleteError.message : 'Unable to delete member.')
+      setError(errorMessage(deleteError, 'Unable to delete member.'))
     } finally {
       setBusyMemberId('')
     }
   }
 
+  const memberSearchTerm = memberSearch.trim().toLowerCase()
+  const memberStatusTabs = [
+    { key: 'all' as const, label: 'All', count: visibleMembers.length },
+    { key: 'active' as const, label: 'Active', count: visibleMembers.filter((member) => member.status === 'active').length },
+    { key: 'invited' as const, label: 'Invited', count: visibleMembers.filter((member) => member.status === 'invited').length },
+    { key: 'disabled' as const, label: 'Disabled', count: visibleMembers.filter((member) => member.status === 'disabled').length },
+  ]
+  const filteredMembers = visibleMembers.filter((member) => (
+    (memberStatusFilter === 'all' || member.status === memberStatusFilter)
+    && (!memberSearchTerm || `${member.displayName || ''} ${member.email || ''}`.toLowerCase().includes(memberSearchTerm))
+  ))
+
+  function openInvite() {
+    setError('')
+    setInviteOpen(true)
+  }
+
   return (
     <>
-    <section className="page-grid">
-      <form className="panel form-panel" onSubmit={inviteMember}>
-        <div className="panel-heading">
-          <div>
-            <span className="eyebrow">Team</span>
-            <h2>Add member</h2>
-          </div>
-          <Users size={20} />
-        </div>
-        {error && !editingMember && <p className="form-error">{error}</p>}
-        <label>
-          CRM access role
-          <select value={roleId} onChange={(event) => changeTeamRole(event.target.value)} required>
-            {teamRoles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
-          </select>
-        </label>
-        <label>
-          Scope
-          <select value={scope} onChange={(event) => setTeamScope(event.target.value as TeamScope)}>
-            <option value="organization">Whole organization</option>
-            <option value="program">Specific program</option>
-            <option value="event">Specific event</option>
-          </select>
-        </label>
-        {scope === 'organization' ? (
-          <label>
-            People profile program
-            <select value={profileProgramId} onChange={(event) => { setProfileProgramId(event.target.value); resetTeamPersonDraft() }} required>
-              <option value="">Select program</option>
-              {programs.map((program) => <option key={program.id} value={program.id}>{program.name}</option>)}
-            </select>
-          </label>
-        ) : (
-          <label>
-            Program
-            <select value={programId} onChange={(event) => { setProgramId(event.target.value); setProfileProgramId(event.target.value); setEventId(''); resetTeamPersonDraft() }} required>
-              <option value="">Select program</option>
-              {programs.map((program) => <option key={program.id} value={program.id}>{program.name}</option>)}
-            </select>
-          </label>
-        )}
-        {scope === 'event' && (
-          <label>
-            Event
-            <select value={eventId} onChange={(event) => setEventId(event.target.value)} required>
-              <option value="">Select event</option>
-              {events.filter((programEvent) => !programId || programEvent.programId === programId).map((programEvent) => (
-                <option key={programEvent.id} value={programEvent.id}>{programEvent.name}</option>
-              ))}
-            </select>
-          </label>
-        )}
-        <div className="person-lookup-box">
-          <label>
-            Search People by email
-            <input disabled={!lookupProgramId} placeholder="team.member@example.com" type="email" value={personLookup} onChange={(event) => { setPersonLookup(event.target.value); setEmail(event.target.value); setSelectedPersonId('') }} required />
-          </label>
-          {!selectedPerson && teamLookupResults.length > 0 && (
-            <div className="person-lookup-results">
-              {teamLookupResults.map((person) => (
-                <button className={selectedPersonId === person.id ? 'lookup-person-card active' : 'lookup-person-card'} key={person.id} onClick={() => selectTeamPerson(person)} type="button">
-                  <UserRound size={16} />
-                  <span>
-                    <strong>{person.fullName || person.email}</strong>
-                    <small>{person.email || person.phone || 'No email'}{person.programRoleName ? ` - ${person.programRoleName}` : ''}</small>
-                  </span>
-                </button>
-              ))}
-            </div>
-          )}
-          {selectedPerson ? (
-            <div className="selected-person-card with-action">
-              <BadgeCheck size={16} />
-              <span>
-                <strong>{selectedPerson.fullName}</strong>
-                <small>{selectedPerson.email || selectedPerson.phone || 'Identity pending'}</small>
-              </span>
-              <button className="secondary-button compact-button" onClick={resetTeamPersonDraft} type="button">
-                Change
-              </button>
-            </div>
-          ) : (
-            <div className="assignment-box">
-              <span>Create People profile if this email is new</span>
-              <label>
-                Full name
-                <input value={newPersonName} onChange={(event) => { setNewPersonName(event.target.value); setDisplayName(event.target.value) }} required />
-              </label>
-              <label>
-                Phone
-                <input value={newPersonPhone} onChange={(event) => setNewPersonPhone(event.target.value)} />
-              </label>
-              <label>
-                Organization / college / company
-                <input value={newPersonOrganization} onChange={(event) => setNewPersonOrganization(event.target.value)} />
-              </label>
-              <label>
-                Designation
-                <input placeholder="Coordinator, faculty, volunteer lead..." value={newPersonDesignation} onChange={(event) => setNewPersonDesignation(event.target.value)} />
-              </label>
-            </div>
-          )}
-        </div>
-        <button className="primary-button" type="submit"><Plus size={17} />Add member</button>
-      </form>
+    <PageHeader
+      actions={(
+        <button className="primary-button" onClick={openInvite} type="button">
+          <Mail size={15} />
+          Invite member
+        </button>
+      )}
+      description="Who can work in this organization, with which role, and where."
+      title="Team"
+    />
+    {error && !inviteOpen && !editingMember ? <p className="form-error">{error}</p> : null}
 
-      <section className="panel">
-        <div className="panel-heading">
-          <div>
-            <span className="eyebrow">Access map</span>
-            <h2>Team members</h2>
-          </div>
-          <ShieldCheck size={20} />
-        </div>
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr><th>Name</th><th>Email</th><th>Role</th><th>People profile</th><th>Scope</th><th>Status</th><th>Actions</th></tr>
-            </thead>
-            <tbody>
-              {visibleMembers.map((member) => {
-                const linkedPerson = people.find((person) => person.id === member.programPersonId)
-                return (
-                  <tr key={member.id}>
-                    <td>{member.displayName}</td>
-                    <td>{member.email}</td>
-                    <td>{teamRoles.find((role) => role.id === member.roleId)?.name || member.roleId}</td>
-                    <td>{linkedPerson ? `${linkedPerson.fullName} (${linkedPerson.programRoleName || linkedPerson.kind})` : 'Not linked'}</td>
-                    <td>{memberScopeLabel(member)}</td>
-                    <td><span className={`status ${member.status}`}>{member.status}</span></td>
-                    <td>
-                      <div className="table-actions">
-                        <button className="icon-button" disabled={busyMemberId === member.id} onClick={() => setEditingMember(member)} title="Edit member" type="button">
-                          <Pencil size={16} />
-                        </button>
-                        <button className="icon-button danger-icon" disabled={busyMemberId === member.id} onClick={() => removeMember(member)} title="Delete member" type="button">
-                          {busyMemberId === member.id ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />}
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                )
-              })}
-              {visibleMembers.length === 0 && (
-                <tr>
-                  <td colSpan={7}>No team members yet.</td>
+    <div className="tabs" role="tablist">
+      {memberStatusTabs.map((tab) => (
+        <button aria-selected={memberStatusFilter === tab.key} className={memberStatusFilter === tab.key ? 'tab active' : 'tab'} key={tab.key} onClick={() => setMemberStatusFilter(tab.key)} role="tab" type="button">
+          {tab.label}
+          <small>{formatCount(tab.count)}</small>
+        </button>
+      ))}
+    </div>
+
+    <div className="toolbar">
+      <div className="toolbar-filters">
+        <label className="search-field">
+          <Search size={15} />
+          <input aria-label="Search team" onChange={(changeEvent) => setMemberSearch(changeEvent.target.value)} placeholder="Search name or email" type="search" value={memberSearch} />
+        </label>
+      </div>
+      <span className="toolbar-count">{formatCount(filteredMembers.length)} member{filteredMembers.length === 1 ? '' : 's'}</span>
+    </div>
+
+    <section className="card data-table-card">
+      <div className="table-wrap">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Member</th>
+              <th>Role</th>
+              <th>Scope</th>
+              <th>People profile</th>
+              <th>Status</th>
+              <th className="actions-col">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filteredMembers.map((member) => {
+              const linkedPerson = people.find((person) => person.id === member.programPersonId)
+              const ScopeIcon = member.scope === 'organization' ? Building2 : member.scope === 'program' ? Layers : CalendarDays
+              return (
+                <tr key={member.id}>
+                  <td>
+                    <div className="person-cell">
+                      <span className={avatarClass(member.id)}>{initialsFor(member.displayName || member.email, 'M')}</span>
+                      <span className="cell-main">
+                        <strong>{member.displayName || member.email}</strong>
+                        <small>{member.email}</small>
+                      </span>
+                    </div>
+                  </td>
+                  <td>{teamRoles.find((role) => role.id === member.roleId)?.name || member.roleId}</td>
+                  <td>
+                    <span className="inline-icon-text plain">
+                      <ScopeIcon size={14} />
+                      {memberScopeLabel(member)}
+                    </span>
+                  </td>
+                  <td className={linkedPerson ? '' : 'cell-muted'}>{linkedPerson ? `${linkedPerson.fullName} (${linkedPerson.programRoleName || linkedPerson.kind})` : 'Not linked'}</td>
+                  <td><span className={`status ${member.status}`}>{statusLabel(member.status)}</span></td>
+                  <td className="actions-col">
+                    <div className="table-actions">
+                      <button className="icon-button ghost" disabled={busyMemberId === member.id} onClick={() => setEditingMember(member)} title="Edit member" type="button">
+                        <Pencil size={16} />
+                      </button>
+                      <button className="icon-button ghost danger-icon" disabled={busyMemberId === member.id} onClick={() => removeMember(member)} title="Delete member" type="button">
+                        {busyMemberId === member.id ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />}
+                      </button>
+                    </div>
+                  </td>
                 </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
+              )
+            })}
+            {filteredMembers.length === 0 && (
+              <tr>
+                <td className="cell-muted" colSpan={6}>{visibleMembers.length ? 'No team members match these filters.' : 'No team members yet.'}</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
     </section>
+
+    <Drawer description="They get CRM access with this role when they sign in with this email." onClose={() => setInviteOpen(false)} open={inviteOpen} title="Invite team member">
+      <form className="drawer-form" onSubmit={inviteMember}>
+        <div className="drawer-sections">
+          {error && !editingMember ? <p className="form-error">{error}</p> : null}
+          <div className="drawer-section">
+            <span className="drawer-section-label">Access</span>
+            <label>
+              CRM access role
+              <select value={roleId} onChange={(event) => changeTeamRole(event.target.value)} required>
+                {teamRoles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
+              </select>
+            </label>
+            <label>
+              Scope
+              <select value={scope} onChange={(event) => setTeamScope(event.target.value as TeamScope)}>
+                <option value="organization">Whole organization</option>
+                <option value="program">Specific program</option>
+                <option value="event">Specific event</option>
+              </select>
+            </label>
+            {scope === 'organization' ? (
+              <label>
+                People profile program
+                <select value={profileProgramId} onChange={(event) => { setProfileProgramId(event.target.value); resetTeamPersonDraft() }} required>
+                  <option value="">Select program</option>
+                  {programs.map((program) => <option key={program.id} value={program.id}>{program.name}</option>)}
+                </select>
+              </label>
+            ) : (
+              <label>
+                Program
+                <select value={programId} onChange={(event) => { setProgramId(event.target.value); setProfileProgramId(event.target.value); setEventId(''); resetTeamPersonDraft() }} required>
+                  <option value="">Select program</option>
+                  {programs.map((program) => <option key={program.id} value={program.id}>{program.name}</option>)}
+                </select>
+              </label>
+            )}
+            {scope === 'event' && (
+              <label>
+                Event
+                <select value={eventId} onChange={(event) => setEventId(event.target.value)} required>
+                  <option value="">Select event</option>
+                  {events.filter((programEvent) => !programId || programEvent.programId === programId).map((programEvent) => (
+                    <option key={programEvent.id} value={programEvent.id}>{programEvent.name}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+          </div>
+
+          <div className="drawer-section">
+            <span className="drawer-section-label">Person</span>
+            <div className="person-lookup-box">
+              <label>
+                Search People by email
+                <input disabled={!lookupProgramId} placeholder="team.member@example.com" type="email" value={personLookup} onChange={(event) => { setPersonLookup(event.target.value); setEmail(event.target.value); setSelectedPersonId('') }} required />
+              </label>
+              {!selectedPerson && teamLookupResults.length > 0 && (
+                <div className="person-lookup-results">
+                  {teamLookupResults.map((person) => (
+                    <button className={selectedPersonId === person.id ? 'lookup-person-card active' : 'lookup-person-card'} key={person.id} onClick={() => selectTeamPerson(person)} type="button">
+                      <UserRound size={16} />
+                      <span>
+                        <strong>{person.fullName || person.email}</strong>
+                        <small>{person.email || person.phone || 'No email'}{person.programRoleName ? ` - ${person.programRoleName}` : ''}</small>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {selectedPerson ? (
+                <div className="selected-person-card with-action">
+                  <BadgeCheck size={16} />
+                  <span>
+                    <strong>{selectedPerson.fullName}</strong>
+                    <small>{selectedPerson.email || selectedPerson.phone || 'Identity pending'}</small>
+                  </span>
+                  <button className="secondary-button compact-button" onClick={resetTeamPersonDraft} type="button">
+                    Change
+                  </button>
+                </div>
+              ) : (
+                <div className="assignment-box">
+                  <span>Create People profile if this email is new</span>
+                  <label>
+                    Full name
+                    <input value={newPersonName} onChange={(event) => { setNewPersonName(event.target.value); setDisplayName(event.target.value) }} required />
+                  </label>
+                  <label>
+                    Phone
+                    <input value={newPersonPhone} onChange={(event) => setNewPersonPhone(event.target.value)} />
+                  </label>
+                  <label>
+                    Organization / college / company
+                    <input value={newPersonOrganization} onChange={(event) => setNewPersonOrganization(event.target.value)} />
+                  </label>
+                  <label>
+                    Designation
+                    <input placeholder="Coordinator, faculty, volunteer lead..." value={newPersonDesignation} onChange={(event) => setNewPersonDesignation(event.target.value)} />
+                  </label>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="drawer-foot">
+          <button className="secondary-button" onClick={() => setInviteOpen(false)} type="button">
+            Cancel
+          </button>
+          <button className="primary-button" type="submit">
+            <Plus size={15} />
+            Add member
+          </button>
+        </div>
+      </form>
+    </Drawer>
 
     <Modal eyebrow="Team access" onClose={() => setEditingMember(null)} open={Boolean(editingMember)} title="Edit team member">
       <form className="settings-form" onSubmit={saveMember}>
@@ -6346,6 +6895,10 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
   const [passBusyPersonId, setPassBusyPersonId] = useState('')
   const [personActionBusyId, setPersonActionBusyId] = useState('')
   const [publishBusy, setPublishBusy] = useState(false)
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [peopleSearch, setPeopleSearch] = useState('')
+  const [peopleRoleFilter, setPeopleRoleFilter] = useState('all')
+  const [peoplePassFilter, setPeoplePassFilter] = useState<'all' | 'issued' | 'checkedIn' | 'notIssued' | 'blocked'>('all')
   const selectedPeople = people.filter((person) => (!programId || person.programId === programId) && personAccessState(person) !== 'removed')
   const availableEvents = events.filter((programEvent) => programEvent.programId === programId)
   const selectedProgram = programs.find((program) => program.id === programId)
@@ -6477,7 +7030,7 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
     try {
       await issuePassForProgramPersonCallable({ orgId, programPersonId: person.id })
     } catch (passError) {
-      setPeopleError(passError instanceof Error ? passError.message : 'Unable to update pass.')
+      setPeopleError(errorMessage(passError, 'Unable to update pass.'))
     } finally {
       setPassBusyPersonId('')
     }
@@ -6494,7 +7047,7 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
       await blockProgramPersonAccessCallable({ orgId, programPersonId: person.id, reason: 'blocked-from-crm' })
       setPeopleNotice(`${person.fullName} has been blocked. Their Sang access and QR pass are no longer active.`)
     } catch (blockError) {
-      setPeopleError(blockError instanceof Error ? blockError.message : 'Unable to block this person.')
+      setPeopleError(errorMessage(blockError, 'Unable to block this person.'))
     } finally {
       setPersonActionBusyId('')
     }
@@ -6511,7 +7064,7 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
       await unblockProgramPersonAccessCallable({ orgId, programPersonId: person.id, reason: 'unblocked-from-crm' })
       setPeopleNotice(`${person.fullName} has been unblocked and a fresh QR pass has been issued.`)
     } catch (unblockError) {
-      setPeopleError(unblockError instanceof Error ? unblockError.message : 'Unable to unblock this person.')
+      setPeopleError(errorMessage(unblockError, 'Unable to unblock this person.'))
     } finally {
       setPersonActionBusyId('')
     }
@@ -6527,7 +7080,7 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
       await removeProgramPersonAccessCallable({ orgId, programPersonId: person.id, reason: 'removed-from-crm' })
       setPeopleNotice(`${person.fullName} has been removed from the active roster.`)
     } catch (removeError) {
-      setPeopleError(removeError instanceof Error ? removeError.message : 'Unable to remove this person.')
+      setPeopleError(errorMessage(removeError, 'Unable to remove this person.'))
     } finally {
       setPersonActionBusyId('')
     }
@@ -6545,7 +7098,7 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
       const result = response.data
       setPeopleNotice(`Published ${result.peopleCount} people. Linked ${result.linkedCount} new, refreshed ${result.alreadyLinkedCount}, pending ${result.pendingCount}, review ${result.manualReviewCount}, blocked/removed skipped ${result.skippedCount || 0}. Notifications sent: ${result.notificationSentCount}.`)
     } catch (publishError) {
-      setPeopleError(publishError instanceof Error ? publishError.message : 'Unable to publish roster to Sang.')
+      setPeopleError(errorMessage(publishError, 'Unable to publish roster to Sang.'))
     } finally {
       setPublishBusy(false)
     }
@@ -6594,8 +7147,9 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
         setPeopleNotice(`${fullName} added and pass issued.`)
       }
       resetPersonForm()
+      setDrawerOpen(false)
     } catch (saveError) {
-      setPeopleError(saveError instanceof Error ? saveError.message : 'Unable to save this person.')
+      setPeopleError(errorMessage(saveError, 'Unable to save this person.'))
     } finally {
       setFormBusy(false)
     }
@@ -6737,176 +7291,223 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
     })
   }
 
-  return (
-    <section className="page-grid">
-      <form className="panel form-panel" onSubmit={addManual}>
-        <div className="panel-heading">
-          <div>
-            <span className="eyebrow">People</span>
-            <h2>{editingPerson ? 'Edit person access' : 'Add or import'}</h2>
-          </div>
-          {editingPerson ? <Pencil size={20} /> : <Upload size={20} />}
-        </div>
-        <label>
-          Program
-          <select disabled={Boolean(editingPerson)} value={programId} onChange={(event) => { setProgramId(event.target.value); setEventIds([]); setEventRoleById({}) }} required>
-            <option value="">Select program</option>
-            {programs.map((program) => <option key={program.id} value={program.id}>{program.name}</option>)}
-          </select>
-        </label>
-        <label>
-          Program audience role
-          <select value={programRoleId} onChange={(event) => setProgramRoleId(event.target.value)}>
-            {audienceRoles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
-          </select>
-        </label>
-        {availableEvents.length > 0 && (
-          <div className="assignment-box">
-            <span>Event access and role</span>
-            {availableEvents.map((programEvent) => {
-              const eventRoles = rolesForEvent(programEvent)
-              const currentRoleId = eventRoleById[programEvent.id] || eventRoles[0]?.id || programRoleId
-              return (
-                <div className="event-access-row" key={programEvent.id}>
-                  <label className="check-row">
-                    <input
-                      checked={eventIds.includes(programEvent.id)}
-                      onChange={(changeEvent) => toggleEventAccess(programEvent, changeEvent.target.checked)}
-                      type="checkbox"
-                    />
-                    <span>{programEvent.name}</span>
-                  </label>
-                  <select
-                    disabled={!eventIds.includes(programEvent.id)}
-                    value={currentRoleId}
-                    onChange={(changeEvent) => setEventRoleById((current) => ({ ...current, [programEvent.id]: changeEvent.target.value }))}
-                  >
-                    {eventRoles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
-                  </select>
-                </div>
-              )
-            })}
-          </div>
-        )}
-        <label>
-          Full name
-          <input value={manualName} onChange={(event) => setManualName(event.target.value)} required />
-        </label>
-        <label>
-          Email
-          <input type="email" value={manualEmail} onChange={(event) => setManualEmail(event.target.value)} />
-        </label>
-        <label>
-          Phone
-          <input value={manualPhone} onChange={(event) => setManualPhone(event.target.value)} />
-        </label>
-        <label>
-          Organization / college / company
-          <input value={manualCompany} onChange={(event) => setManualCompany(event.target.value)} />
-        </label>
-        <label>
-          Designation
-          <input placeholder="Founder, delegate, student, manager..." value={manualDesignation} onChange={(event) => setManualDesignation(event.target.value)} />
-        </label>
-        <div className="person-form-actions">
-          <button className="primary-button" disabled={!programId || formBusy} type="submit">
-            {formBusy ? <Loader2 className="spin" size={17} /> : editingPerson ? <Save size={17} /> : <Plus size={17} />}
-            {editingPerson ? 'Save changes' : 'Add and issue pass'}
-          </button>
-          {editingPerson && (
-            <button className="secondary-button" disabled={formBusy} onClick={resetPersonForm} type="button">
-              <X size={17} />
-              Cancel edit
-            </button>
-          )}
-        </div>
-        <label className="file-drop">
-          <Upload size={18} />
-          Upload CSV
-          <input accept=".csv" disabled={!programId || Boolean(editingPerson)} onChange={(event) => event.target.files?.[0] && importCsv(event.target.files[0])} type="file" />
-        </label>
-      </form>
+  const peopleSearchTerm = peopleSearch.trim().toLowerCase()
+  const filteredPeople = selectedPeople.filter((person) => {
+    if (peopleSearchTerm && !personSearchText(person).includes(peopleSearchTerm)) return false
+    if (peopleRoleFilter !== 'all' && (person.programRoleId || person.kind) !== peopleRoleFilter) return false
+    if (peoplePassFilter === 'all') return true
+    const accessState = personAccessState(person)
+    if (peoplePassFilter === 'blocked') return accessState === 'blocked'
+    return accessState !== 'blocked' && (person.passStatus || 'notIssued') === peoplePassFilter
+  })
+  const peopleStats = {
+    issued: selectedPeople.filter((person) => person.passStatus === 'issued' || person.passStatus === 'checkedIn').length,
+    checkedIn: selectedPeople.filter((person) => person.passStatus === 'checkedIn').length,
+    linked: selectedPeople.filter((person) => person.sangAppStatus === 'linked' || person.linkStatus === 'linked').length,
+    review: selectedPeople.filter((person) => person.sangAppStatus === 'manual_review' || person.linkStatus === 'manual_review').length,
+  }
+  const passStatusLabels: Record<string, string> = {
+    notIssued: 'Not issued',
+    issued: 'Issued',
+    checkedIn: 'Checked in',
+    blocked: 'Blocked',
+    revoked: 'Revoked',
+  }
+  const csvDisabled = !programId || Boolean(editingPerson)
 
-      <section className="panel">
-        <div className="panel-heading">
-          <div>
-            <span className="eyebrow">Roster</span>
-            <h2>Program people</h2>
-          </div>
-          <div className="table-actions">
+  function openAddPerson() {
+    resetPersonForm()
+    setPeopleError('')
+    setPeopleNotice('')
+    setDrawerOpen(true)
+  }
+
+  function openEditPerson(person: ProgramPerson) {
+    startEditPerson(person)
+    setDrawerOpen(true)
+  }
+
+  function closePersonDrawer() {
+    setDrawerOpen(false)
+    resetPersonForm()
+  }
+
+  function importCsvFromInput(input: HTMLInputElement) {
+    const file = input.files?.[0]
+    input.value = ''
+    if (!file) return
+    setDrawerOpen(false)
+    importCsv(file)
+  }
+
+  function exportRoster() {
+    downloadCsv('sang-program-people.csv', selectedPeople.map((person) => ({
+      name: person.fullName,
+      email: person.email,
+      phone: person.phone || '',
+      programRole: person.programRoleName || person.kind,
+      organization: person.organization || person.company || '',
+      designation: person.designation || '',
+      eventAccess: Object.entries(person.eventAccess || {}).map(([eventId, access]) => `${events.find((item) => item.id === eventId)?.name || access.eventNameSnapshot || eventId}:${access.roleName || access.roleId}`).join('; '),
+      accessStatus: personAccessState(person),
+      passStatus: person.passStatus || 'notIssued',
+    })))
+  }
+
+  return (
+    <>
+      <PageHeader
+        actions={(
+          <>
+            <button className="secondary-button" disabled={selectedPeople.length === 0} onClick={exportRoster} type="button">
+              <Download size={15} />
+              Export CSV
+            </button>
+            <label aria-disabled={csvDisabled} className="secondary-button file-button" title={programId ? 'Import people from a CSV file' : 'Choose a program first'}>
+              <Upload size={15} />
+              Import CSV
+              <input accept=".csv" disabled={csvDisabled} onChange={(changeEvent) => importCsvFromInput(changeEvent.target)} type="file" />
+            </label>
             <button
-              className={`secondary-button compact-button ${peoplePublishPending ? 'publish-button-pending' : ''}`}
+              className={`secondary-button ${peoplePublishPending ? 'publish-button-pending' : ''}`}
               disabled={!programId || selectedPeople.length === 0 || publishBusy}
               onClick={publishPeopleAccess}
               type="button"
             >
-              {publishBusy ? <Loader2 className="spin" size={16} /> : <BadgeCheck size={16} />}
+              {publishBusy ? <Loader2 className="spin" size={15} /> : <UploadCloud size={15} />}
               Publish to Sang
             </button>
-            <button
-              className="icon-button"
-              onClick={() => downloadCsv('sang-program-people.csv', selectedPeople.map((person) => ({
-                name: person.fullName,
-                email: person.email,
-                phone: person.phone || '',
-                programRole: person.programRoleName || person.kind,
-                organization: person.organization || person.company || '',
-                designation: person.designation || '',
-                eventAccess: Object.entries(person.eventAccess || {}).map(([eventId, access]) => `${events.find((item) => item.id === eventId)?.name || access.eventNameSnapshot || eventId}:${access.roleName || access.roleId}`).join('; '),
-                accessStatus: personAccessState(person),
-                passStatus: person.passStatus || 'notIssued',
-              })))}
-              title="Download roster CSV"
-              type="button"
-            >
-              <Download size={18} />
+            <button className="primary-button" disabled={!programId} onClick={openAddPerson} type="button">
+              <Plus size={15} />
+              Add person
             </button>
-          </div>
+          </>
+        )}
+        description={selectedProgram ? `Attendees, participants and staff for ${selectedProgram.name}. Each person gets a QR pass.` : 'Attendees, participants and staff. Each person gets a QR pass.'}
+        title="People & passes"
+      />
+      {peopleError && !drawerOpen ? <p className="form-error">{peopleError}</p> : null}
+      {peopleNotice ? <p className="form-success">{peopleNotice}</p> : null}
+
+      <section className="card stat-strip">
+        <div>
+          <span>People</span>
+          <strong>{formatCount(selectedPeople.length)}</strong>
         </div>
+        <div>
+          <span>Passes issued</span>
+          <strong>{formatCount(peopleStats.issued)}</strong>
+        </div>
+        <div>
+          <span>Checked in</span>
+          <strong>{formatCount(peopleStats.checkedIn)}</strong>
+        </div>
+        <div>
+          <span>Linked to Sang app</span>
+          <strong>{formatCount(peopleStats.linked)}</strong>
+        </div>
+        <div className={peopleStats.review ? 'warn' : ''}>
+          <span>Needs review</span>
+          <strong>{formatCount(peopleStats.review)}</strong>
+        </div>
+      </section>
+
+      <div className="toolbar">
+        <div className="toolbar-filters">
+          <label className="search-field">
+            <Search size={15} />
+            <input aria-label="Search people" onChange={(changeEvent) => setPeopleSearch(changeEvent.target.value)} placeholder="Search name, email, organization" type="search" value={peopleSearch} />
+          </label>
+          {programs.length > 1 ? (
+            <select aria-label="Program" className="filter-select" disabled={Boolean(editingPerson)} onChange={(changeEvent) => { setProgramId(changeEvent.target.value); setEventIds([]); setEventRoleById({}) }} value={programId}>
+              {programs.map((program) => <option key={program.id} value={program.id}>{program.name}</option>)}
+            </select>
+          ) : null}
+          <select aria-label="Filter by role" className="filter-select" onChange={(changeEvent) => setPeopleRoleFilter(changeEvent.target.value)} value={peopleRoleFilter}>
+            <option value="all">All roles</option>
+            {audienceRoles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
+          </select>
+          <select aria-label="Filter by pass status" className="filter-select" onChange={(changeEvent) => setPeoplePassFilter(changeEvent.target.value as typeof peoplePassFilter)} value={peoplePassFilter}>
+            <option value="all">Any pass status</option>
+            <option value="issued">Issued</option>
+            <option value="checkedIn">Checked in</option>
+            <option value="notIssued">Not issued</option>
+            <option value="blocked">Blocked</option>
+          </select>
+        </div>
+        <span className="toolbar-count">
+          {filteredPeople.length === selectedPeople.length ? `${formatCount(selectedPeople.length)} people` : `Showing ${formatCount(filteredPeople.length)} of ${formatCount(selectedPeople.length)}`}
+        </span>
+      </div>
+
+      <section className="card data-table-card">
         <div className="table-wrap">
-          {peopleError && <p className="form-error">{peopleError}</p>}
-          {peopleNotice && <p className="form-success">{peopleNotice}</p>}
-          <table>
+          <table className="data-table">
             <thead>
-              <tr><th>Name</th><th>Contact</th><th>Organization</th><th>Program role</th><th>Event access</th><th>Sang link</th><th>Status</th><th>Pass</th><th>QR</th><th>Actions</th></tr>
+              <tr>
+                <th>Person</th>
+                <th>Organization</th>
+                <th>Role</th>
+                <th>Event access</th>
+                <th>Sang app</th>
+                <th>Pass</th>
+                <th className="actions-col">Actions</th>
+              </tr>
             </thead>
             <tbody>
-              {selectedPeople.map((person) => {
+              {filteredPeople.map((person) => {
                 const pass = passes.find((item) => item.id === person.passId)
                 const accessEntries = Object.entries(person.eventAccess || {})
                 const accessState = personAccessState(person)
+                const actionBusy = personActionBusyId === person.id
                 return (
                   <tr key={person.id}>
-                    <td>{person.fullName}</td>
-                    <td>{person.email || person.phone || 'No contact'}</td>
-                    <td>{person.organization || person.company || '-'}</td>
+                    <td>
+                      <div className="person-cell">
+                        <span className={avatarClass(person.id)}>{initialsFor(person.fullName || person.email, 'P')}</span>
+                        <span className="cell-main">
+                          <strong>{person.fullName}</strong>
+                          <small>{person.email || person.phone || 'No contact'}</small>
+                        </span>
+                      </div>
+                    </td>
+                    <td>
+                      <span className="cell-main">
+                        <span>{person.organization || person.company || '—'}</span>
+                        {person.designation ? <small>{person.designation}</small> : null}
+                      </span>
+                    </td>
                     <td>{person.programRoleName || person.kind}</td>
                     <td>
                       <div className="chip-row">
                         {accessEntries.length === 0 && <span className="chip">Program only</span>}
-                        {accessEntries.slice(0, 3).map(([eventId, access]) => (
-                          <span className="chip" key={eventId}>
-                            {events.find((item) => item.id === eventId)?.name || access.eventNameSnapshot || eventId}: {access.roleName || access.roleId}
+                        {accessEntries.slice(0, 2).map(([eventId, access]) => (
+                          <span className="chip" key={eventId} title={access.roleName || access.roleId}>
+                            {events.find((item) => item.id === eventId)?.name || access.eventNameSnapshot || eventId}
                           </span>
                         ))}
-                        {accessEntries.length > 3 && <span className="chip">+{accessEntries.length - 3}</span>}
+                        {accessEntries.length > 2 && <span className="chip">+{accessEntries.length - 2}</span>}
                       </div>
                     </td>
                     <td>
-                      <span
-                        className={`status ${sangAppStatusClass(person)}`}
-                        title={person.sangAppConflictReason || person.linkConflictReason || person.sangAppMatchMethod || ''}
-                      >
+                      <span className={`status ${sangAppStatusClass(person)}`} title={person.sangAppConflictReason || person.linkConflictReason || person.sangAppMatchMethod || ''}>
                         {sangAppStatusLabel(person)}
                       </span>
                     </td>
-                    <td><span className={`status ${accessState === 'active' ? 'active' : 'cancelled'}`}>{accessState}</span></td>
-                    <td><span className={`status ${passStatusClass(person)}`}>{person.passStatus || 'notIssued'}</span></td>
                     <td>
                       <div className="pass-cell">
-                        {pass ? <PassPreview payload={pass.qrPayload} passCode={pass.passCode || person.passCode || ''} /> : <span className="muted">Pending</span>}
+                        {accessState === 'active' ? (
+                          <span className={`status ${passStatusClass(person)}`}>{passStatusLabels[person.passStatus || 'notIssued'] || person.passStatus}</span>
+                        ) : (
+                          <span className="status cancelled">{statusLabel(accessState)}</span>
+                        )}
+                        {pass && accessState === 'active' ? <PassPreview payload={pass.qrPayload} passCode={pass.passCode || person.passCode || ''} /> : null}
+                      </div>
+                    </td>
+                    <td className="actions-col">
+                      <div className="table-actions">
                         <button
-                          className="icon-button"
+                          className="icon-button ghost"
                           disabled={passBusyPersonId === person.id || accessState !== 'active'}
                           onClick={() => rotatePass(person)}
                           title={accessState === 'active' ? pass ? 'Rotate QR' : 'Issue pass' : 'Access is not active'}
@@ -6914,59 +7515,158 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
                         >
                           {passBusyPersonId === person.id ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
                         </button>
-                      </div>
-                    </td>
-                    <td>
-                      <div className="table-actions">
-                        <button
-                          className="icon-button"
-                          disabled={formBusy}
-                          onClick={() => startEditPerson(person)}
-                          title="Edit details and event access"
-                          type="button"
-                        >
-                          {editingPerson?.id === person.id ? <Check size={16} /> : <Pencil size={16} />}
+                        <button className="icon-button ghost" disabled={formBusy} onClick={() => openEditPerson(person)} title="Edit details and event access" type="button">
+                          <Pencil size={16} />
                         </button>
                         {accessState === 'blocked' ? (
-                          <button
-                            className="icon-button"
-                            disabled={personActionBusyId === person.id}
-                            onClick={() => unblockPerson(person)}
-                            title="Unblock Sang access and issue a fresh QR"
-                            type="button"
-                          >
-                            {personActionBusyId === person.id ? <Loader2 className="spin" size={16} /> : <Unlock size={16} />}
+                          <button className="icon-button ghost" disabled={actionBusy} onClick={() => unblockPerson(person)} title="Unblock Sang access and issue a fresh QR" type="button">
+                            {actionBusy ? <Loader2 className="spin" size={16} /> : <Unlock size={16} />}
                           </button>
                         ) : (
                           <button
-                            className="icon-button"
-                            disabled={personActionBusyId === person.id || accessState !== 'active'}
+                            className="icon-button ghost"
+                            disabled={actionBusy || accessState !== 'active'}
                             onClick={() => blockPerson(person)}
                             title={accessState === 'active' ? 'Block Sang access' : 'Access is not active'}
                             type="button"
                           >
-                            {personActionBusyId === person.id ? <Loader2 className="spin" size={16} /> : <Lock size={16} />}
+                            {actionBusy ? <Loader2 className="spin" size={16} /> : <Lock size={16} />}
                           </button>
                         )}
-                        <button
-                          className="icon-button danger-icon"
-                          disabled={personActionBusyId === person.id}
-                          onClick={() => removePerson(person)}
-                          title="Remove from active roster"
-                          type="button"
-                        >
-                          {personActionBusyId === person.id ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />}
+                        <button className="icon-button ghost danger-icon" disabled={actionBusy} onClick={() => removePerson(person)} title="Remove from active roster" type="button">
+                          {actionBusy ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />}
                         </button>
                       </div>
                     </td>
                   </tr>
                 )
               })}
+              {filteredPeople.length === 0 ? (
+                <tr>
+                  <td className="cell-muted" colSpan={7}>
+                    {selectedPeople.length ? 'No people match these filters.' : 'No people yet. Add a person or import a CSV to issue passes.'}
+                  </td>
+                </tr>
+              ) : null}
             </tbody>
           </table>
         </div>
       </section>
-    </section>
+
+      <Drawer
+        description={editingPerson ? 'Access changes sync to Sang after you save.' : 'A QR pass is issued as soon as you save.'}
+        onClose={closePersonDrawer}
+        open={drawerOpen}
+        title={editingPerson ? `Edit ${editingPerson.fullName}` : 'Add person'}
+      >
+        <form className="drawer-form" onSubmit={addManual}>
+          <div className="drawer-sections">
+            {peopleError ? <p className="form-error">{peopleError}</p> : null}
+            <div className="drawer-section">
+              <span className="drawer-section-label">Details</span>
+              <label>
+                Full name
+                <input value={manualName} onChange={(event) => setManualName(event.target.value)} required />
+              </label>
+              <div className="field-pair">
+                <label>
+                  Email
+                  <input type="email" value={manualEmail} onChange={(event) => setManualEmail(event.target.value)} />
+                </label>
+                <label>
+                  Phone
+                  <input placeholder="Optional" value={manualPhone} onChange={(event) => setManualPhone(event.target.value)} />
+                </label>
+              </div>
+              <div className="field-pair">
+                <label>
+                  Organization / college
+                  <input value={manualCompany} onChange={(event) => setManualCompany(event.target.value)} />
+                </label>
+                <label>
+                  Designation
+                  <input placeholder="Founder, delegate, student…" value={manualDesignation} onChange={(event) => setManualDesignation(event.target.value)} />
+                </label>
+              </div>
+            </div>
+
+            <div className="drawer-section">
+              <span className="drawer-section-label">Access</span>
+              {programs.length > 1 ? (
+                <label>
+                  Program
+                  <select disabled={Boolean(editingPerson)} value={programId} onChange={(event) => { setProgramId(event.target.value); setEventIds([]); setEventRoleById({}) }} required>
+                    <option value="">Select program</option>
+                    {programs.map((program) => <option key={program.id} value={program.id}>{program.name}</option>)}
+                  </select>
+                </label>
+              ) : null}
+              <label>
+                Program audience role
+                <select value={programRoleId} onChange={(event) => setProgramRoleId(event.target.value)}>
+                  {audienceRoles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
+                </select>
+              </label>
+              {availableEvents.length > 0 && (
+                <div className="upload-field">
+                  <span>Event access and role</span>
+                  <div className="access-list">
+                    {availableEvents.map((programEvent) => {
+                      const eventRoles = rolesForEvent(programEvent)
+                      const currentRoleId = eventRoleById[programEvent.id] || eventRoles[0]?.id || programRoleId
+                      return (
+                        <div className="event-access-row" key={programEvent.id}>
+                          <label className="check-row">
+                            <input
+                              checked={eventIds.includes(programEvent.id)}
+                              onChange={(changeEvent) => toggleEventAccess(programEvent, changeEvent.target.checked)}
+                              type="checkbox"
+                            />
+                            <span>{programEvent.name}</span>
+                          </label>
+                          <select
+                            aria-label={`Role for ${programEvent.name}`}
+                            disabled={!eventIds.includes(programEvent.id)}
+                            value={currentRoleId}
+                            onChange={(changeEvent) => setEventRoleById((current) => ({ ...current, [programEvent.id]: changeEvent.target.value }))}
+                          >
+                            {eventRoles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
+                          </select>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {!editingPerson ? (
+              <div className="import-hint">
+                <span><Upload size={16} /></span>
+                <div>
+                  <strong>Adding many people?</strong>
+                  <small>Import a CSV. Events ticked above apply to rows without their own event columns.</small>
+                </div>
+                <label aria-disabled={csvDisabled} className="text-link file-button">
+                  Import CSV
+                  <input accept=".csv" disabled={csvDisabled} onChange={(changeEvent) => importCsvFromInput(changeEvent.target)} type="file" />
+                </label>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="drawer-foot">
+            <button className="secondary-button" disabled={formBusy} onClick={closePersonDrawer} type="button">
+              Cancel
+            </button>
+            <button className="primary-button" disabled={!programId || formBusy} type="submit">
+              {formBusy ? <Loader2 className="spin" size={15} /> : editingPerson ? <Save size={15} /> : <Ticket size={15} />}
+              {editingPerson ? 'Save changes' : 'Add and issue pass'}
+            </button>
+          </div>
+        </form>
+      </Drawer>
+    </>
   )
 }
 
@@ -7126,6 +7826,25 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
     }
   }, [orgId, selectedProgramId, sortedPrograms])
 
+  const activePublishState = activeProgram ? programPublishState(activeProgram, activeEvents, activePeople, activeScheduleItems) : null
+  const pendingPublishCount = activePublishState ? [activePublishState.events, activePublishState.people, activePublishState.schedule].filter(Boolean).length : 0
+  const navCounts: Partial<Record<RouteKey, number>> = {
+    events: activeEvents.length,
+    people: activeProgram ? activePeople.length : 0,
+    venues: activeVenueCatalog?.venues?.length || 0,
+    programs: sortedPrograms.length,
+  }
+
+  // Events, venues and patrons live inside a program; hide them until one is open.
+  const shellNavItems = activeProgram ? visibleNavItems : visibleNavItems.filter((item) => item.key !== 'events' && item.key !== 'venues' && item.key !== 'patrons')
+
+  // Without an open program those routes only render the program list, so land on it directly.
+  // With several programs the program chooser handles it instead.
+  useEffect(() => {
+    if (programs.loading || activeProgram || sortedPrograms.length > 1) return
+    if (route === 'events' || route === 'venues' || route === 'patrons') setRoute('programs')
+  }, [activeProgram, programs.loading, route, sortedPrograms.length])
+
   const emptyOrgPromptedRef = useRef('')
   useEffect(() => {
     if (!orgId || programs.loading || !canCreateProgram) return
@@ -7168,10 +7887,7 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
 
   if (ownMemberships.loading || roles.loading) {
     return (
-      <main className="loading-screen">
-        <Loader2 className="spin" size={28} />
-        <span>Loading CRM access</span>
-      </main>
+      <LoadingScreen message="Checking your access…" />
     )
   }
 
@@ -7181,10 +7897,7 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
 
   if (!currentRole || visibleNavItems.length === 0) {
     return (
-      <main className="loading-screen">
-        <Lock size={28} />
-        <span>No active CRM access found for this account.</span>
-      </main>
+      <LoadingScreen blocked message="No active CRM access found for this account." />
     )
   }
 
@@ -7224,7 +7937,7 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
 
   if (route === 'programCreate' && (canCreateProgram || canCreateProgramSomewhere)) {
     return (
-      <Shell onSwitchOrganization={canSwitchOrganization ? switchOrganization : undefined} onSwitchProgram={switchProgram} organization={organization} route={route} selectedProgram={null} setRoute={setRoute} user={firebaseUser} visibleNavItems={visibleNavItems}>
+      <Shell onSwitchOrganization={canSwitchOrganization ? switchOrganization : undefined} onSwitchProgram={switchProgram} organization={organization} route={route} selectedProgram={null} setRoute={setRoute} navCounts={navCounts} pendingPublishCount={pendingPublishCount} roleName={currentRole?.name} user={firebaseUser} visibleNavItems={shellNavItems}>
         <ProgramComposerPage
           activeOrgId={orgId}
           onCancel={() => setRoute(sortedPrograms.length > 0 ? 'programs' : 'dashboard')}
@@ -7239,23 +7952,20 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
   }
 
   if (shouldChooseProgram) {
-    return <ProgramChooserPage canCreate={canCreateProgram} events={events.rows} onChoose={chooseProgram} onCreate={openProgramComposer} programs={sortedPrograms} />
+    return <ProgramChooserPage canCreate={canCreateProgram} events={events.rows} onChoose={chooseProgram} onCreate={openProgramComposer} onSwitchOrganization={canSwitchOrganization ? switchOrganization : undefined} organization={organization} people={people.rows} programs={sortedPrograms} />
   }
 
   if (!canOpenRoute(route, currentRole, currentMember)) {
     return (
-      <main className="loading-screen">
-        <Loader2 className="spin" size={28} />
-        <span>Opening allowed workspace</span>
-      </main>
+      <LoadingScreen message="Opening your workspace…" />
     )
   }
 
   return (
-    <Shell onSwitchOrganization={canSwitchOrganization ? switchOrganization : undefined} onSwitchProgram={switchProgram} organization={organization} route={route} selectedProgram={activeProgram} setRoute={setRoute} user={firebaseUser} visibleNavItems={visibleNavItems}>
+    <Shell onSwitchOrganization={canSwitchOrganization ? switchOrganization : undefined} onSwitchProgram={switchProgram} organization={organization} route={route} selectedProgram={activeProgram} setRoute={setRoute} navCounts={navCounts} pendingPublishCount={pendingPublishCount} roleName={currentRole?.name} user={firebaseUser} visibleNavItems={shellNavItems}>
       {programs.error || roles.error || ownMemberships.error || people.error || scheduleItems.error || venueCatalogs.error || partners.error || passes.error || members.error ? <p className="form-error">{programs.error || roles.error || ownMemberships.error || people.error || scheduleItems.error || venueCatalogs.error || partners.error || passes.error || members.error}</p> : null}
       {route === 'dashboard' && activeProgram && <ProgramWorkspaceDashboard events={activeEvents} orgId={orgId} people={activePeople} program={activeProgram} scheduleItems={activeScheduleItems} setRoute={setRoute} venueCatalog={activeVenueCatalog} />}
-      {route === 'dashboard' && !activeProgram && <DashboardPage people={people.rows} programs={sortedPrograms} setRoute={setRoute} />}
+      {route === 'dashboard' && !activeProgram && <DashboardPage onCreateProgram={canCreateProgram ? openProgramComposer : undefined} people={people.rows} programs={sortedPrograms} setRoute={setRoute} />}
       {route === 'events' && activeProgram && <EventsPage events={activeEvents} orgId={orgId} people={activePeople} program={activeProgram} roles={roles.rows} scheduleItems={activeScheduleItems} teamMembers={members.rows} uid={firebaseUser.uid} venueCatalog={activeVenueCatalog} />}
       {route === 'events' && !activeProgram && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} onCreateProgram={openProgramComposer} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} venueCatalogs={venueCatalogs.rows} />}
       {route === 'venues' && activeProgram && <VenuesPage orgId={orgId} program={activeProgram} venueCatalog={activeVenueCatalog} />}
@@ -7300,10 +8010,7 @@ function App() {
 
   if (loading) {
     return (
-      <main className="loading-screen">
-        <Loader2 className="spin" size={28} />
-        <span>Opening Sang Event CRM</span>
-      </main>
+      <LoadingScreen message="Opening Sang Event CRM…" />
     )
   }
 
