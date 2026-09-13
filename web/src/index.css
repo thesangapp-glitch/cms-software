@@ -6262,6 +6262,60 @@ button.data-row:hover {
   background: #fafbfb;
 }
 
+/* Tablet/phone rail: one compact header row (brand · organization · account)
+   with the navigation scrolling underneath, instead of four stacked bands. */
+@media (max-width: 1100px) {
+  .workspace-rail {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "brand org user"
+      "nav nav nav";
+    align-items: center;
+    gap: 10px 12px;
+    padding: 10px 16px;
+  }
+
+  .rail-brand {
+    grid-area: brand;
+    padding: 0;
+  }
+
+  .rail-brand > div:last-child,
+  .rail-spacer {
+    display: none;
+  }
+
+  .rail-org {
+    grid-area: org;
+    max-width: 320px;
+    padding: 6px 8px;
+  }
+
+  .rail-navs {
+    grid-area: nav;
+    margin-top: 0;
+    padding-bottom: 2px;
+    scrollbar-width: none;
+  }
+
+  .rail-navs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .rail-user {
+    grid-area: user;
+    margin-top: 0;
+    padding: 0;
+    border-top: 0;
+    gap: 6px;
+  }
+
+  .rail-user-text {
+    display: none;
+  }
+}
+
 /* Legacy small labels: sentence case, muted, no tracking. */
 .rich-text-label-row small,
 .schedule-bulk-head,
