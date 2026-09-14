@@ -1268,9 +1268,9 @@ const workspaceTourSteps: TourStep[] = [
     body: 'Give event leads, gate staff and analysts access to the whole organization, one program or a single event.',
   },
   {
-    target: 'org-switcher',
-    title: 'Create another organization',
-    body: 'Running events for another college, club or company? Open this switcher and choose New organization to set one up.',
+    target: 'nav-programs',
+    title: 'Programs and organizations',
+    body: 'Every program lives here. Running events for another college, club or company? Choose New organization on the Programs page.',
   },
   {
     target: 'tour-button',
@@ -3558,6 +3558,10 @@ function CreateOrganizationDrawer({
         },
         profile,
       )
+      setOrgName('')
+      setWebsite('')
+      setLogoUrl('')
+      setBusy(false)
       onCreated(nextProfile)
     } catch (createError) {
       setError(errorMessage(createError, 'Unable to create the organization'))
@@ -3613,7 +3617,6 @@ function ProgramDirectoryPage({
   activeOrgId,
   onOpen,
   onCreateProgram,
-  onOrganizationCreated,
   onClose,
 }: {
   profile: PeUser
@@ -3621,13 +3624,11 @@ function ProgramDirectoryPage({
   activeOrgId?: string
   onOpen: (orgId: string, programId: string) => void | Promise<void>
   onCreateProgram?: () => void
-  onOrganizationCreated: (profile: PeUser) => void
   onClose?: () => void
 }) {
   const { sections, loading } = useProgramDirectory(profile.organizationIds || [], user.uid)
   const [search, setSearch] = useState('')
   const [openingId, setOpeningId] = useState('')
-  const [organizationDrawerOpen, setOrganizationDrawerOpen] = useState(false)
   const [error, setError] = useState('')
   const searchTerm = search.trim().toLowerCase()
   const totalPrograms = sections.reduce((sum, section) => sum + section.programs.length, 0)
@@ -3755,25 +3756,6 @@ function ProgramDirectoryPage({
       )}
 
       {!loading && searchTerm && visibleSections.length === 0 ? <p className="muted-note">No programs match “{search.trim()}”.</p> : null}
-
-      <div className="chooser-footer">
-        <span>Running events for another college, club or company?</span>
-        <button className="secondary-button" onClick={() => setOrganizationDrawerOpen(true)} type="button">
-          <Building2 size={16} />
-          New organization
-        </button>
-      </div>
-
-      <CreateOrganizationDrawer
-        onClose={() => setOrganizationDrawerOpen(false)}
-        onCreated={(nextProfile) => {
-          setOrganizationDrawerOpen(false)
-          onOrganizationCreated(nextProfile)
-        }}
-        open={organizationDrawerOpen}
-        profile={profile}
-        user={user}
-      />
     </ChooserFrame>
   )
 }
@@ -4808,7 +4790,7 @@ function ProgramComposerPage({
           )}
 
           {!organizationsLoading && writableOrganizations.length === 0 && (
-            <p className="composer-rail-note">None of your organizations let you create programs yet. Create an organization from the program chooser first.</p>
+            <p className="composer-rail-note">None of your organizations let you create programs yet. Create an organization from the Programs page first.</p>
           )}
 
           {!organizationsLoading && readOnlyOrganizations > 0 && (
@@ -4942,6 +4924,7 @@ function ProgramsPage({
   venueCatalogs,
   onChoose,
   onCreateProgram,
+  onCreateOrganization,
   canCreateProgram,
   canDeleteProgram,
 }: {
@@ -4952,6 +4935,7 @@ function ProgramsPage({
   venueCatalogs: ProgramVenueCatalog[]
   onChoose?: (programId: string) => void
   onCreateProgram: () => void
+  onCreateOrganization?: () => void
   canCreateProgram: boolean
   canDeleteProgram: boolean
 }) {
@@ -4992,12 +4976,20 @@ function ProgramsPage({
           <h1>Program command center</h1>
           <p>Create conferences, college festivals, corporate events, competitions, or standalone programs. Each program owns its people, passes, events, schedule, QR, and analytics.</p>
         </div>
-        {canCreateProgram && (
-          <button className="primary-button" onClick={onCreateProgram} type="button">
-            <Plus size={17} />
-            Create program
-          </button>
-        )}
+        <div className="page-header-actions">
+          {onCreateOrganization ? (
+            <button className="secondary-button" onClick={onCreateOrganization} type="button">
+              <Building2 size={16} />
+              New organization
+            </button>
+          ) : null}
+          {canCreateProgram && (
+            <button className="primary-button" onClick={onCreateProgram} type="button">
+              <Plus size={16} />
+              Create program
+            </button>
+          )}
+        </div>
       </section>
 
       {visiblePrograms.length === 0 ? (
@@ -7943,6 +7935,7 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
   // Opened from the top bar / sidebar switchers; closes back to the current workspace.
   const [choosingProgram, setChoosingProgram] = useState(false)
   const [tourOpen, setTourOpen] = useState(false)
+  const [organizationDrawerOpen, setOrganizationDrawerOpen] = useState(false)
   const orgId = profile.activeOrgId || ''
   const ownMemberQuery = useMemo(() => (orgId ? query(collection(db, 'peTeamMembers'), where('orgId', '==', orgId), where('uid', '==', firebaseUser.uid), where('status', '==', 'active')) : null), [firebaseUser.uid, orgId])
   const ownMemberships = useCollection<TeamMember>(ownMemberQuery, 'CRM access')
@@ -8117,6 +8110,7 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
     setProfile(nextProfile)
     setNeedsOrgChoice(false)
     setChoosingProgram(false)
+    setOrganizationDrawerOpen(false)
     setRoute('programCreate')
   }
 
@@ -8139,7 +8133,7 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
   }
 
   if (!orgId && profile.organizationIds.length > 0) {
-    return <ProgramDirectoryPage onOpen={openProgramFromDirectory} onOrganizationCreated={handleOrganizationCreated} profile={profile} user={firebaseUser} />
+    return <ProgramDirectoryPage onOpen={openProgramFromDirectory} profile={profile} user={firebaseUser} />
   }
 
   if (!orgId) {
@@ -8158,7 +8152,6 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
         onClose={choosingProgram && !needsOrgChoice ? () => setChoosingProgram(false) : undefined}
         onCreateProgram={openComposer}
         onOpen={openProgramFromDirectory}
-        onOrganizationCreated={handleOrganizationCreated}
         profile={profile}
         user={firebaseUser}
       />
@@ -8227,7 +8220,7 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
   }
 
   if (shouldChooseProgram) {
-    return <ProgramDirectoryPage activeOrgId={orgId} onCreateProgram={canCreateProgram ? openProgramComposer : undefined} onOpen={openProgramFromDirectory} onOrganizationCreated={handleOrganizationCreated} profile={profile} user={firebaseUser} />
+    return <ProgramDirectoryPage activeOrgId={orgId} onCreateProgram={canCreateProgram ? openProgramComposer : undefined} onOpen={openProgramFromDirectory} profile={profile} user={firebaseUser} />
   }
 
   if (!canOpenRoute(route, currentRole, currentMember)) {
@@ -8238,17 +8231,18 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
 
   return (
     <Shell onSwitchOrganization={openProgramDirectory} onSwitchProgram={openProgramDirectory} organization={organization} route={route} onStartTour={activeProgram ? () => setTourOpen(true) : undefined} selectedProgram={activeProgram} setRoute={setRoute} navCounts={navCounts} pendingPublishCount={pendingPublishCount} roleName={currentRole?.name} user={firebaseUser} visibleNavItems={shellNavItems}>
+      <CreateOrganizationDrawer onClose={() => setOrganizationDrawerOpen(false)} onCreated={handleOrganizationCreated} open={organizationDrawerOpen} profile={profile} user={firebaseUser} />
       <WorkspaceTour onClose={() => setTourOpen(false)} open={tourOpen && Boolean(activeProgram)} />
       {programs.error || roles.error || ownMemberships.error || people.error || scheduleItems.error || venueCatalogs.error || partners.error || passes.error || members.error ? <p className="form-error">{programs.error || roles.error || ownMemberships.error || people.error || scheduleItems.error || venueCatalogs.error || partners.error || passes.error || members.error}</p> : null}
       {route === 'dashboard' && activeProgram && <ProgramWorkspaceDashboard events={activeEvents} orgId={orgId} people={activePeople} program={activeProgram} scheduleItems={activeScheduleItems} setRoute={setRoute} venueCatalog={activeVenueCatalog} />}
       {route === 'dashboard' && !activeProgram && <DashboardPage onCreateProgram={canCreateProgram ? openProgramComposer : undefined} people={people.rows} programs={sortedPrograms} setRoute={setRoute} />}
       {route === 'events' && activeProgram && <EventsPage events={activeEvents} orgId={orgId} people={activePeople} program={activeProgram} roles={roles.rows} scheduleItems={activeScheduleItems} teamMembers={members.rows} uid={firebaseUser.uid} venueCatalog={activeVenueCatalog} />}
-      {route === 'events' && !activeProgram && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} onCreateProgram={openProgramComposer} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} venueCatalogs={venueCatalogs.rows} />}
+      {route === 'events' && !activeProgram && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} onCreateOrganization={() => setOrganizationDrawerOpen(true)} onCreateProgram={openProgramComposer} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} venueCatalogs={venueCatalogs.rows} />}
       {route === 'venues' && activeProgram && <VenuesPage orgId={orgId} program={activeProgram} venueCatalog={activeVenueCatalog} />}
-      {route === 'venues' && !activeProgram && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} onCreateProgram={openProgramComposer} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} venueCatalogs={venueCatalogs.rows} />}
+      {route === 'venues' && !activeProgram && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} onCreateOrganization={() => setOrganizationDrawerOpen(true)} onCreateProgram={openProgramComposer} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} venueCatalogs={venueCatalogs.rows} />}
       {route === 'patrons' && activeProgram && <PatronsPage orgId={orgId} partners={activePartners} program={activeProgram} uid={firebaseUser.uid} />}
-      {route === 'patrons' && !activeProgram && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} onCreateProgram={openProgramComposer} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} venueCatalogs={venueCatalogs.rows} />}
-      {route === 'programs' && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} onCreateProgram={openProgramComposer} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} venueCatalogs={venueCatalogs.rows} />}
+      {route === 'patrons' && !activeProgram && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} onCreateOrganization={() => setOrganizationDrawerOpen(true)} onCreateProgram={openProgramComposer} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} venueCatalogs={venueCatalogs.rows} />}
+      {route === 'programs' && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} onCreateOrganization={() => setOrganizationDrawerOpen(true)} onCreateProgram={openProgramComposer} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} venueCatalogs={venueCatalogs.rows} />}
       {route === 'settings' && <SettingsPage canManageOrganization={canManageOrganization} canManageProgram={canManageProgram} onProgramSelect={chooseProgramInSettings} orgId={orgId} organization={organization} program={activeProgram} programs={sortedPrograms} uid={firebaseUser.uid} venueCatalog={activeVenueCatalog} />}
       {route === 'roles' && <RolesPage orgId={orgId} roles={roles.rows} />}
       {route === 'team' && <TeamPage events={events.rows} members={members.rows} orgId={orgId} people={people.rows} programs={sortedPrograms} roles={roles.rows} />}
