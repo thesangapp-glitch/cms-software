@@ -5648,6 +5648,45 @@ button.data-row:hover {
   font-weight: 550;
 }
 
+/* ---- Program directory (post sign-in chooser) ---- */
+
+.directory-section {
+  display: grid;
+  gap: 12px;
+}
+
+.directory-org {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.directory-org strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.directory-org-type {
+  color: var(--muted);
+}
+
+.directory-empty {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.directory-search {
+  width: 340px;
+}
+
 /* ---- Drawer ---- */
 
 .drawer-backdrop {

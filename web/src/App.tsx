@@ -72,6 +72,7 @@ import {
   doc,
   documentId,
   getDoc,
+  getDocs,
   onSnapshot,
   query,
   serverTimestamp,
@@ -870,6 +871,10 @@ function isTransientListenerError(error: { code?: string; message?: string }): b
 function useCollection<T extends { id: string }>(dataQuery: Query | null, label = 'Data') {
   const [rows, setRows] = useState<T[]>([])
   const [loading, setLoading] = useState(Boolean(dataQuery))
+  // The query the current rows answer. When the query changes, the effect below
+  // only flips `loading` after a render, so without this the first render with
+  // a new query would report "loaded" with the previous (or empty) rows.
+  const [settledQuery, setSettledQuery] = useState<Query | null>(null)
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -888,10 +893,12 @@ function useCollection<T extends { id: string }>(dataQuery: Query | null, label 
       (snapshot) => {
         if (!active) return
         setRows(toRows<T>(snapshot.docs))
+        setSettledQuery(dataQuery)
         setLoading(false)
       },
       (snapshotError) => {
         if (!active) return
+        setSettledQuery(dataQuery)
         setLoading(false)
         if (isTransientListenerError(snapshotError)) return
         setError(`${label}: ${snapshotError.message}`)
@@ -904,7 +911,7 @@ function useCollection<T extends { id: string }>(dataQuery: Query | null, label 
     }
   }, [dataQuery, label])
 
-  return { rows, loading, error }
+  return { rows, loading: dataQuery ? loading || settledQuery !== dataQuery : false, error }
 }
 
 function useAuthProfile() {
@@ -1285,7 +1292,7 @@ function Shell({
         </div>
 
         {onSwitchOrganization ? (
-          <button className="rail-org" onClick={onSwitchOrganization} title="Switch organization" type="button">{orgContent}</button>
+          <button className="rail-org" onClick={onSwitchOrganization} title="Switch program or organization" type="button">{orgContent}</button>
         ) : (
           <div className="rail-org">{orgContent}</div>
         )}
@@ -3260,193 +3267,231 @@ function ChooserFrame({ children, narrow = false }: { children: ReactNode; narro
   )
 }
 
-function ProgramChooserPage({
-  programs,
-  events,
-  people = [],
-  organization,
-  onChoose,
-  onCreate,
-  onSwitchOrganization,
-  canCreate,
-}: {
+type ProgramDirectorySection = {
+  organization: Organization
+  canCreateProgram: boolean
   programs: Program[]
-  events: ProgramEvent[]
-  people?: ProgramPerson[]
-  organization?: Organization | null
-  onChoose: (programId: string) => void
-  onCreate: () => void
-  onSwitchOrganization?: () => void
-  canCreate: boolean
-}) {
-  return (
-    <ChooserFrame>
-      <div className="page-header">
-        <div className="chooser-title">
-          {organization ? (
-            <div className="chooser-context">
-              <span className="org-mark small">{organization.logoUrl ? <img alt="" src={organization.logoUrl} /> : initialsFor(organization.name, 'O')}</span>
-              <strong>{organization.name}</strong>
-              {onSwitchOrganization ? (
-                <>
-                  <span>·</span>
-                  <button className="text-link" onClick={onSwitchOrganization} type="button">Switch organization</button>
-                </>
-              ) : null}
-            </div>
-          ) : null}
-          <h1>Choose a program</h1>
-          <p>Events, people, passes and publishing all open inside the program you pick.</p>
-        </div>
-        {canCreate && (
-          <button className="primary-button" onClick={onCreate} type="button">
-            <Plus size={16} />
-            Create program
-          </button>
-        )}
-      </div>
-
-      {programs.length === 0 ? (
-        <section className="panel premium-empty-panel">
-          <EmptyState title="No programs available" body={canCreate ? 'Create your first conference, college fest, corporate event, competition, workshop, or standalone event.' : 'No program has been assigned to this CRM account yet.'} />
-          {canCreate && (
-            <button className="primary-button" onClick={onCreate} type="button">
-              <Plus size={16} />
-              Create first program
-            </button>
-          )}
-        </section>
-      ) : (
-        <div className="program-grid">
-          {programs.map((program) => {
-            const eventCount = events.filter((item) => item.programId === program.id).length
-            const peopleCount = people.filter((person) => person.programId === program.id && personAccessState(person) !== 'removed').length
-            const artwork = program.bannerUrl || program.posterUrl
-            return (
-              <button className="program-card" key={program.id} onClick={() => onChoose(program.id)} type="button">
-                <div className="program-card-art">{artwork ? <img alt="" src={artwork} /> : <CalendarDays size={22} />}</div>
-                <div className="program-card-body">
-                  <div className="program-card-title">
-                    <strong>{program.name}</strong>
-                    <span className={`status ${program.status}`}>{statusLabel(program.status)}</span>
-                  </div>
-                  <div className="meta-row">
-                    <span><CalendarDays size={13} />{formatDateRange(program.startDate, program.endDate)}</span>
-                    <span><MapPin size={13} />{[program.venueName || 'Venue pending', program.city].filter(Boolean).join(' · ')}</span>
-                  </div>
-                </div>
-                <div className="program-card-foot">
-                  <span>
-                    <b>{formatCount(eventCount)}</b> event{eventCount === 1 ? '' : 's'}
-                    {people.length ? <> · <b>{formatCount(peopleCount)}</b> people</> : null}
-                  </span>
-                  <span>Open<ChevronRight size={15} /></span>
-                </div>
-              </button>
-            )
-          })}
-        </div>
-      )}
-    </ChooserFrame>
-  )
+  hasAccess: boolean
 }
 
-function OrganizationChooserPage({
-  profile,
-  onChoose,
-  onCreate,
-}: {
-  profile: PeUser
-  onChoose: (orgId: string) => void | Promise<void>
-  onCreate?: () => void
-}) {
-  const [organizations, setOrganizations] = useState<Organization[]>([])
-  const [loaded, setLoaded] = useState(false)
-  const [unavailableCount, setUnavailableCount] = useState(0)
-  const [choosingId, setChoosingId] = useState('')
-  const [error, setError] = useState('')
+// Every program this account can open, grouped by organization. Uses the same
+// rule-compatible reads as the workspace: the caller's own member row and role,
+// then programs by orgId (organization scope) or by document id (program/event scope).
+function useProgramDirectory(organizationIds: string[], uid: string) {
+  const [sections, setSections] = useState<ProgramDirectorySection[]>([])
+  const [loading, setLoading] = useState(true)
+  const organizationIdKey = organizationIds.join(',')
 
   useEffect(() => {
     let mounted = true
-    async function loadOrganizations() {
-      setError('')
-      const snapshots = await Promise.all(profile.organizationIds.map(async (orgId) => {
+    const ids = organizationIdKey ? organizationIdKey.split(',') : []
+
+    async function loadDirectory() {
+      setLoading(true)
+      const loaded = await Promise.all(ids.map(async (orgId): Promise<ProgramDirectorySection | null> => {
         try {
-          return await getDoc(doc(db, 'peOrganizations', orgId))
+          const [orgSnapshot, memberSnapshot] = await Promise.all([
+            getDoc(doc(db, 'peOrganizations', orgId)),
+            getDoc(doc(db, 'peTeamMembers', `${orgId}_${uid}`)),
+          ])
+          if (!orgSnapshot.exists()) return null
+          const organization = { id: orgSnapshot.id, ...orgSnapshot.data() } as Organization
+          const member = memberSnapshot.exists() ? (memberSnapshot.data() as TeamMember) : null
+          if (!member || member.status !== 'active') {
+            return { organization, canCreateProgram: false, programs: [], hasAccess: false }
+          }
+          const roleSnapshot = await getDoc(doc(db, 'peOrganizations', orgId, 'roles', member.roleId))
+          const role = roleSnapshot.exists() ? ({ id: roleSnapshot.id, ...roleSnapshot.data() } as Role) : undefined
+          const canCreateProgram = Boolean(role && !isDeletedRole(role) && member.scope === 'organization' && hasPermission(role, 'program.write'))
+          const programsQuery = member.scope === 'organization'
+            ? query(collection(db, 'pePrograms'), where('orgId', '==', orgId))
+            : member.programId
+              ? query(collection(db, 'pePrograms'), where('orgId', '==', orgId), where(documentId(), '==', member.programId))
+              : null
+          if (!programsQuery) return { organization, canCreateProgram, programs: [], hasAccess: false }
+          try {
+            const snapshot = await getDocs(programsQuery)
+            const programs = toRows<Program>(snapshot.docs).sort((a, b) => (a.startDate || '').localeCompare(b.startDate || ''))
+            return { organization, canCreateProgram, programs, hasAccess: true }
+          } catch {
+            // The role may not include program read access in this organization.
+            return { organization, canCreateProgram, programs: [], hasAccess: false }
+          }
         } catch {
           return null
         }
       }))
       if (!mounted) return
-      const visibleOrganizations = snapshots
-        .filter((snapshot): snapshot is NonNullable<typeof snapshot> => Boolean(snapshot?.exists()))
-        .map((snapshot) => ({ id: snapshot.id, ...snapshot.data() }) as Organization)
-      setOrganizations(visibleOrganizations)
-      setUnavailableCount(Math.max(0, profile.organizationIds.length - visibleOrganizations.length))
-      setLoaded(true)
+      setSections(loaded.filter((section): section is ProgramDirectorySection => section !== null))
+      setLoading(false)
     }
-    loadOrganizations()
+
+    void loadDirectory()
     return () => {
       mounted = false
     }
-  }, [profile.organizationIds])
+  }, [organizationIdKey, uid])
 
-  async function choose(orgId: string) {
+  return { sections, loading }
+}
+
+function ProgramDirectoryPage({
+  profile,
+  uid,
+  activeOrgId,
+  onOpen,
+  onCreateProgram,
+  onCreateOrganization,
+  onClose,
+}: {
+  profile: PeUser
+  uid: string
+  activeOrgId?: string
+  onOpen: (orgId: string, programId: string) => void | Promise<void>
+  onCreateProgram?: () => void
+  onCreateOrganization?: () => void
+  onClose?: () => void
+}) {
+  const { sections, loading } = useProgramDirectory(profile.organizationIds || [], uid)
+  const [search, setSearch] = useState('')
+  const [openingId, setOpeningId] = useState('')
+  const [error, setError] = useState('')
+  const searchTerm = search.trim().toLowerCase()
+  const totalPrograms = sections.reduce((sum, section) => sum + section.programs.length, 0)
+  const canCreateAnywhere = sections.some((section) => section.canCreateProgram)
+  const visibleSections = [...sections]
+    .sort((a, b) => {
+      if (a.organization.id === activeOrgId) return -1
+      if (b.organization.id === activeOrgId) return 1
+      return (a.organization.name || '').localeCompare(b.organization.name || '')
+    })
+    .map((section) => ({
+      ...section,
+      programs: searchTerm
+        ? section.programs.filter((program) => [program.name, program.venueName, program.city, section.organization.name].some((value) => (value || '').toLowerCase().includes(searchTerm)))
+        : section.programs,
+    }))
+    .filter((section) => !searchTerm || section.programs.length > 0)
+
+  async function open(orgId: string, programId: string) {
     setError('')
-    setChoosingId(orgId)
+    setOpeningId(programId)
     try {
-      await onChoose(orgId)
-    } catch (chooseError) {
-      const message = chooseError instanceof Error ? chooseError.message : ''
-      setError(/permission/i.test(message)
-        ? "You don't have access to this organization yet. Ask its owner to give you a role."
-        : message || 'Unable to open this organization.')
-      setChoosingId('')
+      await onOpen(orgId, programId)
+    } catch (openError) {
+      setError(errorMessage(openError, 'Unable to open this program'))
+      setOpeningId('')
     }
   }
 
   return (
-    <ChooserFrame narrow>
-      <div className="chooser-title">
-        <h1>Choose an organization</h1>
-        <p>{loaded && organizations.length > 1 ? `You belong to ${organizations.length} organizations. ` : ''}Pick one to open — you can switch any time from the sidebar.</p>
+    <ChooserFrame>
+      <div className="page-header">
+        <div className="chooser-title">
+          <h1>Choose a program</h1>
+          <p>
+            {loading
+              ? 'Loading your programs…'
+              : totalPrograms
+                ? `${formatCount(totalPrograms)} program${totalPrograms === 1 ? '' : 's'} across ${formatCount(sections.length)} organization${sections.length === 1 ? '' : 's'}. Pick one to open its workspace.`
+                : 'No programs yet. Create one to open a workspace.'}
+          </p>
+        </div>
+        <div className="page-header-actions">
+          {onClose ? (
+            <button className="secondary-button" onClick={onClose} type="button">
+              <ChevronLeft size={15} />
+              Back to workspace
+            </button>
+          ) : null}
+          {onCreateProgram && canCreateAnywhere ? (
+            <button className="primary-button" onClick={onCreateProgram} type="button">
+              <Plus size={16} />
+              Create program
+            </button>
+          ) : null}
+        </div>
       </div>
-      <section className="card org-list">
-        {!loaded ? (
+
+      {totalPrograms > 6 ? (
+        <label className="search-field directory-search">
+          <Search size={15} />
+          <input aria-label="Search programs" onChange={(changeEvent) => setSearch(changeEvent.target.value)} placeholder="Search programs, venues, organizations" type="search" value={search} />
+        </label>
+      ) : null}
+      {error ? <p className="form-error">{error}</p> : null}
+
+      {loading ? (
+        <section className="card">
           <div className="card-state">
             <Loader2 className="spin" size={16} />
-            Loading organizations
+            Loading programs
           </div>
-        ) : null}
-        {organizations.map((organization) => (
-          <button className="org-row" disabled={choosingId !== ''} key={organization.id} onClick={() => void choose(organization.id)} type="button">
-            <span className="org-mark">{organization.logoUrl ? <img alt="" src={organization.logoUrl} /> : initialsFor(organization.name, 'O')}</span>
-            <span className="org-row-text">
-              <strong>
-                {organization.name}
-                {organization.id === profile.activeOrgId ? <span className="tag">Last opened</span> : null}
-              </strong>
-              <small>{[orgTypeLabel(organization), organization.website].filter(Boolean).join(' · ')}</small>
-            </span>
-            {choosingId === organization.id ? <Loader2 className="spin" size={18} /> : <ChevronRight size={18} />}
-          </button>
-        ))}
-      </section>
-      {error && <p className="form-error">{error}</p>}
-      {unavailableCount > 0 ? (
-        <p className="muted-note">
-          {unavailableCount === 1 ? '1 workspace you were added to is' : `${unavailableCount} workspaces you were added to are`} no longer available.
-        </p>
-      ) : null}
-      {onCreate && (
+        </section>
+      ) : (
+        visibleSections.map((section) => (
+          <section className="directory-section" key={section.organization.id}>
+            <div className="directory-org">
+              <span className="org-mark small">{section.organization.logoUrl ? <img alt="" src={section.organization.logoUrl} /> : initialsFor(section.organization.name, 'O')}</span>
+              <strong>{section.organization.name}</strong>
+              <span className="directory-org-type">{orgTypeLabel(section.organization)}</span>
+              {section.organization.id === activeOrgId ? <span className="tag">Current</span> : null}
+            </div>
+            {section.programs.length ? (
+              <div className="program-grid">
+                {section.programs.map((program) => {
+                  const artwork = program.bannerUrl || program.posterUrl
+                  return (
+                    <button className="program-card" disabled={openingId !== ''} key={program.id} onClick={() => void open(section.organization.id, program.id)} type="button">
+                      <div className="program-card-art">{artwork ? <img alt="" src={artwork} /> : <CalendarDays size={22} />}</div>
+                      <div className="program-card-body">
+                        <div className="program-card-title">
+                          <strong>{program.name}</strong>
+                          <span className={`status ${program.status}`}>{statusLabel(program.status)}</span>
+                        </div>
+                        <div className="meta-row">
+                          <span><CalendarDays size={13} />{formatDateRange(program.startDate, program.endDate)}</span>
+                          <span><MapPin size={13} />{[program.venueName || 'Venue pending', program.city].filter(Boolean).join(' · ')}</span>
+                        </div>
+                      </div>
+                      <div className="program-card-foot">
+                        <span>{program.mode === 'standalone' ? 'Standalone event' : optionLabel(programTypeOptions, program.programType, 'Program')}</span>
+                        <span>
+                          {openingId === program.id ? <Loader2 className="spin" size={14} /> : null}
+                          {openingId === program.id ? 'Opening' : 'Open'}
+                          {openingId === program.id ? null : <ChevronRight size={15} />}
+                        </span>
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+            ) : (
+              <div className="card directory-empty">
+                <span>{section.hasAccess ? 'No programs in this organization yet.' : "You don't have access to programs in this organization yet. Ask its owner for a role."}</span>
+                {section.hasAccess && section.canCreateProgram && onCreateProgram ? (
+                  <button className="secondary-button compact-button" onClick={onCreateProgram} type="button">
+                    <Plus size={14} />
+                    Create program
+                  </button>
+                ) : null}
+              </div>
+            )}
+          </section>
+        ))
+      )}
+
+      {!loading && searchTerm && visibleSections.length === 0 ? <p className="muted-note">No programs match “{search.trim()}”.</p> : null}
+
+      {onCreateOrganization ? (
         <div className="chooser-footer">
           <span>Running something new?</span>
-          <button className="secondary-button" onClick={onCreate} type="button">
+          <button className="secondary-button" onClick={onCreateOrganization} type="button">
             <Plus size={16} />
             New organization
           </button>
         </div>
-      )}
+      ) : null}
     </ChooserFrame>
   )
 }
@@ -7689,6 +7734,8 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
   const [route, setRouteState] = useState<RouteKey>(readHashRoute)
   const [selectedProgramId, setSelectedProgramId] = useState(() => window.localStorage.getItem('sang-crm-selected-program') || '')
   const [needsOrgChoice, setNeedsOrgChoice] = useState(() => profile.organizationIds.length > 1 && window.localStorage.getItem('sang-crm-org-choice-confirmed') !== profile.activeOrgId)
+  // Opened from the top bar / sidebar switchers; closes back to the current workspace.
+  const [choosingProgram, setChoosingProgram] = useState(false)
   const orgId = profile.activeOrgId || ''
   const ownMemberQuery = useMemo(() => (orgId ? query(collection(db, 'peTeamMembers'), where('orgId', '==', orgId), where('uid', '==', firebaseUser.uid), where('status', '==', 'active')) : null), [firebaseUser.uid, orgId])
   const ownMemberships = useCollection<TeamMember>(ownMemberQuery, 'CRM access')
@@ -7761,7 +7808,6 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
   const members = useCollection<TeamMember>(membersQuery, 'Team')
   const organizationOptions = useOrganizationOptions(profile, firebaseUser.uid)
   const canCreateProgramSomewhere = organizationOptions.options.some((option) => option.canCreateProgram)
-  const canSwitchOrganization = (profile.organizationIds || []).length > 1
   const [organization, setOrganization] = useState<Organization | null>(null)
 
   useEffect(() => {
@@ -7804,7 +7850,7 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
 
   const sortedPrograms = [...programs.rows].sort((a, b) => a.startDate.localeCompare(b.startDate))
   const selectedProgram = sortedPrograms.find((program) => program.id === selectedProgramId) || null
-  const shouldChooseProgram = !selectedProgram && sortedPrograms.length > 1 && route !== 'programs' && route !== 'programCreate'
+  const shouldChooseProgram = !programs.loading && !selectedProgram && sortedPrograms.length > 1 && route !== 'programs' && route !== 'programCreate'
   const activeProgram = selectedProgram || (sortedPrograms.length === 1 ? sortedPrograms[0] : null)
   const activeEvents = activeProgram ? events.rows.filter((event) => event.programId === activeProgram.id) : []
   const activeScheduleItems = activeProgram ? scheduleItems.rows.filter((item) => item.programId === activeProgram.id) : []
@@ -7814,7 +7860,8 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
   const activePartners = activeProgram ? partners.rows.filter((partner) => partner.programId === activeProgram.id) : []
 
   useEffect(() => {
-    if (!orgId) return
+    // After an organization switch the list briefly holds the previous organization's rows.
+    if (!orgId || programs.loading) return
     if (!selectedProgramId && sortedPrograms.length === 1) {
       setSelectedProgramId(sortedPrograms[0].id)
       window.localStorage.setItem('sang-crm-selected-program', sortedPrograms[0].id)
@@ -7824,7 +7871,7 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
       setSelectedProgramId('')
       window.localStorage.removeItem('sang-crm-selected-program')
     }
-  }, [orgId, selectedProgramId, sortedPrograms])
+  }, [orgId, programs.loading, selectedProgramId, sortedPrograms])
 
   const activePublishState = activeProgram ? programPublishState(activeProgram, activeEvents, activePeople, activeScheduleItems) : null
   const pendingPublishCount = activePublishState ? [activePublishState.events, activePublishState.people, activePublishState.schedule].filter(Boolean).length : 0
@@ -7855,32 +7902,47 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
     }
   }, [canCreateProgram, orgId, programs.loading, route, sortedPrograms.length])
 
-  async function chooseOrganization(nextOrgId: string) {
-    await setActiveOrganizationCallable({ orgId: nextOrgId })
-    window.localStorage.setItem('sang-crm-org-choice-confirmed', nextOrgId)
-    window.localStorage.removeItem('sang-crm-selected-program')
-    setSelectedProgramId('')
-    setProfile({ ...profile, activeOrgId: nextOrgId, organizationIds: Array.from(new Set([...profile.organizationIds, nextOrgId])) })
+  // Opens a program from the directory, switching the active organization first
+  // when the program belongs to a different one.
+  async function openProgramFromDirectory(targetOrgId: string, programId: string) {
+    const switchingOrganization = targetOrgId !== orgId
+    if (switchingOrganization) {
+      await setActiveOrganizationCallable({ orgId: targetOrgId })
+    }
+    window.localStorage.setItem('sang-crm-org-choice-confirmed', targetOrgId)
+    window.localStorage.setItem('sang-crm-selected-program', programId)
+    setSelectedProgramId(programId)
+    if (switchingOrganization) {
+      setProfile({ ...profile, activeOrgId: targetOrgId, organizationIds: Array.from(new Set([...profile.organizationIds, targetOrgId])) })
+    }
     setNeedsOrgChoice(false)
+    setChoosingProgram(false)
+    setRoute('dashboard')
   }
 
   if (!orgId && profile.organizationIds.length > 0) {
-    return <OrganizationChooserPage onChoose={chooseOrganization} profile={profile} />
+    return <ProgramDirectoryPage onOpen={openProgramFromDirectory} profile={profile} uid={firebaseUser.uid} />
   }
 
   if (!orgId) {
     return <OnboardingPage user={firebaseUser} onComplete={setProfile} />
   }
 
-  if (needsOrgChoice) {
+  if (needsOrgChoice || choosingProgram) {
+    const openComposer = () => {
+      setNeedsOrgChoice(false)
+      setChoosingProgram(false)
+      setRoute('programCreate')
+    }
     return (
-      <OrganizationChooserPage
-        onChoose={chooseOrganization}
-        onCreate={() => {
-          setNeedsOrgChoice(false)
-          setRoute('programCreate')
-        }}
+      <ProgramDirectoryPage
+        activeOrgId={orgId}
+        onClose={choosingProgram && !needsOrgChoice ? () => setChoosingProgram(false) : undefined}
+        onCreateOrganization={openComposer}
+        onCreateProgram={openComposer}
+        onOpen={openProgramFromDirectory}
         profile={profile}
+        uid={firebaseUser.uid}
       />
     )
   }
@@ -7926,18 +7988,13 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
     setRoute('settings')
   }
 
-  function switchProgram() {
-    setSelectedProgramId('')
-    window.localStorage.removeItem('sang-crm-selected-program')
-  }
-
-  function switchOrganization() {
-    setNeedsOrgChoice(true)
+  function openProgramDirectory() {
+    setChoosingProgram(true)
   }
 
   if (route === 'programCreate' && (canCreateProgram || canCreateProgramSomewhere)) {
     return (
-      <Shell onSwitchOrganization={canSwitchOrganization ? switchOrganization : undefined} onSwitchProgram={switchProgram} organization={organization} route={route} selectedProgram={null} setRoute={setRoute} navCounts={navCounts} pendingPublishCount={pendingPublishCount} roleName={currentRole?.name} user={firebaseUser} visibleNavItems={shellNavItems}>
+      <Shell onSwitchOrganization={openProgramDirectory} onSwitchProgram={openProgramDirectory} organization={organization} route={route} selectedProgram={null} setRoute={setRoute} navCounts={navCounts} pendingPublishCount={pendingPublishCount} roleName={currentRole?.name} user={firebaseUser} visibleNavItems={shellNavItems}>
         <ProgramComposerPage
           activeOrgId={orgId}
           onCancel={() => setRoute(sortedPrograms.length > 0 ? 'programs' : 'dashboard')}
@@ -7952,7 +8009,7 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
   }
 
   if (shouldChooseProgram) {
-    return <ProgramChooserPage canCreate={canCreateProgram} events={events.rows} onChoose={chooseProgram} onCreate={openProgramComposer} onSwitchOrganization={canSwitchOrganization ? switchOrganization : undefined} organization={organization} people={people.rows} programs={sortedPrograms} />
+    return <ProgramDirectoryPage activeOrgId={orgId} onCreateProgram={canCreateProgram ? openProgramComposer : undefined} onOpen={openProgramFromDirectory} profile={profile} uid={firebaseUser.uid} />
   }
 
   if (!canOpenRoute(route, currentRole, currentMember)) {
@@ -7962,7 +8019,7 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
   }
 
   return (
-    <Shell onSwitchOrganization={canSwitchOrganization ? switchOrganization : undefined} onSwitchProgram={switchProgram} organization={organization} route={route} selectedProgram={activeProgram} setRoute={setRoute} navCounts={navCounts} pendingPublishCount={pendingPublishCount} roleName={currentRole?.name} user={firebaseUser} visibleNavItems={shellNavItems}>
+    <Shell onSwitchOrganization={openProgramDirectory} onSwitchProgram={openProgramDirectory} organization={organization} route={route} selectedProgram={activeProgram} setRoute={setRoute} navCounts={navCounts} pendingPublishCount={pendingPublishCount} roleName={currentRole?.name} user={firebaseUser} visibleNavItems={shellNavItems}>
       {programs.error || roles.error || ownMemberships.error || people.error || scheduleItems.error || venueCatalogs.error || partners.error || passes.error || members.error ? <p className="form-error">{programs.error || roles.error || ownMemberships.error || people.error || scheduleItems.error || venueCatalogs.error || partners.error || passes.error || members.error}</p> : null}
       {route === 'dashboard' && activeProgram && <ProgramWorkspaceDashboard events={activeEvents} orgId={orgId} people={activePeople} program={activeProgram} scheduleItems={activeScheduleItems} setRoute={setRoute} venueCatalog={activeVenueCatalog} />}
       {route === 'dashboard' && !activeProgram && <DashboardPage onCreateProgram={canCreateProgram ? openProgramComposer : undefined} people={people.rows} programs={sortedPrograms} setRoute={setRoute} />}
