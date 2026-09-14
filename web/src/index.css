@@ -5650,41 +5650,135 @@ button.data-row:hover {
 
 /* ---- Program directory (post sign-in chooser) ---- */
 
-.directory-section {
-  display: grid;
-  gap: 12px;
+/* Wider, tighter chooser: one program grid across organizations. */
+.chooser-body:not(.narrow) {
+  width: min(1240px, 100%);
+  gap: 18px;
+  padding-top: 28px;
 }
 
-.directory-org {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-}
-
-.directory-org strong {
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.directory-org-type {
-  color: var(--muted);
-}
-
-.directory-empty {
+.directory-toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 16px 18px;
-  color: var(--muted);
+  gap: 10px 16px;
+}
+
+.directory-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.directory-filter {
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: #3f4944;
   font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition:
+    background 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease;
+}
+
+.directory-filter:has(.org-mark) {
+  padding-left: 7px;
+}
+
+.directory-filter:hover {
+  border-color: #c3cdd0;
+}
+
+.directory-filter.active {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: #fff;
+}
+
+.directory-filter small {
+  color: inherit;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.65;
 }
 
 .directory-search {
-  width: 340px;
+  width: 320px;
+}
+
+.org-mark.tiny {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  font-size: 9px;
+}
+
+.directory-grid {
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+}
+
+.program-card.compact {
+  gap: 12px;
+}
+
+.program-card.compact .program-card-art {
+  height: 104px;
+}
+
+.program-card-org {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.program-card-org > span:nth-child(2) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.program-card-org .tag {
+  height: 18px;
+  font-size: 11px;
+}
+
+.directory-empty-list {
+  display: grid;
+}
+
+.directory-empty-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.directory-empty-row:first-child {
+  border-top: 0;
+}
+
+.directory-empty-row .cell-main {
+  flex: 1 1 auto;
+}
+
+@media (max-width: 720px) {
+  .directory-search {
+    width: 100%;
+  }
 }
 
 /* ---- Create program: single full-width form (no organization picker) ---- */

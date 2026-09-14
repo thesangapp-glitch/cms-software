@@ -3647,6 +3647,12 @@ function ProgramDirectoryPage({
     }))
     .filter((section) => !searchTerm || section.programs.length > 0)
 
+  const [organizationFilter, setOrganizationFilter] = useState('all')
+  const filteredSections = visibleSections.filter((section) => organizationFilter === 'all' || section.organization.id === organizationFilter)
+  // One grid across organizations instead of a section (and mostly empty row) per organization.
+  const programEntries = filteredSections.flatMap((section) => section.programs.map((program) => ({ program, section })))
+  const emptySections = searchTerm ? [] : filteredSections.filter((section) => section.programs.length === 0)
+
   async function open(orgId: string, programId: string) {
     setError('')
     setOpeningId(programId)
@@ -3687,11 +3693,43 @@ function ProgramDirectoryPage({
         </div>
       </div>
 
-      {totalPrograms > 6 ? (
-        <label className="search-field directory-search">
-          <Search size={15} />
-          <input aria-label="Search programs" onChange={(changeEvent) => setSearch(changeEvent.target.value)} placeholder="Search programs, venues, organizations" type="search" value={search} />
-        </label>
+      {!loading && (sections.length > 1 || totalPrograms > 6) ? (
+        <div className="directory-toolbar">
+          {sections.length > 1 ? (
+            <div aria-label="Filter programs by organization" className="directory-filters" role="tablist">
+              <button
+                aria-selected={organizationFilter === 'all'}
+                className={organizationFilter === 'all' ? 'directory-filter active' : 'directory-filter'}
+                onClick={() => setOrganizationFilter('all')}
+                role="tab"
+                type="button"
+              >
+                All
+                <small>{formatCount(totalPrograms)}</small>
+              </button>
+              {visibleSections.map((section) => (
+                <button
+                  aria-selected={organizationFilter === section.organization.id}
+                  className={organizationFilter === section.organization.id ? 'directory-filter active' : 'directory-filter'}
+                  key={section.organization.id}
+                  onClick={() => setOrganizationFilter(section.organization.id)}
+                  role="tab"
+                  type="button"
+                >
+                  <span className="org-mark tiny">{section.organization.logoUrl ? <img alt="" src={section.organization.logoUrl} /> : initialsFor(section.organization.name, 'O')}</span>
+                  {section.organization.name}
+                  <small>{formatCount(section.programs.length)}</small>
+                </button>
+              ))}
+            </div>
+          ) : <span />}
+          {totalPrograms > 6 ? (
+            <label className="search-field directory-search">
+              <Search size={15} />
+              <input aria-label="Search programs" onChange={(changeEvent) => setSearch(changeEvent.target.value)} placeholder="Search programs, venues, organizations" type="search" value={search} />
+            </label>
+          ) : null}
+        </div>
       ) : null}
       {error ? <p className="form-error">{error}</p> : null}
 
@@ -3703,56 +3741,63 @@ function ProgramDirectoryPage({
           </div>
         </section>
       ) : (
-        visibleSections.map((section) => (
-          <section className="directory-section" key={section.organization.id}>
-            <div className="directory-org">
-              <span className="org-mark small">{section.organization.logoUrl ? <img alt="" src={section.organization.logoUrl} /> : initialsFor(section.organization.name, 'O')}</span>
-              <strong>{section.organization.name}</strong>
-              <span className="directory-org-type">{orgTypeLabel(section.organization)}</span>
-              {section.organization.id === activeOrgId ? <span className="tag">Current</span> : null}
-            </div>
-            {section.programs.length ? (
-              <div className="program-grid">
-                {section.programs.map((program) => {
-                  const artwork = program.bannerUrl || program.posterUrl
-                  return (
-                    <button className="program-card" disabled={openingId !== ''} key={program.id} onClick={() => void open(section.organization.id, program.id)} type="button">
-                      <div className="program-card-art">{artwork ? <img alt="" src={artwork} /> : <CalendarDays size={22} />}</div>
-                      <div className="program-card-body">
-                        <div className="program-card-title">
-                          <strong>{program.name}</strong>
-                          <span className={`status ${program.status}`}>{statusLabel(program.status)}</span>
-                        </div>
-                        <div className="meta-row">
-                          <span><CalendarDays size={13} />{formatDateRange(program.startDate, program.endDate)}</span>
-                          <span><MapPin size={13} />{[program.venueName || 'Venue pending', program.city].filter(Boolean).join(' · ')}</span>
-                        </div>
+        <>
+          {programEntries.length ? (
+            <div className="program-grid directory-grid">
+              {programEntries.map(({ program, section }) => {
+                const artwork = program.bannerUrl || program.posterUrl
+                return (
+                  <button className="program-card compact" disabled={openingId !== ''} key={program.id} onClick={() => void open(section.organization.id, program.id)} type="button">
+                    <div className="program-card-art">{artwork ? <img alt="" src={artwork} /> : <CalendarDays size={20} />}</div>
+                    <div className="program-card-body">
+                      <span className="program-card-org">
+                        <span className="org-mark tiny">{section.organization.logoUrl ? <img alt="" src={section.organization.logoUrl} /> : initialsFor(section.organization.name, 'O')}</span>
+                        <span>{section.organization.name}</span>
+                        {section.organization.id === activeOrgId ? <span className="tag">Current</span> : null}
+                      </span>
+                      <div className="program-card-title">
+                        <strong>{program.name}</strong>
+                        <span className={`status ${program.status}`}>{statusLabel(program.status)}</span>
                       </div>
-                      <div className="program-card-foot">
-                        <span>{program.mode === 'standalone' ? 'Standalone event' : optionLabel(programTypeOptions, program.programType, 'Program')}</span>
-                        <span>
-                          {openingId === program.id ? <Loader2 className="spin" size={14} /> : null}
-                          {openingId === program.id ? 'Opening' : 'Open'}
-                          {openingId === program.id ? null : <ChevronRight size={15} />}
-                        </span>
+                      <div className="meta-row">
+                        <span><CalendarDays size={13} />{formatDateRange(program.startDate, program.endDate)}</span>
+                        <span><MapPin size={13} />{[program.venueName || 'Venue pending', program.city].filter(Boolean).join(' · ')}</span>
                       </div>
-                    </button>
-                  )
-                })}
-              </div>
-            ) : (
-              <div className="card directory-empty">
-                <span>{section.hasAccess ? 'No programs in this organization yet.' : "You don't have access to programs in this organization yet. Ask its owner for a role."}</span>
-                {section.hasAccess && section.canCreateProgram && onCreateProgram ? (
-                  <button className="secondary-button compact-button" onClick={onCreateProgram} type="button">
-                    <Plus size={14} />
-                    Create program
+                    </div>
+                    <div className="program-card-foot">
+                      <span>{program.mode === 'standalone' ? 'Standalone event' : optionLabel(programTypeOptions, program.programType, 'Program')}</span>
+                      <span>
+                        {openingId === program.id ? <Loader2 className="spin" size={14} /> : null}
+                        {openingId === program.id ? 'Opening' : 'Open'}
+                        {openingId === program.id ? null : <ChevronRight size={15} />}
+                      </span>
+                    </div>
                   </button>
-                ) : null}
-              </div>
-            )}
-          </section>
-        ))
+                )
+              })}
+            </div>
+          ) : null}
+
+          {emptySections.length ? (
+            <section className="card directory-empty-list">
+              {emptySections.map((section) => (
+                <div className="directory-empty-row" key={section.organization.id}>
+                  <span className="org-mark small">{section.organization.logoUrl ? <img alt="" src={section.organization.logoUrl} /> : initialsFor(section.organization.name, 'O')}</span>
+                  <span className="cell-main">
+                    <strong>{section.organization.name}</strong>
+                    <small>{section.hasAccess ? 'No programs in this organization yet' : "You don't have access to programs here yet. Ask its owner for a role."}</small>
+                  </span>
+                  {section.hasAccess && section.canCreateProgram && onCreateProgram ? (
+                    <button className="secondary-button compact-button" onClick={onCreateProgram} type="button">
+                      <Plus size={14} />
+                      Create program
+                    </button>
+                  ) : null}
+                </div>
+              ))}
+            </section>
+          ) : null}
+        </>
       )}
 
       {!loading && searchTerm && visibleSections.length === 0 ? <p className="muted-note">No programs match “{search.trim()}”.</p> : null}
