@@ -3645,11 +3645,9 @@ function ProgramDirectoryPage({
     }))
     .filter((section) => !searchTerm || section.programs.length > 0 || (section.organization.name || '').toLowerCase().includes(searchTerm))
 
-  const [organizationFilter, setOrganizationFilter] = useState('all')
-  const filteredSections = visibleSections.filter((section) => organizationFilter === 'all' || section.organization.id === organizationFilter)
   // One grid across organizations instead of a section (and mostly empty row) per organization.
-  const programEntries = filteredSections.flatMap((section) => section.programs.map((program) => ({ program, section })))
-  const emptySections = filteredSections.filter((section) => section.programs.length === 0)
+  const programEntries = visibleSections.flatMap((section) => section.programs.map((program) => ({ program, section })))
+  const emptySections = visibleSections.filter((section) => section.programs.length === 0)
 
   async function open(orgId: string, programId: string) {
     setError('')
@@ -3689,38 +3687,6 @@ function ProgramDirectoryPage({
         </div>
       </div>
 
-      {!loading && sections.length > 1 ? (
-        <div className="directory-toolbar">
-          {sections.length > 1 ? (
-            <div aria-label="Filter programs by organization" className="directory-filters" role="tablist">
-              <button
-                aria-selected={organizationFilter === 'all'}
-                className={organizationFilter === 'all' ? 'directory-filter active' : 'directory-filter'}
-                onClick={() => setOrganizationFilter('all')}
-                role="tab"
-                type="button"
-              >
-                All
-                <small>{formatCount(visibleSections.reduce((sum, section) => sum + section.programs.length, 0))}</small>
-              </button>
-              {visibleSections.map((section) => (
-                <button
-                  aria-selected={organizationFilter === section.organization.id}
-                  className={organizationFilter === section.organization.id ? 'directory-filter active' : 'directory-filter'}
-                  key={section.organization.id}
-                  onClick={() => setOrganizationFilter(section.organization.id)}
-                  role="tab"
-                  type="button"
-                >
-                  <span className="org-mark tiny">{section.organization.logoUrl ? <img alt="" src={section.organization.logoUrl} /> : initialsFor(section.organization.name, 'O')}</span>
-                  {section.organization.name}
-                  <small>{formatCount(section.programs.length)}</small>
-                </button>
-              ))}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
       {error ? <p className="form-error">{error}</p> : null}
 
       {loading ? (

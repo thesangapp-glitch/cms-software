@@ -5657,60 +5657,6 @@ button.data-row:hover {
   padding-top: 28px;
 }
 
-.directory-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px 16px;
-}
-
-.directory-filters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.directory-filter {
-  height: 32px;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 0 12px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: #fff;
-  color: #3f4944;
-  font-size: 13px;
-  font-weight: 500;
-  white-space: nowrap;
-  transition:
-    background 140ms ease,
-    border-color 140ms ease,
-    color 140ms ease;
-}
-
-.directory-filter:has(.org-mark) {
-  padding-left: 7px;
-}
-
-.directory-filter:hover {
-  border-color: #c3cdd0;
-}
-
-.directory-filter.active {
-  border-color: var(--ink);
-  background: var(--ink);
-  color: #fff;
-}
-
-.directory-filter small {
-  color: inherit;
-  font-size: 11.5px;
-  font-variant-numeric: tabular-nums;
-  opacity: 0.65;
-}
-
 .directory-search {
   width: 320px;
 }
