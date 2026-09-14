@@ -5738,6 +5738,40 @@ button.data-row:hover {
   box-shadow: var(--card-shadow);
 }
 
+/* ---- Names: long organization/program names never break the layout ---- */
+
+.crumb-org,
+.crumb-current {
+  min-width: 0;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.crumb-program {
+  min-width: 0;
+}
+
+.program-card-title strong,
+.ws-title h1 {
+  display: -webkit-box;
+  min-width: 0;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.program-card-title .status {
+  flex: 0 0 auto;
+}
+
+.events-command h1,
+.venue-page-hero h1,
+.chooser-title h1 {
+  overflow-wrap: anywhere;
+}
+
 /* ---- Workspace tour ---- */
 
 .tour-button {

@@ -1103,6 +1103,12 @@ function formatEventWhen(start?: string, end?: string) {
   return /T\d/.test(start || '') ? `${shortDateFormat.format(startDate)} · ${clockFormat.format(startDate)}` : shortDateFormat.format(startDate)
 }
 
+// Display-only tidy-up for names typed in lowercase ("jjjj" → "Jjjj"). Words that
+// already contain capitals ("NeewORG", "IIT Roorkee", "TechNova") are left as typed.
+function formatName(value?: string) {
+  return (value || '').trim().replace(/\S+/g, (word) => (word === word.toLowerCase() ? word.charAt(0).toUpperCase() + word.slice(1) : word))
+}
+
 // Sentence-case a stored status for display: "notIssued" → "Not issued", "live" → "Live".
 function statusLabel(value?: string) {
   const words = (value || '').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').trim().toLowerCase()
@@ -1444,7 +1450,7 @@ function Shell({
     <>
       <span className="rail-org-mark">{organization?.logoUrl ? <img alt="" src={organization.logoUrl} /> : initialsFor(organization?.name, 'O')}</span>
       <span className="rail-org-text">
-        <strong>{organization?.name || 'Organization'}</strong>
+        <strong title={organization?.name || undefined}>{formatName(organization?.name) || 'Organization'}</strong>
         <small>{orgTypeLabel(organization)}</small>
       </span>
       {onSwitchOrganization ? <ChevronsUpDown size={15} /> : null}
@@ -1512,13 +1518,13 @@ function Shell({
       <main className="workspace-main">
         <header className="workspace-topbar">
           <nav aria-label="Breadcrumb" className="crumbs">
-            <span className="crumb-org">{organization?.name || 'Organization'}</span>
+            <span className="crumb-org" title={organization?.name || undefined}>{formatName(organization?.name) || 'Organization'}</span>
             <span className="crumb-sep">/</span>
             {selectedProgram ? (
               <>
                 <button className="crumb-program" data-tour="program-switcher" onClick={onSwitchProgram} title="Switch program" type="button">
                   <span className={`status-dot ${selectedProgram.status}`} />
-                  <span>{selectedProgram.name}</span>
+                  <span title={selectedProgram.name}>{formatName(selectedProgram.name)}</span>
                   <ChevronDown size={14} />
                 </button>
                 <span className="crumb-sep">/</span>
@@ -3708,11 +3714,11 @@ function ProgramDirectoryPage({
                     <div className="program-card-body">
                       <span className="program-card-org">
                         <span className="org-mark tiny">{section.organization.logoUrl ? <img alt="" src={section.organization.logoUrl} /> : initialsFor(section.organization.name, 'O')}</span>
-                        <span>{section.organization.name}</span>
+                        <span title={section.organization.name}>{formatName(section.organization.name)}</span>
                         {section.organization.id === activeOrgId ? <span className="tag">Current</span> : null}
                       </span>
                       <div className="program-card-title">
-                        <strong>{program.name}</strong>
+                        <strong title={program.name}>{formatName(program.name)}</strong>
                         <span className={`status ${program.status}`}>{statusLabel(program.status)}</span>
                       </div>
                       <div className="meta-row">
@@ -3740,7 +3746,7 @@ function ProgramDirectoryPage({
                 <div className="directory-empty-row" key={section.organization.id}>
                   <span className="org-mark small">{section.organization.logoUrl ? <img alt="" src={section.organization.logoUrl} /> : initialsFor(section.organization.name, 'O')}</span>
                   <span className="cell-main">
-                    <strong>{section.organization.name}</strong>
+                    <strong title={section.organization.name}>{formatName(section.organization.name)}</strong>
                     <small>{section.hasAccess ? 'No programs in this organization yet' : "You don't have access to programs here yet. Ask its owner for a role."}</small>
                   </span>
                   {section.hasAccess && section.canCreateProgram && onCreateProgram ? (
@@ -3869,7 +3875,7 @@ function ProgramWorkspaceDashboard({
         <div className="ws-art">{artwork ? <img alt="" src={artwork} /> : initialsFor(program.name, 'P')}</div>
         <div className="ws-title">
           <div className="ws-title-row">
-            <h1>{program.name}</h1>
+            <h1 title={program.name}>{formatName(program.name)}</h1>
             <span className={`status ${program.status}`}>{statusLabel(program.status)}</span>
           </div>
           <div className="meta-row">
@@ -4124,7 +4130,7 @@ function VenuesPage({
       <section className="venue-page-hero">
         <div>
           <span className="eyebrow">Program venue library</span>
-          <h1>{program.name} venues</h1>
+          <h1>{formatName(program.name)} venues</h1>
           <p>Save campuses, auditoriums, halls, rooms, stages, zones, and booth areas once. Schedule rows can reuse these saved venues with coordinates and room details.</p>
         </div>
         <button className="primary-button" onClick={() => setVenueLibraryOpen(true)} type="button">
@@ -4311,7 +4317,7 @@ function PatronsPage({
       <section className="venue-page-hero patrons-hero">
         <div>
           <span className="eyebrow">Patrons and sponsors</span>
-          <h1>{program.name} partners</h1>
+          <h1>{formatName(program.name)} partners</h1>
           <p>Manage sponsor logos, tiers, categories, booth locations, websites, and short descriptions shown inside the Sang mobile app.</p>
         </div>
         <span className="schedule-count"><BadgeCheck size={16} /> {formatCount(visiblePartners.length)} live</span>
@@ -4523,7 +4529,7 @@ function DashboardPage({
             {latestPrograms.map((program) => (
               <button className="data-row program-rows" key={program.id} onClick={() => setRoute('programs')} type="button">
                 <span className="cell-main">
-                  <strong>{program.name}</strong>
+                  <strong title={program.name}>{formatName(program.name)}</strong>
                   <small>{formatDateRange(program.startDate, program.endDate)}</small>
                 </span>
                 <span className="cell-text cell-muted">{[program.venueName || 'Venue pending', program.city].filter(Boolean).join(' · ')}</span>
@@ -4744,7 +4750,7 @@ function ProgramComposerPage({
           <h1>Create a program</h1>
           <p>
             {targetOrganization ? (
-              <>This program will be created in <strong>{targetOrganization.name}</strong>. Set the dates, venue and artwork — events, people, passes and analytics all live inside it.</>
+              <>This program will be created in <strong>{formatName(targetOrganization.name)}</strong>. Set the dates, venue and artwork — events, people, passes and analytics all live inside it.</>
             ) : organizationsLoading ? (
               'Loading your organization…'
             ) : (
@@ -5016,7 +5022,7 @@ function ProgramBlock({
         <div className="program-block-art">{heroImage ? <img alt="" src={heroImage} /> : initialsFor(program.name, 'P')}</div>
         <div className="program-block-text">
           <div className="program-card-title">
-            <strong>{program.name}</strong>
+            <strong title={program.name}>{formatName(program.name)}</strong>
             <span className={`status ${program.status}`}>{statusLabel(program.status)}</span>
           </div>
           <span className="program-block-type">{program.mode === 'standalone' ? 'Standalone event' : programTypeLabel}</span>
@@ -5603,7 +5609,7 @@ function EventsPage({
             </button>
           </>
         )}
-        description={`Sessions, competitions, talks and workshops inside ${program.name}.`}
+        description={`Sessions, competitions, talks and workshops inside ${formatName(program.name)}.`}
         title="Events"
       />
       {publishNotice ? <p className="form-success">{publishNotice}</p> : null}
@@ -7576,7 +7582,7 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
             </button>
           </>
         )}
-        description={selectedProgram ? `Attendees, participants and staff for ${selectedProgram.name}. Each person gets a QR pass.` : 'Attendees, participants and staff. Each person gets a QR pass.'}
+        description={selectedProgram ? `Attendees, participants and staff for ${formatName(selectedProgram.name)}. Each person gets a QR pass.` : 'Attendees, participants and staff. Each person gets a QR pass.'}
         title="People & passes"
       />
       {peopleError && !drawerOpen ? <p className="form-error">{peopleError}</p> : null}
@@ -8034,6 +8040,8 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
 
   // Events, venues and patrons live inside a program; hide them until one is open.
   const shellNavItems = activeProgram ? visibleNavItems : visibleNavItems.filter((item) => item.key !== 'events' && item.key !== 'venues' && item.key !== 'patrons')
+  // Create program isn't inside a program, so the Program section would point at the previously open one.
+  const programFreeNavItems = visibleNavItems.filter((item) => item.group !== 'program')
 
   // Without an open program those routes only render the program list, so land on it directly.
   // With several programs the program chooser handles it instead.
@@ -8155,7 +8163,7 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
 
   if (route === 'programCreate' && (canCreateProgram || canCreateProgramSomewhere)) {
     return (
-      <Shell onSwitchOrganization={openProgramDirectory} onSwitchProgram={openProgramDirectory} organization={organization} route={route} selectedProgram={null} setRoute={setRoute} navCounts={navCounts} pendingPublishCount={pendingPublishCount} roleName={currentRole?.name} user={firebaseUser} visibleNavItems={shellNavItems}>
+      <Shell onSwitchOrganization={openProgramDirectory} onSwitchProgram={openProgramDirectory} organization={organization} route={route} selectedProgram={null} setRoute={setRoute} navCounts={navCounts} pendingPublishCount={pendingPublishCount} roleName={currentRole?.name} user={firebaseUser} visibleNavItems={programFreeNavItems}>
         <ProgramComposerPage
           activeOrgId={orgId}
           onCancel={() => setRoute(sortedPrograms.length > 0 ? 'programs' : 'dashboard')}
