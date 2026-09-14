@@ -11,6 +11,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronsUpDown,
+  CircleHelp,
   Clock,
   Download,
   Eye,
@@ -1238,6 +1239,174 @@ function Drawer({
   )
 }
 
+type TourStep = { target: string; title: string; body: string }
+
+const workspaceTourSteps: TourStep[] = [
+  {
+    target: 'program-switcher',
+    title: 'This is your program',
+    body: 'Everything in the workspace belongs to the program shown here. Click it any time to switch to another program.',
+  },
+  {
+    target: 'nav-events',
+    title: 'Add your events',
+    body: 'Create sessions, contests, talks and workshops, then build each event’s schedule.',
+  },
+  {
+    target: 'nav-people',
+    title: 'Add people and issue passes',
+    body: 'Add attendees, participants and staff one by one or import a CSV. Everyone gets a QR pass.',
+  },
+  {
+    target: 'publishing',
+    title: 'Publish to the Sang app',
+    body: 'Attendees only see changes after you publish. Amber means something changed since the last publish.',
+  },
+  {
+    target: 'nav-team',
+    title: 'Invite your team',
+    body: 'Give event leads, gate staff and analysts access to the whole organization, one program or a single event.',
+  },
+  {
+    target: 'org-switcher',
+    title: 'Create another organization',
+    body: 'Running events for another college, club or company? Open this switcher and choose New organization to set one up.',
+  },
+  {
+    target: 'tour-button',
+    title: 'Replay this tour',
+    body: 'Come back to this guide whenever you need it.',
+  },
+]
+
+// Coach-mark tour of the workspace: dims the page, rings one real control at a
+// time and explains it. Steps whose control isn't on screen (for example a nav
+// item this member's role hides) are skipped.
+function WorkspaceTour({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [steps, setSteps] = useState<TourStep[]>([])
+  const [index, setIndex] = useState(0)
+  const [rect, setRect] = useState<DOMRect | null>(null)
+  const [cardSize, setCardSize] = useState({ width: 320, height: 190 })
+  const cardRef = useRef<HTMLDivElement>(null)
+  const step = open ? steps[index] : undefined
+
+  // The workspace may still be loading when the tour starts, so wait briefly
+  // for its controls to render before deciding which steps are available.
+  useEffect(() => {
+    if (!open) {
+      setSteps([])
+      setRect(null)
+      return
+    }
+    let attempts = 0
+    let timer = 0
+    const collect = () => {
+      const available = workspaceTourSteps.filter((item) => document.querySelector(`[data-tour="${item.target}"]`))
+      if (available.length >= 4 || attempts >= 60) {
+        setSteps(available)
+        setIndex(0)
+        return
+      }
+      attempts += 1
+      timer = window.setTimeout(collect, 150)
+    }
+    collect()
+    return () => window.clearTimeout(timer)
+  }, [open])
+
+  useEffect(() => {
+    if (!step) return
+    const target = document.querySelector<HTMLElement>(`[data-tour="${step.target}"]`)
+    if (!target) return
+    target.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+    const update = () => setRect(target.getBoundingClientRect())
+    update()
+    window.addEventListener('resize', update)
+    window.addEventListener('scroll', update, true)
+    return () => {
+      window.removeEventListener('resize', update)
+      window.removeEventListener('scroll', update, true)
+    }
+  }, [step])
+
+  useEffect(() => {
+    if (!open) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+      if (event.key === 'ArrowRight') setIndex((current) => Math.min(current + 1, Math.max(steps.length - 1, 0)))
+      if (event.key === 'ArrowLeft') setIndex((current) => Math.max(current - 1, 0))
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose, open, steps.length])
+
+  // Measure the card whenever its step or anchor changes so placement keeps it on screen.
+  useEffect(() => {
+    const card = cardRef.current
+    if (!card) return
+    const { width, height } = card.getBoundingClientRect()
+    if (Math.round(width) !== Math.round(cardSize.width) || Math.round(height) !== Math.round(cardSize.height)) {
+      setCardSize({ width, height })
+    }
+  }, [cardSize.height, cardSize.width, index, rect])
+
+  if (!open || !step || !rect) return null
+
+  const gap = 14
+  const margin = 16
+  const viewportWidth = window.innerWidth
+  const viewportHeight = window.innerHeight
+  let placement: 'right' | 'bottom' | 'top'
+  let top: number
+  let left: number
+  if (rect.left < viewportWidth * 0.3 && rect.right + gap + cardSize.width + margin <= viewportWidth && rect.height < 120) {
+    placement = 'right'
+    left = rect.right + gap
+    top = rect.top + rect.height / 2 - cardSize.height / 2
+  } else if (rect.bottom + gap + cardSize.height + margin <= viewportHeight) {
+    placement = 'bottom'
+    top = rect.bottom + gap
+    left = rect.left + rect.width / 2 - cardSize.width / 2
+  } else {
+    placement = 'top'
+    top = rect.top - gap - cardSize.height
+    left = rect.left + rect.width / 2 - cardSize.width / 2
+  }
+  top = Math.min(Math.max(margin, top), viewportHeight - cardSize.height - margin)
+  left = Math.min(Math.max(margin, left), viewportWidth - cardSize.width - margin)
+  const pad = 6
+  const lastStep = index === steps.length - 1
+
+  return (
+    <div className="tour-layer" role="presentation">
+      <div className="tour-spotlight" style={{ top: rect.top - pad, left: rect.left - pad, width: rect.width + pad * 2, height: rect.height + pad * 2 }} />
+      <div aria-labelledby="tour-title" aria-modal="true" className={`tour-card ${placement}`} ref={cardRef} role="dialog" style={{ top, left }}>
+        <span className="tour-step">Step {index + 1} of {steps.length}</span>
+        <h2 id="tour-title">{step.title}</h2>
+        <p>{step.body}</p>
+        <div aria-hidden="true" className="tour-dots">
+          {steps.map((item, itemIndex) => <i className={itemIndex === index ? 'active' : ''} key={item.target} />)}
+        </div>
+        <div className="tour-actions">
+          <button className="text-link tour-skip" onClick={onClose} type="button">
+            {lastStep ? 'Close' : 'Skip tour'}
+          </button>
+          <div>
+            {index > 0 ? (
+              <button className="secondary-button compact-button" onClick={() => setIndex(index - 1)} type="button">
+                Back
+              </button>
+            ) : null}
+            <button className="primary-button compact-button" onClick={() => (lastStep ? onClose() : setIndex(index + 1))} type="button">
+              {lastStep ? 'Done' : 'Next'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function Shell({
   children,
   route,
@@ -1251,6 +1420,7 @@ function Shell({
   roleName,
   navCounts,
   pendingPublishCount = 0,
+  onStartTour,
 }: {
   children: React.ReactNode
   route: RouteKey
@@ -1264,6 +1434,7 @@ function Shell({
   roleName?: string
   navCounts?: Partial<Record<RouteKey, number>>
   pendingPublishCount?: number
+  onStartTour?: () => void
 }) {
   const activeKey: RouteKey = route === 'programCreate' ? 'programs' : route
   const groups = (Object.keys(navGroupLabels) as NavGroup[])
@@ -1292,9 +1463,9 @@ function Shell({
         </div>
 
         {onSwitchOrganization ? (
-          <button className="rail-org" onClick={onSwitchOrganization} title="Switch program or organization" type="button">{orgContent}</button>
+          <button className="rail-org" data-tour="org-switcher" onClick={onSwitchOrganization} title="Switch program or organization" type="button">{orgContent}</button>
         ) : (
-          <div className="rail-org">{orgContent}</div>
+          <div className="rail-org" data-tour="org-switcher">{orgContent}</div>
         )}
 
         <nav aria-label="Primary navigation" className="rail-navs">
@@ -1309,6 +1480,7 @@ function Shell({
                     <button
                       aria-current={activeKey === item.key ? 'page' : undefined}
                       className={activeKey === item.key ? 'rail-link active' : 'rail-link'}
+                      data-tour={`nav-${item.key}`}
                       key={item.key}
                       onClick={() => setRoute(item.key)}
                       type="button"
@@ -1344,7 +1516,7 @@ function Shell({
             <span className="crumb-sep">/</span>
             {selectedProgram ? (
               <>
-                <button className="crumb-program" onClick={onSwitchProgram} title="Switch program" type="button">
+                <button className="crumb-program" data-tour="program-switcher" onClick={onSwitchProgram} title="Switch program" type="button">
                   <span className={`status-dot ${selectedProgram.status}`} />
                   <span>{selectedProgram.name}</span>
                   <ChevronDown size={14} />
@@ -1354,12 +1526,20 @@ function Shell({
             ) : null}
             <span className="crumb-current">{routeLabels[route]}</span>
           </nav>
-          {pendingPublishCount > 0 ? (
-            <button className="publish-chip" onClick={() => setRoute('dashboard')} title="Open publishing on the dashboard" type="button">
-              <UploadCloud size={14} />
-              {pendingPublishCount} section{pendingPublishCount === 1 ? '' : 's'} not published to Sang app
-            </button>
-          ) : null}
+          <div className="topbar-actions">
+            {pendingPublishCount > 0 ? (
+              <button className="publish-chip" onClick={() => setRoute('dashboard')} title="Open publishing on the dashboard" type="button">
+                <UploadCloud size={14} />
+                {pendingPublishCount} section{pendingPublishCount === 1 ? '' : 's'} not published to Sang app
+              </button>
+            ) : null}
+            {onStartTour ? (
+              <button className="tour-button" data-tour="tour-button" onClick={onStartTour} type="button">
+                <CircleHelp size={14} />
+                Take the tour
+              </button>
+            ) : null}
+          </div>
         </header>
         <div className="workspace-content">{children}</div>
       </main>
@@ -3335,26 +3515,119 @@ function useProgramDirectory(organizationIds: string[], uid: string) {
   return { sections, loading }
 }
 
+// Organizations are created on their own, from the program chooser. The new
+// organization becomes the open workspace and its first program comes next.
+function CreateOrganizationDrawer({
+  open,
+  onClose,
+  onCreated,
+  profile,
+  user,
+}: {
+  open: boolean
+  onClose: () => void
+  onCreated: (profile: PeUser) => void
+  profile: PeUser
+  user: User
+}) {
+  const [orgName, setOrgName] = useState('')
+  const [orgType, setOrgType] = useState(defaultOrgType)
+  const [website, setWebsite] = useState('')
+  const [logoUrl, setLogoUrl] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const ownerName = (profile.displayName || user.displayName || user.email?.split('@')[0] || '').trim()
+
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    if (orgName.trim().length < 2) {
+      setError('Give the organization a name with at least 2 characters.')
+      return
+    }
+    setError('')
+    setBusy(true)
+    try {
+      const nextProfile = await createOrganizationWithOwner(
+        user,
+        {
+          displayName: ownerName.length >= 2 ? ownerName : orgName.trim(),
+          orgName: orgName.trim(),
+          orgType,
+          website: website.trim(),
+          logoUrl: logoUrl.trim(),
+        },
+        profile,
+      )
+      onCreated(nextProfile)
+    } catch (createError) {
+      setError(errorMessage(createError, 'Unable to create the organization'))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Drawer
+      description="You'll own it, with owner, event lead, gate staff and analyst roles ready to assign. Its first program comes next."
+      onClose={onClose}
+      open={open}
+      title="New organization"
+    >
+      <form className="drawer-form" onSubmit={submit}>
+        <div className="drawer-sections">
+          {error ? <p className="form-error">{error}</p> : null}
+          <div className="drawer-section">
+            <label>
+              Organization name
+              <input placeholder="Your college, club, company or agency" required value={orgName} onChange={(event) => setOrgName(event.target.value)} />
+            </label>
+            <label>
+              Organization type
+              <select value={orgType} onChange={(event) => setOrgType(event.target.value)}>
+                {orgTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </select>
+            </label>
+            <label>
+              Website
+              <input placeholder="https://" value={website} onChange={(event) => setWebsite(event.target.value)} />
+            </label>
+            <ImageUploader folder="organization-logos" label="Organization logo" onChange={setLogoUrl} uid={user.uid} value={logoUrl} />
+          </div>
+        </div>
+        <div className="drawer-foot">
+          <button className="secondary-button" disabled={busy} onClick={onClose} type="button">
+            Cancel
+          </button>
+          <button className="primary-button" disabled={busy} type="submit">
+            {busy ? <Loader2 className="spin" size={15} /> : <Building2 size={15} />}
+            Create organization
+          </button>
+        </div>
+      </form>
+    </Drawer>
+  )
+}
+
 function ProgramDirectoryPage({
   profile,
-  uid,
+  user,
   activeOrgId,
   onOpen,
   onCreateProgram,
-  onCreateOrganization,
+  onOrganizationCreated,
   onClose,
 }: {
   profile: PeUser
-  uid: string
+  user: User
   activeOrgId?: string
   onOpen: (orgId: string, programId: string) => void | Promise<void>
   onCreateProgram?: () => void
-  onCreateOrganization?: () => void
+  onOrganizationCreated: (profile: PeUser) => void
   onClose?: () => void
 }) {
-  const { sections, loading } = useProgramDirectory(profile.organizationIds || [], uid)
+  const { sections, loading } = useProgramDirectory(profile.organizationIds || [], user.uid)
   const [search, setSearch] = useState('')
   const [openingId, setOpeningId] = useState('')
+  const [organizationDrawerOpen, setOrganizationDrawerOpen] = useState(false)
   const [error, setError] = useState('')
   const searchTerm = search.trim().toLowerCase()
   const totalPrograms = sections.reduce((sum, section) => sum + section.programs.length, 0)
@@ -3483,15 +3756,24 @@ function ProgramDirectoryPage({
 
       {!loading && searchTerm && visibleSections.length === 0 ? <p className="muted-note">No programs match “{search.trim()}”.</p> : null}
 
-      {onCreateOrganization ? (
-        <div className="chooser-footer">
-          <span>Running something new?</span>
-          <button className="secondary-button" onClick={onCreateOrganization} type="button">
-            <Plus size={16} />
-            New organization
-          </button>
-        </div>
-      ) : null}
+      <div className="chooser-footer">
+        <span>Running events for another college, club or company?</span>
+        <button className="secondary-button" onClick={() => setOrganizationDrawerOpen(true)} type="button">
+          <Building2 size={16} />
+          New organization
+        </button>
+      </div>
+
+      <CreateOrganizationDrawer
+        onClose={() => setOrganizationDrawerOpen(false)}
+        onCreated={(nextProfile) => {
+          setOrganizationDrawerOpen(false)
+          onOrganizationCreated(nextProfile)
+        }}
+        open={organizationDrawerOpen}
+        profile={profile}
+        user={user}
+      />
     </ChooserFrame>
   )
 }
@@ -3689,7 +3971,7 @@ function ProgramWorkspaceDashboard({
         </section>
 
         <div className="ws-side">
-          <section className="card">
+          <section className="card" data-tour="publishing">
             <div className="card-head">
               <div>
                 <h2>Sang app publishing</h2>
@@ -4329,11 +4611,8 @@ function useOrganizationOptions(profile: PeUser, uid: string) {
   return { options, loading }
 }
 
-const NEW_ORGANIZATION_VALUE = '__new_organization__'
-
 function ProgramComposerPage({
   user,
-  profile,
   activeOrgId,
   organizationOptions,
   organizationsLoading,
@@ -4341,7 +4620,6 @@ function ProgramComposerPage({
   onCancel,
 }: {
   user: User
-  profile: PeUser
   activeOrgId: string
   organizationOptions: OrganizationOption[]
   organizationsLoading: boolean
@@ -4355,11 +4633,6 @@ function ProgramComposerPage({
   const readOnlyOrganizations = organizationOptions.length - writableOrganizations.length
 
   const [targetOrgId, setTargetOrgId] = useState('')
-  const [creatingOrganization, setCreatingOrganization] = useState(false)
-  const [newOrgName, setNewOrgName] = useState('')
-  const [newOrgType, setNewOrgType] = useState(defaultOrgType)
-  const [newOrgWebsite, setNewOrgWebsite] = useState('')
-  const [newOrgLogoUrl, setNewOrgLogoUrl] = useState('')
 
   const [name, setName] = useState('')
   const [tagline, setTagline] = useState('')
@@ -4385,26 +4658,17 @@ function ProgramComposerPage({
 
   const selectedDraftVenue = draftVenues.find((venue) => venue.id === selectedVenueId) || null
 
-  // Default to the workspace the organizer is already in; if they cannot create
-  // programs anywhere yet, open on the new-organization form.
+  // Default to the workspace the organizer is already in. New organizations are
+  // created from the program chooser, not here.
   useEffect(() => {
-    if (organizationsLoading || targetOrgId || creatingOrganization) return
+    if (organizationsLoading || targetOrgId) return
     const preferred = writableOrganizations.find((organization) => organization.id === activeOrgId)
       || writableOrganizations[0]
-    if (preferred) {
-      setTargetOrgId(preferred.id)
-    } else {
-      setCreatingOrganization(true)
-    }
-  }, [activeOrgId, creatingOrganization, organizationsLoading, targetOrgId, writableOrganizations])
+    if (preferred) setTargetOrgId(preferred.id)
+  }, [activeOrgId, organizationsLoading, targetOrgId, writableOrganizations])
 
   function selectOrganization(value: string) {
     setError('')
-    if (value === NEW_ORGANIZATION_VALUE) {
-      setCreatingOrganization(true)
-      return
-    }
-    setCreatingOrganization(false)
     setTargetOrgId(value)
   }
 
@@ -4412,11 +4676,7 @@ function ProgramComposerPage({
     event.preventDefault()
     setError('')
 
-    if (creatingOrganization && newOrgName.trim().length < 2) {
-      setError('Give the new organization a name with at least 2 characters.')
-      return
-    }
-    if (!creatingOrganization && !targetOrgId) {
+    if (!targetOrgId) {
       setError('Choose the organization this program belongs to.')
       return
     }
@@ -4427,24 +4687,7 @@ function ProgramComposerPage({
 
     setBusy(true)
     try {
-      let orgId = targetOrgId
-
-      if (creatingOrganization) {
-        setStep('Creating organization')
-        const ownerName = (profile.displayName || user.displayName || user.email?.split('@')[0] || '').trim()
-        const created = await createOrganizationWithOwner(
-          user,
-          {
-            displayName: ownerName.length >= 2 ? ownerName : newOrgName.trim(),
-            orgName: newOrgName.trim(),
-            orgType: newOrgType,
-            website: newOrgWebsite.trim(),
-            logoUrl: newOrgLogoUrl.trim(),
-          },
-          profile,
-        )
-        orgId = created.activeOrgId
-      }
+      const orgId = targetOrgId
 
       setStep('Creating program')
       const createPayload: CreateProgramPayload = {
@@ -4514,8 +4757,6 @@ function ProgramComposerPage({
     }
   }
 
-  const organizationSelectValue = creatingOrganization ? NEW_ORGANIZATION_VALUE : targetOrgId
-
   return (
     <section className="page-stack">
       <section className="events-command command-premium">
@@ -4534,7 +4775,7 @@ function ProgramComposerPage({
           <div className="composer-rail-head">
             <span className="eyebrow">Organization</span>
             <h2>Where does this program belong?</h2>
-            <p>Pick an organization you already run, or create a new one and add this program under it.</p>
+            <p>Pick the organization that runs this program.</p>
           </div>
 
           {organizationsLoading ? (
@@ -4542,7 +4783,7 @@ function ProgramComposerPage({
           ) : (
             <div className="org-option-list">
               {writableOrganizations.map((organization) => {
-                const selected = !creatingOrganization && targetOrgId === organization.id
+                const selected = targetOrgId === organization.id
                 return (
                   <button
                     aria-pressed={selected}
@@ -4563,45 +4804,11 @@ function ProgramComposerPage({
                 )
               })}
 
-              <button
-                aria-pressed={creatingOrganization}
-                className={creatingOrganization ? 'org-option org-option-new selected' : 'org-option org-option-new'}
-                onClick={() => selectOrganization(NEW_ORGANIZATION_VALUE)}
-                type="button"
-              >
-                <span className="org-option-mark"><Plus size={16} /></span>
-                <span className="org-option-copy">
-                  <strong>New organization</strong>
-                  <small>Create one now and own this program</small>
-                </span>
-                {creatingOrganization && <Check size={16} />}
-              </button>
             </div>
           )}
 
-          {creatingOrganization && (
-            <div className="org-new-form">
-              <label>
-                Organization name
-                <input
-                  placeholder="Your college, company, or event agency"
-                  value={newOrgName}
-                  onChange={(event) => setNewOrgName(event.target.value)}
-                />
-              </label>
-              <label>
-                Organization type
-                <select value={newOrgType} onChange={(event) => setNewOrgType(event.target.value)}>
-                  {orgTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-                </select>
-              </label>
-              <label>
-                Website
-                <input placeholder="https://" value={newOrgWebsite} onChange={(event) => setNewOrgWebsite(event.target.value)} />
-              </label>
-              <ImageUploader folder="organization-logos" label="Organization logo" onChange={setNewOrgLogoUrl} uid={user.uid} value={newOrgLogoUrl} />
-              <p className="composer-rail-note">You become the owner of this organization, with the default owner, event lead, gate staff, and analyst roles ready to assign.</p>
-            </div>
+          {!organizationsLoading && writableOrganizations.length === 0 && (
+            <p className="composer-rail-note">None of your organizations let you create programs yet. Create an organization from the program chooser first.</p>
           )}
 
           {!organizationsLoading && readOnlyOrganizations > 0 && (
@@ -4615,11 +4822,10 @@ function ProgramComposerPage({
           <div className="form-grid two">
             <label>
               Organization
-              <select value={organizationSelectValue} onChange={(event) => selectOrganization(event.target.value)}>
+              <select value={targetOrgId} onChange={(event) => selectOrganization(event.target.value)}>
                 {writableOrganizations.map((organization) => (
                   <option key={organization.id} value={organization.id}>{organization.name}</option>
                 ))}
-                <option value={NEW_ORGANIZATION_VALUE}>+ Create a new organization</option>
               </select>
             </label>
             <label>
@@ -7736,6 +7942,7 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
   const [needsOrgChoice, setNeedsOrgChoice] = useState(() => profile.organizationIds.length > 1 && window.localStorage.getItem('sang-crm-org-choice-confirmed') !== profile.activeOrgId)
   // Opened from the top bar / sidebar switchers; closes back to the current workspace.
   const [choosingProgram, setChoosingProgram] = useState(false)
+  const [tourOpen, setTourOpen] = useState(false)
   const orgId = profile.activeOrgId || ''
   const ownMemberQuery = useMemo(() => (orgId ? query(collection(db, 'peTeamMembers'), where('orgId', '==', orgId), where('uid', '==', firebaseUser.uid), where('status', '==', 'active')) : null), [firebaseUser.uid, orgId])
   const ownMemberships = useCollection<TeamMember>(ownMemberQuery, 'CRM access')
@@ -7902,6 +8109,17 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
     }
   }, [canCreateProgram, orgId, programs.loading, route, sortedPrograms.length])
 
+  // A new organization becomes the open workspace; its first program comes next.
+  function handleOrganizationCreated(nextProfile: PeUser) {
+    window.localStorage.setItem('sang-crm-org-choice-confirmed', nextProfile.activeOrgId || '')
+    window.localStorage.removeItem('sang-crm-selected-program')
+    setSelectedProgramId('')
+    setProfile(nextProfile)
+    setNeedsOrgChoice(false)
+    setChoosingProgram(false)
+    setRoute('programCreate')
+  }
+
   // Opens a program from the directory, switching the active organization first
   // when the program belongs to a different one.
   async function openProgramFromDirectory(targetOrgId: string, programId: string) {
@@ -7921,7 +8139,7 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
   }
 
   if (!orgId && profile.organizationIds.length > 0) {
-    return <ProgramDirectoryPage onOpen={openProgramFromDirectory} profile={profile} uid={firebaseUser.uid} />
+    return <ProgramDirectoryPage onOpen={openProgramFromDirectory} onOrganizationCreated={handleOrganizationCreated} profile={profile} user={firebaseUser} />
   }
 
   if (!orgId) {
@@ -7938,11 +8156,11 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
       <ProgramDirectoryPage
         activeOrgId={orgId}
         onClose={choosingProgram && !needsOrgChoice ? () => setChoosingProgram(false) : undefined}
-        onCreateOrganization={openComposer}
         onCreateProgram={openComposer}
         onOpen={openProgramFromDirectory}
+        onOrganizationCreated={handleOrganizationCreated}
         profile={profile}
-        uid={firebaseUser.uid}
+        user={firebaseUser}
       />
     )
   }
@@ -7980,6 +8198,7 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
     window.localStorage.setItem('sang-crm-selected-program', programId)
     setNeedsOrgChoice(false)
     setRoute('dashboard')
+    setTourOpen(true)
   }
 
   function chooseProgramInSettings(programId: string) {
@@ -8001,7 +8220,6 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
           onCreated={finishProgramCreation}
           organizationOptions={organizationOptions.options}
           organizationsLoading={organizationOptions.loading}
-          profile={profile}
           user={firebaseUser}
         />
       </Shell>
@@ -8009,7 +8227,7 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
   }
 
   if (shouldChooseProgram) {
-    return <ProgramDirectoryPage activeOrgId={orgId} onCreateProgram={canCreateProgram ? openProgramComposer : undefined} onOpen={openProgramFromDirectory} profile={profile} uid={firebaseUser.uid} />
+    return <ProgramDirectoryPage activeOrgId={orgId} onCreateProgram={canCreateProgram ? openProgramComposer : undefined} onOpen={openProgramFromDirectory} onOrganizationCreated={handleOrganizationCreated} profile={profile} user={firebaseUser} />
   }
 
   if (!canOpenRoute(route, currentRole, currentMember)) {
@@ -8019,7 +8237,8 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
   }
 
   return (
-    <Shell onSwitchOrganization={openProgramDirectory} onSwitchProgram={openProgramDirectory} organization={organization} route={route} selectedProgram={activeProgram} setRoute={setRoute} navCounts={navCounts} pendingPublishCount={pendingPublishCount} roleName={currentRole?.name} user={firebaseUser} visibleNavItems={shellNavItems}>
+    <Shell onSwitchOrganization={openProgramDirectory} onSwitchProgram={openProgramDirectory} organization={organization} route={route} onStartTour={activeProgram ? () => setTourOpen(true) : undefined} selectedProgram={activeProgram} setRoute={setRoute} navCounts={navCounts} pendingPublishCount={pendingPublishCount} roleName={currentRole?.name} user={firebaseUser} visibleNavItems={shellNavItems}>
+      <WorkspaceTour onClose={() => setTourOpen(false)} open={tourOpen && Boolean(activeProgram)} />
       {programs.error || roles.error || ownMemberships.error || people.error || scheduleItems.error || venueCatalogs.error || partners.error || passes.error || members.error ? <p className="form-error">{programs.error || roles.error || ownMemberships.error || people.error || scheduleItems.error || venueCatalogs.error || partners.error || passes.error || members.error}</p> : null}
       {route === 'dashboard' && activeProgram && <ProgramWorkspaceDashboard events={activeEvents} orgId={orgId} people={activePeople} program={activeProgram} scheduleItems={activeScheduleItems} setRoute={setRoute} venueCatalog={activeVenueCatalog} />}
       {route === 'dashboard' && !activeProgram && <DashboardPage onCreateProgram={canCreateProgram ? openProgramComposer : undefined} people={people.rows} programs={sortedPrograms} setRoute={setRoute} />}
