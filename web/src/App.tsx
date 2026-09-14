@@ -3617,14 +3617,12 @@ function ProgramDirectoryPage({
   activeOrgId,
   onOpen,
   onCreateProgram,
-  onClose,
 }: {
   profile: PeUser
   user: User
   activeOrgId?: string
   onOpen: (orgId: string, programId: string) => void | Promise<void>
   onCreateProgram?: () => void
-  onClose?: () => void
 }) {
   const { sections, loading } = useProgramDirectory(profile.organizationIds || [], user.uid)
   const [search, setSearch] = useState('')
@@ -3645,13 +3643,13 @@ function ProgramDirectoryPage({
         ? section.programs.filter((program) => [program.name, program.venueName, program.city, section.organization.name].some((value) => (value || '').toLowerCase().includes(searchTerm)))
         : section.programs,
     }))
-    .filter((section) => !searchTerm || section.programs.length > 0)
+    .filter((section) => !searchTerm || section.programs.length > 0 || (section.organization.name || '').toLowerCase().includes(searchTerm))
 
   const [organizationFilter, setOrganizationFilter] = useState('all')
   const filteredSections = visibleSections.filter((section) => organizationFilter === 'all' || section.organization.id === organizationFilter)
   // One grid across organizations instead of a section (and mostly empty row) per organization.
   const programEntries = filteredSections.flatMap((section) => section.programs.map((program) => ({ program, section })))
-  const emptySections = searchTerm ? [] : filteredSections.filter((section) => section.programs.length === 0)
+  const emptySections = filteredSections.filter((section) => section.programs.length === 0)
 
   async function open(orgId: string, programId: string) {
     setError('')
@@ -3678,12 +3676,10 @@ function ProgramDirectoryPage({
           </p>
         </div>
         <div className="page-header-actions">
-          {onClose ? (
-            <button className="secondary-button" onClick={onClose} type="button">
-              <ChevronLeft size={15} />
-              Back to workspace
-            </button>
-          ) : null}
+          <label className="search-field directory-search">
+            <Search size={15} />
+            <input aria-label="Search programs or organizations" onChange={(changeEvent) => setSearch(changeEvent.target.value)} placeholder="Search programs or organizations" type="search" value={search} />
+          </label>
           {onCreateProgram && canCreateAnywhere ? (
             <button className="primary-button" onClick={onCreateProgram} type="button">
               <Plus size={16} />
@@ -3693,7 +3689,7 @@ function ProgramDirectoryPage({
         </div>
       </div>
 
-      {!loading && (sections.length > 1 || totalPrograms > 6) ? (
+      {!loading && sections.length > 1 ? (
         <div className="directory-toolbar">
           {sections.length > 1 ? (
             <div aria-label="Filter programs by organization" className="directory-filters" role="tablist">
@@ -3722,12 +3718,6 @@ function ProgramDirectoryPage({
                 </button>
               ))}
             </div>
-          ) : <span />}
-          {totalPrograms > 6 ? (
-            <label className="search-field directory-search">
-              <Search size={15} />
-              <input aria-label="Search programs" onChange={(changeEvent) => setSearch(changeEvent.target.value)} placeholder="Search programs, venues, organizations" type="search" value={search} />
-            </label>
           ) : null}
         </div>
       ) : null}
@@ -3800,7 +3790,7 @@ function ProgramDirectoryPage({
         </>
       )}
 
-      {!loading && searchTerm && visibleSections.length === 0 ? <p className="muted-note">No programs match “{search.trim()}”.</p> : null}
+      {!loading && searchTerm && visibleSections.length === 0 ? <p className="muted-note">No programs or organizations match “{search.trim()}”.</p> : null}
     </ChooserFrame>
   )
 }
@@ -8143,7 +8133,6 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
     return (
       <ProgramDirectoryPage
         activeOrgId={orgId}
-        onClose={choosingProgram && !needsOrgChoice ? () => setChoosingProgram(false) : undefined}
         onCreateProgram={openComposer}
         onOpen={openProgramFromDirectory}
         profile={profile}
