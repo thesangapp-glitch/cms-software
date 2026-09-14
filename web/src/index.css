@@ -5687,6 +5687,17 @@ button.data-row:hover {
   width: 340px;
 }
 
+/* ---- Create program: single full-width form (no organization picker) ---- */
+
+.composer-layout.single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.composer-form {
+  border-radius: 12px;
+  box-shadow: var(--card-shadow);
+}
+
 /* ---- Workspace tour ---- */
 
 .tour-button {

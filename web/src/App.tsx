@@ -4612,7 +4612,6 @@ function ProgramComposerPage({
     () => organizationOptions.filter((organization) => organization.canCreateProgram),
     [organizationOptions],
   )
-  const readOnlyOrganizations = organizationOptions.length - writableOrganizations.length
 
   const [targetOrgId, setTargetOrgId] = useState('')
 
@@ -4648,11 +4647,6 @@ function ProgramComposerPage({
       || writableOrganizations[0]
     if (preferred) setTargetOrgId(preferred.id)
   }, [activeOrgId, organizationsLoading, targetOrgId, writableOrganizations])
-
-  function selectOrganization(value: string) {
-    setError('')
-    setTargetOrgId(value)
-  }
 
   async function submit(event: FormEvent) {
     event.preventDefault()
@@ -4739,77 +4733,32 @@ function ProgramComposerPage({
     }
   }
 
+  const targetOrganization = writableOrganizations.find((organization) => organization.id === targetOrgId)
+
   return (
     <section className="page-stack">
       <section className="events-command command-premium">
         <div>
           <span className="eyebrow">New program</span>
           <h1>Create a program</h1>
-          <p>Choose the organization that owns this program, then set the dates, venue, and artwork. Events, people, passes, and analytics all live inside it.</p>
+          <p>
+            {targetOrganization ? (
+              <>This program will be created in <strong>{targetOrganization.name}</strong>. Set the dates, venue and artwork — events, people, passes and analytics all live inside it.</>
+            ) : organizationsLoading ? (
+              'Loading your organization…'
+            ) : (
+              'None of your organizations let you create programs yet. Create an organization from the Programs page first.'
+            )}
+          </p>
         </div>
         <button className="secondary-button" onClick={onCancel} type="button">
           Cancel
         </button>
       </section>
 
-      <form className="composer-layout" onSubmit={submit}>
-        <aside className="composer-rail">
-          <div className="composer-rail-head">
-            <span className="eyebrow">Organization</span>
-            <h2>Where does this program belong?</h2>
-            <p>Pick the organization that runs this program.</p>
-          </div>
-
-          {organizationsLoading ? (
-            <p className="composer-rail-note"><Loader2 className="spin" size={14} /> Loading your organizations</p>
-          ) : (
-            <div className="org-option-list">
-              {writableOrganizations.map((organization) => {
-                const selected = targetOrgId === organization.id
-                return (
-                  <button
-                    aria-pressed={selected}
-                    className={selected ? 'org-option selected' : 'org-option'}
-                    key={organization.id}
-                    onClick={() => selectOrganization(organization.id)}
-                    type="button"
-                  >
-                    {organization.logoUrl
-                      ? <img alt="" src={organization.logoUrl} />
-                      : <span className="org-option-mark"><Building2 size={16} /></span>}
-                    <span className="org-option-copy">
-                      <strong>{organization.name}</strong>
-                      <small>{orgTypeLabel(organization)}{organization.id === activeOrgId ? ' · open workspace' : ''}</small>
-                    </span>
-                    {selected && <Check size={16} />}
-                  </button>
-                )
-              })}
-
-            </div>
-          )}
-
-          {!organizationsLoading && writableOrganizations.length === 0 && (
-            <p className="composer-rail-note">None of your organizations let you create programs yet. Create an organization from the Programs page first.</p>
-          )}
-
-          {!organizationsLoading && readOnlyOrganizations > 0 && (
-            <p className="composer-rail-note">
-              {readOnlyOrganizations} more {readOnlyOrganizations === 1 ? 'organization is' : 'organizations are'} linked to this account, but your role there cannot create programs.
-            </p>
-          )}
-        </aside>
-
+      <form className="composer-layout single" onSubmit={submit}>
         <div className="composer-form">
           <div className="form-grid two">
-            <label>
-              Organization
-              <select value={targetOrgId} onChange={(event) => selectOrganization(event.target.value)}>
-                {writableOrganizations.map((organization) => (
-                  <option key={organization.id} value={organization.id}>{organization.name}</option>
-                ))}
-              </select>
-            </label>
             <label>
               Program name
               <input placeholder="Annual Tech Summit 2026" value={name} onChange={(event) => setName(event.target.value)} required />
