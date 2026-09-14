@@ -3701,7 +3701,7 @@ function ProgramDirectoryPage({
                 type="button"
               >
                 All
-                <small>{formatCount(totalPrograms)}</small>
+                <small>{formatCount(visibleSections.reduce((sum, section) => sum + section.programs.length, 0))}</small>
               </button>
               {visibleSections.map((section) => (
                 <button
