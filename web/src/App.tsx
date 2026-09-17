@@ -3508,18 +3508,11 @@ function EventProfilesEditor({
 
   return (
     <section className="profile-editor">
-      <div className="section-mini-head">
-        <div>
-          <span className="eyebrow">Profiles</span>
-          <h3>Speakers, guests, judges, mentors</h3>
-        </div>
-        <span>{profiles.length} added</span>
-      </div>
       <div className="segmented-control">
         {[
-          { key: 'people', label: 'Select from People' },
-          { key: 'create', label: 'Create new Person' },
-          { key: 'team', label: 'Select from Team' },
+          { key: 'people', label: 'From People' },
+          { key: 'create', label: 'New person' },
+          { key: 'team', label: 'From Team' },
         ].map((option) => (
           <button
             className={sourceMode === option.key ? 'active' : ''}
@@ -3645,13 +3638,14 @@ function EventProfilesEditor({
         </label>
         {profileError && <p className="form-error">{profileError}</p>}
         <button className="secondary-button" disabled={profileBusy} onClick={addProfile} type="button">
-          {profileBusy ? <Loader2 className="spin" size={16} /> : <UserRound size={16} />}
-          Add profile
+          {profileBusy ? <Loader2 className="spin" size={15} /> : <Plus size={15} />}
+          Add to event
         </button>
       </div>
 
       {profiles.length > 0 && (
         <div className="profile-list">
+          <span className="field-label">{formatCount(profiles.length)} on this event</span>
           {profiles.map((profile) => (
             <article className="profile-chip-card" key={profile.id}>
               {profile.photoUrl ? <img alt="" src={profile.photoUrl} /> : <div><UserRound size={18} /></div>}
@@ -3659,7 +3653,7 @@ function EventProfilesEditor({
                 <strong>{profile.name}</strong>
                 <small>{profile.role}{profile.organization ? ` - ${profile.organization}` : ''}{profile.email ? ` - ${profile.email}` : ''}</small>
               </span>
-              <button className="icon-button" onClick={() => removeProfile(profile.id)} title="Remove profile" type="button">
+              <button aria-label={`Remove ${profile.name}`} className="icon-button ghost danger-icon" onClick={() => removeProfile(profile.id)} title="Remove from event" type="button">
                 <X size={15} />
               </button>
             </article>
@@ -5882,107 +5876,168 @@ function EventsPage({
             </>
           ) : (
             <>
-              <form className="event-editor-form" onSubmit={submitHandler}>
-                <div className="form-grid two">
-                  <label>
-                    Event name
-                    <input placeholder="Opening keynote" value={eventName} onChange={(event) => setEventName(event.target.value)} required />
-                  </label>
-                  <label>
-                    Event type
-                    <select value={eventType} onChange={(event) => setEventType(event.target.value)}>
-                      {eventTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-                    </select>
-                  </label>
-                  {eventType === 'custom' && (
+              <form className="card section-form event-form" onSubmit={submitHandler}>
+                <section className="form-section">
+                  <div className="form-section-intro">
+                    <h2>Basics</h2>
+                    <p>The name and type attendees see in the Sang app.</p>
+                  </div>
+                  <div className="form-section-fields form-grid two">
                     <label>
-                      Custom event type
-                      <input placeholder="Panel, audition, showcase..." value={customEventType} onChange={(event) => setCustomEventType(event.target.value)} />
+                      Event name
+                      <input placeholder="e.g. Opening keynote" value={eventName} onChange={(event) => setEventName(event.target.value)} required />
                     </label>
-                  )}
-                  <label>
-                    Starts
-                    <input aria-label="Start date time" type="datetime-local" value={startDateTime} onChange={(event) => setStartDateTime(event.target.value)} />
-                  </label>
-                  <label>
-                    Ends
-                    <input aria-label="End date time" type="datetime-local" value={endDateTime} onChange={(event) => setEndDateTime(event.target.value)} />
-                  </label>
-                </div>
-                <ProgramVenueSelector
-                  helper="Only venues saved in this program's venue library are shown here. Add halls or exact rooms later inside Schedule."
-                  label="Event venue"
-                  onAddVenue={() => setVenueModalOpen(true)}
-                  onChoose={chooseEventVenue}
-                  value={eventVenueId}
-                  venues={savedVenues}
-                />
-                <RichTextEditor label="About this event/session" onChange={setEventDescription} placeholder="Write session details, audience notes, bullets, or entry guidance for this specific event." value={eventDescription} />
-                <RichTextEditor label="How to reach this event" onChange={setDirectionsNote} placeholder="Gate, parking, metro, hall route, entry desk, or room-specific directions." value={directionsNote} />
-                <div className="assignment-box">
-                  <span>Access, dates, and results</span>
-                  <div className="form-grid two">
-                    <div className="info-callout">
-                      <Ticket size={17} />
-                      <span>People scan the same program pass. Assign event access from People before opening an event gate.</span>
-                    </div>
-                    <label className="check-row">
-                      <input checked={multiDate} onChange={(event) => setMultiDate(event.target.checked)} type="checkbox" />
-                      <span>This event has multiple dates/times. Add exact blocks in Schedule after saving.</span>
+                    <label>
+                      Event type
+                      <select value={eventType} onChange={(event) => setEventType(event.target.value)}>
+                        {eventTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                      </select>
                     </label>
-                    <label className="check-row">
-                      <input checked={mobileVisible} onChange={(event) => setMobileVisible(event.target.checked)} type="checkbox" />
-                      <span>Show this event in the Sang mobile app after publishing events.</span>
-                    </label>
-                  </div>
-                  <div className="role-access-grid">
-                    {audienceRoles.map((role) => (
-                      <label className="check-row" key={role.id}>
-                        <input
-                          checked={allowedAudienceRoleIds.includes(role.id)}
-                          onChange={(changeEvent) => toggleAllowedRole(role.id, changeEvent.target.checked)}
-                          type="checkbox"
-                        />
-                        <span>{role.name}</span>
+                    {eventType === 'custom' && (
+                      <label>
+                        Custom event type
+                        <input placeholder="e.g. Panel, audition, showcase" value={customEventType} onChange={(event) => setCustomEventType(event.target.value)} />
                       </label>
-                    ))}
+                    )}
                   </div>
-                  {program.competitive && (
+                </section>
+
+                <section className="form-section">
+                  <div className="form-section-intro">
+                    <h2>When and where</h2>
+                    <p>Exact halls and time blocks are added in the schedule after saving.</p>
+                  </div>
+                  <div className="form-section-fields">
                     <div className="form-grid two">
-                      <label className="check-row">
-                        <input checked={competitive} onChange={(event) => { setCompetitive(event.target.checked); if (!event.target.checked) setResultsEnabled(false) }} type="checkbox" />
-                        <span>This event has judging/competition flow</span>
+                      <label>
+                        Starts
+                        <input aria-label="Start date and time" type="datetime-local" value={startDateTime} onChange={(event) => setStartDateTime(event.target.value)} />
                       </label>
-                      <label className="check-row">
-                        <input checked={resultsEnabled} disabled={!competitive} onChange={(event) => setResultsEnabled(event.target.checked)} type="checkbox" />
-                        <span>Results will be published for this event</span>
+                      <label>
+                        Ends
+                        <input aria-label="End date and time" type="datetime-local" value={endDateTime} onChange={(event) => setEndDateTime(event.target.value)} />
                       </label>
                     </div>
-                  )}
-                </div>
-                <ImageUploader folder="event-posters" label="Event poster" onChange={setPosterUrl} uid={uid} value={posterUrl} />
-                <EventProfilesEditor
-                  eventId={selectedEvent?.id || ''}
-                  orgId={orgId}
-                  onAllowedRole={(roleId) => setAllowedAudienceRoleIds((current) => Array.from(new Set([...current, roleId])))}
-                  onChange={setProfiles}
-                  people={people}
-                  profiles={profiles}
-                  program={program}
-                  roles={roles}
-                  teamMembers={teamMembers}
-                  uid={uid}
-                />
-                <div className="action-row">
-                  <button className="secondary-button" onClick={() => selectedEvent ? setEditing(false) : setEditing(false)} type="button">
+                    <label className="toggle-row">
+                      <input checked={multiDate} onChange={(event) => setMultiDate(event.target.checked)} type="checkbox" />
+                      <span>
+                        <strong>Runs across several days</strong>
+                        <small>Add each day's time blocks in the schedule.</small>
+                      </span>
+                    </label>
+                    <ProgramVenueSelector
+                      helper="Pick from this program's saved venues."
+                      label="Venue"
+                      onAddVenue={() => setVenueModalOpen(true)}
+                      onChoose={chooseEventVenue}
+                      value={eventVenueId}
+                      venues={savedVenues}
+                    />
+                  </div>
+                </section>
+
+                <section className="form-section">
+                  <div className="form-section-intro">
+                    <h2>Poster</h2>
+                    <p>Artwork for the event card in the Sang app.</p>
+                  </div>
+                  <div className="form-section-fields event-poster-field">
+                    <ImageUploader folder="event-posters" label="Poster" onChange={setPosterUrl} uid={uid} value={posterUrl} />
+                  </div>
+                </section>
+
+                <section className="form-section">
+                  <div className="form-section-intro">
+                    <h2>Description</h2>
+                    <p>What attendees read on the event page.</p>
+                  </div>
+                  <div className="form-section-fields">
+                    <RichTextEditor label="About this event" onChange={setEventDescription} placeholder="What happens, who it's for, and what to bring." value={eventDescription} />
+                    <RichTextEditor label="How to get there" onChange={setDirectionsNote} placeholder="Gate, hall route, entry desk or room directions." value={directionsNote} />
+                  </div>
+                </section>
+
+                <section className="form-section">
+                  <div className="form-section-intro">
+                    <h2>Access</h2>
+                    <p>Everyone uses their program pass. Event access is checked at the gate.</p>
+                  </div>
+                  <div className="form-section-fields">
+                    <div className="field-group">
+                      <span className="field-label">Who can attend</span>
+                      <div className="check-chip-grid">
+                        {audienceRoles.map((role) => (
+                          <label className="check-chip" key={role.id}>
+                            <input
+                              checked={allowedAudienceRoleIds.includes(role.id)}
+                              onChange={(changeEvent) => toggleAllowedRole(role.id, changeEvent.target.checked)}
+                              type="checkbox"
+                            />
+                            <span>{role.name}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                    <label className="toggle-row">
+                      <input checked={mobileVisible} onChange={(event) => setMobileVisible(event.target.checked)} type="checkbox" />
+                      <span>
+                        <strong>Show in the Sang app</strong>
+                        <small>Attendees see it after you publish events.</small>
+                      </span>
+                    </label>
+                    {program.competitive && (
+                      <>
+                        <label className="toggle-row">
+                          <input checked={competitive} onChange={(event) => { setCompetitive(event.target.checked); if (!event.target.checked) setResultsEnabled(false) }} type="checkbox" />
+                          <span>
+                            <strong>Competitive event</strong>
+                            <small>Includes judging rounds.</small>
+                          </span>
+                        </label>
+                        <label className="toggle-row">
+                          <input checked={resultsEnabled} disabled={!competitive} onChange={(event) => setResultsEnabled(event.target.checked)} type="checkbox" />
+                          <span>
+                            <strong>Publish results</strong>
+                            <small>Winners are shared with attendees.</small>
+                          </span>
+                        </label>
+                      </>
+                    )}
+                  </div>
+                </section>
+
+                <section className="form-section">
+                  <div className="form-section-intro">
+                    <h2>Speakers and profiles</h2>
+                    <p>Speakers, judges, mentors and guests shown on the event page.</p>
+                  </div>
+                  <div className="form-section-fields">
+                    <EventProfilesEditor
+                      eventId={selectedEvent?.id || ''}
+                      orgId={orgId}
+                      onAllowedRole={(roleId) => setAllowedAudienceRoleIds((current) => Array.from(new Set([...current, roleId])))}
+                      onChange={setProfiles}
+                      people={people}
+                      profiles={profiles}
+                      program={program}
+                      roles={roles}
+                      teamMembers={teamMembers}
+                      uid={uid}
+                    />
+                  </div>
+                </section>
+
+                <div className="form-footer">
+                  <button className="secondary-button" onClick={() => setEditing(false)} type="button">
                     Cancel
                   </button>
                   <button className="primary-button" disabled={busy} type="submit">
-                    {busy ? <Loader2 className="spin" size={17} /> : <Check size={17} />}
+                    {busy ? <Loader2 className="spin" size={15} /> : <Check size={15} />}
                     {selectedEvent ? 'Save event' : 'Create event'}
                   </button>
                 </div>
               </form>
+
               <VenueLibraryModal
                 orgId={orgId}
                 onClose={() => setVenueModalOpen(false)}
