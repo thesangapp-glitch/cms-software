@@ -22,6 +22,7 @@ import {
   LayoutDashboard,
   Link2,
   List,
+  LocateFixed,
   ListOrdered,
   Loader2,
   Lock,
@@ -2345,20 +2346,40 @@ function MapPicker({
   const containerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<L.Map | null>(null)
   const markerRef = useRef<L.Marker | null>(null)
+  const onPickRef = useRef(onPick)
+  const initialPointRef = useRef<[number, number] | null>(typeof lat === 'number' && typeof lng === 'number' ? [lat, lng] : null)
   const [searching, setSearching] = useState(false)
   const [locating, setLocating] = useState(false)
   const [suggestions, setSuggestions] = useState<LocationSuggestion[]>([])
   const [searchError, setSearchError] = useState('')
+  const pinText = typeof lat === 'number' && typeof lng === 'number' ? `Pinned at ${lat.toFixed(5)}, ${lng.toFixed(5)}` : ''
 
   useEffect(() => {
-    if (!containerRef.current || mapRef.current) return
+    onPickRef.current = onPick
+  }, [onPick])
 
-    const start: L.LatLngExpression = [lat || 28.6139, lng || 77.209]
-    const map = L.map(containerRef.current, { zoomControl: false }).setView(start, lat && lng ? 14 : 5)
+  const dropPin = useCallback((point: L.LatLng, zoom?: number) => {
+    const map = mapRef.current
+    const marker = markerRef.current
+    if (!map || !marker) return
+    marker.setLatLng(point)
+    marker.setOpacity(1)
+    if (zoom) map.setView(point, zoom)
+    onPickRef.current({ latitude: Number(point.lat.toFixed(6)), longitude: Number(point.lng.toFixed(6)) })
+  }, [])
+
+  // Create the map once per mount. With no saved point it opens on India with
+  // the pin hidden until the organizer searches, clicks, or uses their location.
+  useEffect(() => {
+    if (!containerRef.current) return
+    const initialPoint = initialPointRef.current
+    const start: L.LatLngExpression = initialPoint || [22.5937, 78.9629]
+    const map = L.map(containerRef.current, { zoomControl: false }).setView(start, initialPoint ? 15 : 4)
     L.control.zoom({ position: 'bottomright' }).addTo(map)
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; OpenStreetMap',
-      maxZoom: 19,
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+      subdomains: 'abcd',
+      maxZoom: 20,
     }).addTo(map)
     const pinIcon = L.divIcon({
       className: 'map-pin-marker',
@@ -2366,32 +2387,32 @@ function MapPicker({
       iconAnchor: [14, 28],
       iconSize: [28, 28],
     })
-    const marker = L.marker(start, { draggable: true, icon: pinIcon }).addTo(map)
-
-    function commit(point: L.LatLng) {
-      marker.setLatLng(point)
-      onPick({ latitude: Number(point.lat.toFixed(6)), longitude: Number(point.lng.toFixed(6)) })
-    }
-
-    map.on('click', (event: L.LeafletMouseEvent) => commit(event.latlng))
-    marker.on('dragend', () => commit(marker.getLatLng()))
+    const marker = L.marker(start, { draggable: true, icon: pinIcon, opacity: initialPoint ? 1 : 0 }).addTo(map)
     mapRef.current = map
     markerRef.current = marker
-
-    if (!lat && !lng && 'geolocation' in navigator) {
-      setLocating(true)
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          const point = L.latLng(position.coords.latitude, position.coords.longitude)
-          commit(point)
-          map.setView(point, 15)
-          setLocating(false)
-        },
-        () => setLocating(false),
-        { enableHighAccuracy: true, maximumAge: 120000, timeout: 8000 },
-      )
+    map.on('click', (event: L.LeafletMouseEvent) => dropPin(event.latlng))
+    marker.on('dragend', () => dropPin(marker.getLatLng()))
+    return () => {
+      map.remove()
+      mapRef.current = null
+      markerRef.current = null
     }
-  }, [lat, lng, onPick])
+  }, [dropPin])
+
+  // Keep the pin in sync when the form loads or clears a venue.
+  useEffect(() => {
+    const map = mapRef.current
+    const marker = markerRef.current
+    if (!map || !marker) return
+    if (lat === undefined || lng === undefined) {
+      marker.setOpacity(0)
+      return
+    }
+    const next: L.LatLngExpression = [lat, lng]
+    marker.setLatLng(next)
+    marker.setOpacity(1)
+    map.setView(next, Math.max(map.getZoom(), 13))
+  }, [lat, lng])
 
   useEffect(() => {
     const queryText = venue.trim()
@@ -2420,7 +2441,7 @@ function MapPicker({
         setSuggestions(data)
       } catch (locationError) {
         if ((locationError as { name?: string }).name !== 'AbortError') {
-          setSearchError('Could not search locations right now.')
+          setSearchError('Location search is unavailable right now. You can still click the map to drop a pin.')
         }
       } finally {
         if (!controller.signal.aborted) setSearching(false)
@@ -2434,37 +2455,41 @@ function MapPicker({
   }, [venue])
 
   function chooseSuggestion(suggestion: LocationSuggestion) {
-    const latitude = Number(suggestion.lat)
-    const longitude = Number(suggestion.lon)
     onVenueChange(suggestion.display_name)
-    onPick({ latitude, longitude })
     setSuggestions([])
-    const next: L.LatLngExpression = [latitude, longitude]
-    markerRef.current?.setLatLng(next)
-    mapRef.current?.setView(next, 15)
+    dropPin(L.latLng(Number(suggestion.lat), Number(suggestion.lon)), 16)
   }
 
-  useEffect(() => {
-    if (!mapRef.current || !markerRef.current || lat === undefined || lng === undefined) return
-    const next: L.LatLngExpression = [lat, lng]
-    markerRef.current.setLatLng(next)
-    mapRef.current.setView(next, Math.max(mapRef.current.getZoom(), 13))
-  }, [lat, lng])
+  function locateMe() {
+    if (!('geolocation' in navigator)) {
+      setSearchError('This browser cannot share your location.')
+      return
+    }
+    setSearchError('')
+    setLocating(true)
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        dropPin(L.latLng(position.coords.latitude, position.coords.longitude), 16)
+        setLocating(false)
+      },
+      () => {
+        setSearchError('Could not get your location. Search for the venue or click the map instead.')
+        setLocating(false)
+      },
+      { enableHighAccuracy: true, maximumAge: 120000, timeout: 8000 },
+    )
+  }
 
   return (
     <div className="map-picker">
       <div className="location-search">
-        <label>
-          {label}
-          <span className="location-input-wrap">
-            <Search size={16} />
-            <input placeholder="Search venue, city, hotel, campus, hall..." value={venue} onChange={(event) => onVenueChange(event.target.value)} />
-          </span>
+        <label className="search-field map-search">
+          <Search size={15} />
+          <input aria-label={label} placeholder="Search for the venue or address" value={venue} onChange={(event) => onVenueChange(event.target.value)} />
         </label>
-        {(suggestions.length > 0 || searching || searchError) && (
+        {(suggestions.length > 0 || searching) && (
           <div className="location-results">
-            {searching && <span className="location-result muted"><Loader2 className="spin" size={15} /> Searching...</span>}
-            {searchError && <span className="location-result muted">{searchError}</span>}
+            {searching && <span className="location-result muted"><Loader2 className="spin" size={15} /> Searching…</span>}
             {suggestions.map((suggestion) => (
               <button className="location-result" key={suggestion.place_id} onClick={() => chooseSuggestion(suggestion)} type="button">
                 <MapPin size={15} />
@@ -2478,12 +2503,194 @@ function MapPicker({
         )}
       </div>
       <div className="map-canvas" ref={containerRef} />
-      <div className="coordinate-row">
-        <span>Lat {lat?.toFixed(5) || '-'}</span>
-        <span>Lng {lng?.toFixed(5) || '-'}</span>
-        {locating && <span><Loader2 className="spin" size={12} /> Current location</span>}
+      <div className="map-status">
+        <span className={pinText ? 'inline-icon-text on' : 'inline-icon-text'}>
+          <MapPin size={13} />
+          {pinText || 'Search above or click the map to drop a pin.'}
+        </span>
+        <button className="text-link" disabled={locating} onClick={locateMe} type="button">
+          {locating ? <Loader2 className="spin" size={13} /> : <LocateFixed size={13} />}
+          {locating ? 'Locating…' : 'Use my location'}
+        </button>
       </div>
+      {searchError ? <p className="form-error">{searchError}</p> : null}
     </div>
+  )
+}
+
+type VenueRoomDraft = { id?: string; name: string; floor: string; capacity: string }
+
+const emptyVenueRoom = (): VenueRoomDraft => ({ name: '', floor: '', capacity: '' })
+
+// Saved venues shown above the venue form, with optional "Use" for pickers.
+function SavedVenueList({
+  venues,
+  activeId,
+  busy = false,
+  onUse,
+  onEdit,
+  onDelete,
+}: {
+  venues: ProgramVenue[]
+  activeId: string
+  busy?: boolean
+  onUse?: (venue: ProgramVenue) => void
+  onEdit: (venue: ProgramVenue) => void
+  onDelete: (venue: ProgramVenue) => void
+}) {
+  if (venues.length === 0) return null
+  return (
+    <div className="venue-saved">
+      <span className="drawer-section-label">Saved venues</span>
+      {venues.map((venue) => {
+        const hallCount = venue.rooms?.length || 0
+        return (
+          <div className={activeId === venue.id ? 'venue-saved-row active' : 'venue-saved-row'} key={venue.id}>
+            <span className="venue-card-icon small"><MapPin size={14} /></span>
+            <span className="cell-main">
+              <strong title={venue.name}>{venue.name}</strong>
+              <small>{venue.address || 'No address yet'} · {formatCount(hallCount)} hall{hallCount === 1 ? '' : 's'}</small>
+            </span>
+            <div className="table-actions">
+              {onUse ? (
+                <button className="secondary-button compact-button" onClick={() => onUse(venue)} type="button">
+                  Use
+                </button>
+              ) : null}
+              <button aria-label={`Edit ${venue.name}`} className="icon-button ghost" onClick={() => onEdit(venue)} title="Edit venue" type="button">
+                <Pencil size={15} />
+              </button>
+              <button aria-label={`Delete ${venue.name}`} className="icon-button ghost danger-icon" disabled={busy} onClick={() => onDelete(venue)} title="Delete venue" type="button">
+                <Trash2 size={15} />
+              </button>
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// The venue form shared by the venue library and the Create program venue picker.
+function VenueEditorForm({
+  editingName,
+  name,
+  address,
+  directionsNote,
+  latitude,
+  longitude,
+  rooms,
+  busy = false,
+  error,
+  onNameChange,
+  onAddressChange,
+  onDirectionsChange,
+  onPick,
+  onRoomsChange,
+  onSubmit,
+  onCancel,
+  onStartNew,
+}: {
+  editingName: string
+  name: string
+  address: string
+  directionsNote: string
+  latitude?: number
+  longitude?: number
+  rooms: VenueRoomDraft[]
+  busy?: boolean
+  error: string
+  onNameChange: (value: string) => void
+  onAddressChange: (value: string) => void
+  onDirectionsChange: (value: string) => void
+  onPick: (point: { latitude: number; longitude: number }) => void
+  onRoomsChange: (rooms: VenueRoomDraft[]) => void
+  onSubmit: (event: FormEvent) => void
+  onCancel: () => void
+  onStartNew: () => void
+}) {
+  function updateRoom(index: number, key: 'name' | 'floor' | 'capacity', value: string) {
+    onRoomsChange(rooms.map((room, roomIndex) => (roomIndex === index ? { ...room, [key]: value } : room)))
+  }
+
+  function removeRoom(index: number) {
+    onRoomsChange(rooms.length === 1 ? [emptyVenueRoom()] : rooms.filter((_, roomIndex) => roomIndex !== index))
+  }
+
+  return (
+    <form className="venue-form" onSubmit={onSubmit}>
+      <div className="venue-form-head">
+        <div>
+          <h3>{editingName ? `Edit ${editingName}` : 'Venue details'}</h3>
+          <p>{editingName ? 'Changes apply to new schedule blocks.' : 'Name the place, pin it on the map, then list its halls.'}</p>
+        </div>
+        {editingName ? (
+          <button className="text-link" onClick={onStartNew} type="button">
+            <Plus size={14} />
+            New venue
+          </button>
+        ) : null}
+      </div>
+      {error ? <p className="form-error">{error}</p> : null}
+
+      <div className="field-pair">
+        <label>
+          Venue name
+          <input placeholder="e.g. Main campus" required value={name} onChange={(event) => onNameChange(event.target.value)} />
+        </label>
+        <label>
+          Address
+          <input placeholder="Street, area, city" value={address} onChange={(event) => onAddressChange(event.target.value)} />
+        </label>
+      </div>
+
+      <MapPicker
+        label="Find the venue on the map"
+        lat={latitude}
+        lng={longitude}
+        onPick={onPick}
+        onVenueChange={(nextVenue) => {
+          onAddressChange(nextVenue)
+          if (!name.trim()) onNameChange(nextVenue.split(',')[0] || nextVenue)
+        }}
+        venue={address}
+      />
+
+      <div className="rooms-editor">
+        <div className="rooms-editor-head">
+          <div>
+            <strong>Halls and rooms</strong>
+            <small>Optional. Used when you build the schedule.</small>
+          </div>
+          <button className="secondary-button compact-button" onClick={() => onRoomsChange([...rooms, emptyVenueRoom()])} type="button">
+            <Plus size={14} />
+            Add hall
+          </button>
+        </div>
+        {rooms.map((room, index) => (
+          <div className="room-row" key={room.id || index}>
+            <input aria-label="Hall or room name" placeholder="e.g. Hall A" value={room.name} onChange={(event) => updateRoom(index, 'name', event.target.value)} />
+            <input aria-label="Floor or block" placeholder="Floor or block" value={room.floor} onChange={(event) => updateRoom(index, 'floor', event.target.value)} />
+            <input aria-label="Seats" inputMode="numeric" placeholder="Seats" value={room.capacity} onChange={(event) => updateRoom(index, 'capacity', event.target.value.replace(/\D/g, ''))} />
+            <button aria-label="Remove hall" className="icon-button ghost danger-icon" onClick={() => removeRoom(index)} title="Remove hall" type="button">
+              <Trash2 size={15} />
+            </button>
+          </div>
+        ))}
+      </div>
+
+      <RichTextEditor label="Directions for attendees" onChange={onDirectionsChange} placeholder="Gate, parking, metro and entry desk notes." value={directionsNote} />
+
+      <div className="venue-form-foot">
+        <button className="secondary-button" onClick={onCancel} type="button">
+          Close
+        </button>
+        <button className="primary-button" disabled={busy} type="submit">
+          {busy ? <Loader2 className="spin" size={15} /> : <Save size={15} />}
+          {editingName ? 'Save changes' : 'Save venue'}
+        </button>
+      </div>
+    </form>
   )
 }
 
@@ -2540,14 +2747,6 @@ function VenueLibraryModal({
       capacity: room.capacity === undefined ? '' : String(room.capacity),
     })))
     setError('')
-  }
-
-  function updateRoom(index: number, key: 'name' | 'floor' | 'capacity', value: string) {
-    setRooms((current) => current.map((room, roomIndex) => roomIndex === index ? { ...room, [key]: value } : room))
-  }
-
-  function removeRoom(index: number) {
-    setRooms((current) => current.length === 1 ? [{ name: '', floor: '', capacity: '' }] : current.filter((_, roomIndex) => roomIndex !== index))
   }
 
   async function saveVenue(event: FormEvent) {
@@ -2610,88 +2809,40 @@ function VenueLibraryModal({
     }
   }
 
-  return (
-    <Modal eyebrow="Venue library" onClose={onClose} open={open} title="Manage saved venues" wide>
-      <div className="venue-library-layout">
-        <section className="venue-library-list">
-          {venues.length === 0 ? (
-            <EmptyState title="No saved venues yet" body="Add campuses, auditoriums, halls, stages, rooms, or booth zones once, then reuse them while building schedules." />
-          ) : (
-            venues.map((venue) => (
-              <article className={editingVenueId === venue.id ? 'venue-library-card active' : 'venue-library-card'} key={venue.id}>
-                <div>
-                  <strong>{venue.name}</strong>
-                  <span>{venue.address || 'Address pending'}</span>
-                  <small>{venue.rooms?.length ? venue.rooms.map((room) => room.name).join(', ') : 'No rooms added'}</small>
-                </div>
-                <div className="table-actions">
-                  <button className="icon-button" onClick={() => editVenue(venue)} title="Edit venue" type="button"><Pencil size={16} /></button>
-                  <button className="icon-button danger-icon" disabled={busy} onClick={() => deleteVenue(venue)} title="Delete venue" type="button"><Trash2 size={16} /></button>
-                </div>
-              </article>
-            ))
-          )}
-        </section>
+  function startNewVenue() {
+    setEditingVenueId('')
+    setName('')
+    setAddress('')
+    setDirectionsNote('')
+    setRooms([emptyVenueRoom()])
+    setError('')
+  }
 
-        <form className="venue-library-form" onSubmit={saveVenue}>
-          <div className="panel-heading compact-heading">
-            <div>
-              <span className="eyebrow">{editingVenueId ? 'Edit saved venue' : 'Add venue'}</span>
-              <h2>{editingVenueId ? 'Update venue details' : 'New venue'}</h2>
-            </div>
-            {editingVenueId && (
-              <button className="secondary-button subtle-button" onClick={() => { setEditingVenueId(''); setName(''); setAddress(''); setDirectionsNote(''); setRooms([{ name: '', floor: '', capacity: '' }]) }} type="button">
-                New
-              </button>
-            )}
-          </div>
-          {error && <p className="form-error">{error}</p>}
-          <div className="form-grid two">
-            <label>
-              Venue name
-              <input placeholder="Main Auditorium, OAT, Convocation Hall" value={name} onChange={(event) => setName(event.target.value)} required />
-            </label>
-            <label>
-              Address / campus
-              <input placeholder="IIT Roorkee, Civil Lines..." value={address} onChange={(event) => setAddress(event.target.value)} />
-            </label>
-          </div>
-          <MapPicker
-            label="Search or pin venue on map"
-            lat={latitude}
-            lng={longitude}
-            onPick={(point) => { setLatitude(point.latitude); setLongitude(point.longitude) }}
-            onVenueChange={(nextVenue) => { setAddress(nextVenue); if (!name.trim()) setName(nextVenue.split(',')[0] || nextVenue) }}
-            venue={address}
-          />
-          <RichTextEditor
-            label="How to reach this venue"
-            onChange={setDirectionsNote}
-            placeholder="Gate instructions, parking, metro, hall route, entry desk notes..."
-            value={directionsNote}
-          />
-          <div className="rooms-editor">
-            <div className="section-mini-head">
-              <span>Rooms, halls, stages</span>
-              <button className="secondary-button subtle-button" onClick={() => setRooms((current) => [...current, { name: '', floor: '', capacity: '' }])} type="button">
-                <Plus size={15} />
-                Add room
-              </button>
-            </div>
-            {rooms.map((room, index) => (
-              <div className="room-row" key={room.id || index}>
-                <input placeholder="Hall A, Stage 2, Poster Zone" value={room.name} onChange={(event) => updateRoom(index, 'name', event.target.value)} />
-                <input placeholder="Floor / block" value={room.floor} onChange={(event) => updateRoom(index, 'floor', event.target.value)} />
-                <input inputMode="numeric" placeholder="Capacity" value={room.capacity} onChange={(event) => updateRoom(index, 'capacity', event.target.value.replace(/\D/g, ''))} />
-                <button className="icon-button danger-icon" onClick={() => removeRoom(index)} title="Remove room row" type="button"><Trash2 size={15} /></button>
-              </div>
-            ))}
-          </div>
-          <button className="primary-button" disabled={busy} type="submit">
-            {busy ? <Loader2 className="spin" size={17} /> : <Save size={17} />}
-            Save venue
-          </button>
-        </form>
+  const editingVenue = venues.find((venue) => venue.id === editingVenueId)
+
+  return (
+    <Modal onClose={onClose} open={open} title={editingVenue ? 'Edit venue' : 'Venues'}>
+      <div className="venue-modal">
+        <SavedVenueList activeId={editingVenueId} busy={busy} onDelete={deleteVenue} onEdit={editVenue} venues={venues} />
+        <VenueEditorForm
+          address={address}
+          busy={busy}
+          directionsNote={directionsNote}
+          editingName={editingVenue?.name || ''}
+          error={error}
+          latitude={latitude}
+          longitude={longitude}
+          name={name}
+          onAddressChange={setAddress}
+          onCancel={onClose}
+          onDirectionsChange={setDirectionsNote}
+          onNameChange={setName}
+          onPick={(point) => { setLatitude(point.latitude); setLongitude(point.longitude) }}
+          onRoomsChange={setRooms}
+          onStartNew={startNewVenue}
+          onSubmit={saveVenue}
+          rooms={rooms}
+        />
       </div>
     </Modal>
   )
@@ -2798,14 +2949,6 @@ function DraftVenueLibraryModal({
     setRooms([{ name: '', floor: '', capacity: '' }])
   }
 
-  function updateRoom(index: number, key: 'name' | 'floor' | 'capacity', value: string) {
-    setRooms((current) => current.map((room, roomIndex) => roomIndex === index ? { ...room, [key]: value } : room))
-  }
-
-  function removeRoom(index: number) {
-    setRooms((current) => current.length === 1 ? [{ name: '', floor: '', capacity: '' }] : current.filter((_, roomIndex) => roomIndex !== index))
-  }
-
   function saveDraftVenue(event: FormEvent) {
     event.preventDefault()
     setError('')
@@ -2836,89 +2979,36 @@ function DraftVenueLibraryModal({
     if (editingVenueId === venue.id) resetForm()
   }
 
-  return (
-    <Modal eyebrow="Program venue" onClose={onClose} open={open} title="Add or select venue" wide>
-      <div className="venue-library-layout">
-        <section className="venue-library-list">
-          {venues.length === 0 ? (
-            <EmptyState title="No draft venues yet" body="Add the main campus, auditorium, hotel, hall, or venue zone. The selected venue will be saved with this program." />
-          ) : (
-            venues.map((venue) => (
-              <article className={editingVenueId === venue.id ? 'venue-library-card active' : 'venue-library-card'} key={venue.id}>
-                <div>
-                  <strong>{venue.name}</strong>
-                  <span>{venue.address || 'Address pending'}</span>
-                  <small>{venue.rooms?.length ? venue.rooms.map((room) => room.name).join(', ') : 'No rooms added'}</small>
-                </div>
-                <div className="table-actions">
-                  <button className="icon-button" onClick={() => { onSaved(venue); onClose() }} title="Use this venue" type="button"><Check size={16} /></button>
-                  <button className="icon-button" onClick={() => editVenue(venue)} title="Edit venue" type="button"><Pencil size={16} /></button>
-                  <button className="icon-button danger-icon" onClick={() => deleteDraftVenue(venue)} title="Delete venue" type="button"><Trash2 size={16} /></button>
-                </div>
-              </article>
-            ))
-          )}
-        </section>
+  const editingVenue = venues.find((venue) => venue.id === editingVenueId)
 
-        <form className="venue-library-form" onSubmit={saveDraftVenue}>
-          <div className="panel-heading compact-heading">
-            <div>
-              <span className="eyebrow">{editingVenueId ? 'Edit venue' : 'Add venue'}</span>
-              <h2>{editingVenueId ? 'Update draft venue' : 'New program venue'}</h2>
-            </div>
-            {editingVenueId && (
-              <button className="secondary-button subtle-button" onClick={resetForm} type="button">
-                New
-              </button>
-            )}
-          </div>
-          {error && <p className="form-error">{error}</p>}
-          <div className="form-grid two">
-            <label>
-              Venue name
-              <input placeholder="Main Auditorium, Convention Center, Campus" value={name} onChange={(event) => setName(event.target.value)} required />
-            </label>
-            <label>
-              Address / campus
-              <input placeholder="Search below or enter address" value={address} onChange={(event) => setAddress(event.target.value)} />
-            </label>
-          </div>
-          <MapPicker
-            label="Search or pin venue on map"
-            lat={latitude}
-            lng={longitude}
-            onPick={(point) => { setLatitude(point.latitude); setLongitude(point.longitude) }}
-            onVenueChange={(nextVenue) => { setAddress(nextVenue); if (!name.trim()) setName(nextVenue.split(',')[0] || nextVenue) }}
-            venue={address}
-          />
-          <RichTextEditor
-            label="How to reach this venue"
-            onChange={setDirectionsNote}
-            placeholder="Gate instructions, parking, metro, hall route, entry desk notes..."
-            value={directionsNote}
-          />
-          <div className="rooms-editor">
-            <div className="section-mini-head">
-              <span>Optional halls, rooms, stages</span>
-              <button className="secondary-button subtle-button" onClick={() => setRooms((current) => [...current, { name: '', floor: '', capacity: '' }])} type="button">
-                <Plus size={15} />
-                Add room
-              </button>
-            </div>
-            {rooms.map((room, index) => (
-              <div className="room-row" key={room.id || index}>
-                <input placeholder="Hall A, Stage 2, Poster Zone" value={room.name} onChange={(event) => updateRoom(index, 'name', event.target.value)} />
-                <input placeholder="Floor / block" value={room.floor} onChange={(event) => updateRoom(index, 'floor', event.target.value)} />
-                <input inputMode="numeric" placeholder="Capacity" value={room.capacity} onChange={(event) => updateRoom(index, 'capacity', event.target.value.replace(/\D/g, ''))} />
-                <button className="icon-button danger-icon" onClick={() => removeRoom(index)} title="Remove room row" type="button"><Trash2 size={15} /></button>
-              </div>
-            ))}
-          </div>
-          <button className="primary-button" type="submit">
-            <Save size={17} />
-            Save venue
-          </button>
-        </form>
+  return (
+    <Modal onClose={onClose} open={open} title={editingVenue ? 'Edit venue' : 'Add venue'}>
+      <div className="venue-modal">
+        <SavedVenueList
+          activeId={editingVenueId}
+          onDelete={deleteDraftVenue}
+          onEdit={editVenue}
+          onUse={(venue) => { onSaved(venue); onClose() }}
+          venues={venues}
+        />
+        <VenueEditorForm
+          address={address}
+          directionsNote={directionsNote}
+          editingName={editingVenue?.name || ''}
+          error={error}
+          latitude={latitude}
+          longitude={longitude}
+          name={name}
+          onAddressChange={setAddress}
+          onCancel={onClose}
+          onDirectionsChange={setDirectionsNote}
+          onNameChange={setName}
+          onPick={(point) => { setLatitude(point.latitude); setLongitude(point.longitude) }}
+          onRoomsChange={setRooms}
+          onStartNew={resetForm}
+          onSubmit={saveDraftVenue}
+          rooms={rooms}
+        />
       </div>
     </Modal>
   )

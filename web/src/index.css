@@ -6568,6 +6568,169 @@ a:focus-visible,
   }
 }
 
+/* ---- Venue modal (library + Create program picker) ---- */
+
+.venue-modal {
+  display: grid;
+  gap: 20px;
+}
+
+.venue-saved {
+  display: grid;
+  gap: 8px;
+}
+
+.venue-saved-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.venue-saved-row.active {
+  border-color: var(--accent);
+  background: #f5f7ff;
+}
+
+.venue-saved-row .cell-main {
+  flex: 1 1 auto;
+}
+
+.venue-card-icon.small {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+}
+
+.venue-saved + .venue-form {
+  padding-top: 20px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.venue-form {
+  display: grid;
+  gap: 16px;
+}
+
+.venue-form-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.venue-form-head h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.venue-form-head p {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.venue-form-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.map-picker {
+  display: grid;
+  gap: 10px;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+.map-search {
+  width: 100%;
+}
+
+.map-canvas {
+  height: 260px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.map-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.map-status .text-link {
+  gap: 5px;
+  font-size: 12.5px;
+}
+
+.location-results {
+  border-color: var(--line);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.12);
+}
+
+.location-result:hover {
+  background: #f5f7ff;
+}
+
+.rooms-editor {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+.rooms-editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.rooms-editor-head div {
+  display: grid;
+  gap: 2px;
+}
+
+.rooms-editor-head strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.rooms-editor-head small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.room-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1.3fr) 96px 34px;
+  align-items: center;
+  gap: 8px;
+}
+
+@media (max-width: 720px) {
+  .room-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 34px;
+  }
+
+  .room-row input:first-child {
+    grid-column: 1 / -1;
+  }
+}
+
 /* ---- Workspace tour ---- */
 
 .tour-button {
