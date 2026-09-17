@@ -842,6 +842,25 @@ async function uploadEventImage(uid: string, file: File, folder: string) {
   return getDownloadURL(fileRef)
 }
 
+const landingSessionKey = 'sang-crm-landed'
+
+function readSessionValue(key: string) {
+  try {
+    return window.sessionStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
+function writeSessionValue(key: string, value: string | null) {
+  try {
+    if (value === null) window.sessionStorage.removeItem(key)
+    else window.sessionStorage.setItem(key, value)
+  } catch {
+    // Storage can be unavailable (private mode); landing then happens on every load.
+  }
+}
+
 function readHashRoute(): RouteKey {
   const key = window.location.hash.replace('#/', '') as RouteKey
   return routeLabels[key] ? key : 'dashboard'
@@ -1693,6 +1712,12 @@ function Shell({
             <span className="crumb-current">{routeLabels[route]}</span>
           </nav>
           <div className="topbar-actions">
+            {route !== 'home' ? (
+              <button className="secondary-button compact-button" onClick={() => setRoute('home')} title="See every program you can open" type="button">
+                <LayoutGrid size={14} />
+                All programs
+              </button>
+            ) : null}
             {pendingPublishCount > 0 ? (
               <button className="publish-chip" onClick={() => setRoute('dashboard')} title="Open publishing on the dashboard" type="button">
                 <UploadCloud size={14} />
@@ -8545,9 +8570,12 @@ function PassPreview({ payload, passCode }: { payload: string; passCode?: string
 }
 
 function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; profile: PeUser; setProfile: (profile: PeUser) => void }) {
-  const [route, setRouteState] = useState<RouteKey>(readHashRoute)
+  // Every sign-in starts on All programs; reloads within the session keep the current page.
+  const [landed] = useState(() => readSessionValue(landingSessionKey) === firebaseUser.uid)
+  const [route, setRouteState] = useState<RouteKey>(() => (landed ? readHashRoute() : 'home'))
   const [selectedProgramId, setSelectedProgramId] = useState(() => window.localStorage.getItem('sang-crm-selected-program') || '')
-  const [needsOrgChoice, setNeedsOrgChoice] = useState(() => profile.organizationIds.length > 1 && window.localStorage.getItem('sang-crm-org-choice-confirmed') !== profile.activeOrgId)
+  // All programs is the landing page, so the full-screen chooser is only reached from openProgramFromDirectory callers.
+  const [needsOrgChoice, setNeedsOrgChoice] = useState(false)
   // Opened from the top bar / sidebar switchers; closes back to the current workspace.
   const [choosingProgram, setChoosingProgram] = useState(false)
   const [tourOpen, setTourOpen] = useState(false)
@@ -8643,6 +8671,12 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
   }, [orgQuery])
 
   useEffect(() => {
+    if (landed) return
+    writeSessionValue(landingSessionKey, firebaseUser.uid)
+    if (window.location.hash !== '#/home') window.location.hash = '/home'
+  }, [firebaseUser.uid, landed])
+
+  useEffect(() => {
     const onHashChange = () => setRouteState(readHashRoute())
     window.addEventListener('hashchange', onHashChange)
     return () => window.removeEventListener('hashchange', onHashChange)
@@ -8666,7 +8700,8 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
 
   const sortedPrograms = [...programs.rows].sort((a, b) => a.startDate.localeCompare(b.startDate))
   const selectedProgram = sortedPrograms.find((program) => program.id === selectedProgramId) || null
-  const shouldChooseProgram = !programs.loading && !selectedProgram && sortedPrograms.length > 1 && route !== 'programs' && route !== 'programCreate' && route !== 'home'
+  const onHome = route === 'home'
+  const shouldChooseProgram = !programs.loading && !selectedProgram && sortedPrograms.length > 1 && route !== 'programs' && route !== 'programCreate' && !onHome
   const activeProgram = selectedProgram || (sortedPrograms.length === 1 ? sortedPrograms[0] : null)
   const activeEvents = activeProgram ? events.rows.filter((event) => event.programId === activeProgram.id) : []
   const activeScheduleItems = activeProgram ? scheduleItems.rows.filter((item) => item.programId === activeProgram.id) : []
@@ -8703,16 +8738,18 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
   // Create program isn't inside a program, so the Program section would point at the previously open one.
   const programFreeNavItems = visibleNavItems.filter((item) => item.group !== 'program' || item.key === 'dashboard')
 
-  // Without an open program those routes only render the program list, so land on it directly.
-  // With several programs the program chooser handles it instead.
+  // All programs is outside any program, so the Program section is hidden there.
+  const homeNavItems = visibleNavItems.filter((item) => item.group !== 'program')
+
+  // Program pages need an open program; without one, send people to All programs to pick it.
   useEffect(() => {
-    if (programs.loading || activeProgram || sortedPrograms.length > 1) return
-    if (route === 'events' || route === 'venues' || route === 'patrons' || route === 'settings') setRoute('programs')
-  }, [activeProgram, programs.loading, route, sortedPrograms.length])
+    if (programs.loading || activeProgram) return
+    if (shouldChooseProgram || route === 'events' || route === 'venues' || route === 'patrons' || route === 'settings') setRoute('home')
+  }, [activeProgram, programs.loading, route, shouldChooseProgram])
 
   const emptyOrgPromptedRef = useRef('')
   useEffect(() => {
-    if (!orgId || programs.loading || !canCreateProgram) return
+    if (!orgId || programs.loading || !canCreateProgram || route === 'home') return
     if (sortedPrograms.length > 0 || emptyOrgPromptedRef.current === orgId) return
     emptyOrgPromptedRef.current = orgId
     if (route !== 'programCreate') {
@@ -8834,7 +8871,7 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
   }
 
   if (shouldChooseProgram) {
-    return <ProgramDirectoryPage activeOrgId={orgId} onCreateProgram={canCreateProgram ? openProgramComposer : undefined} onOpen={openProgramFromDirectory} profile={profile} user={firebaseUser} />
+    return <LoadingScreen message="Opening your programs…" />
   }
 
   if (!canOpenRoute(route, currentRole, currentMember)) {
@@ -8844,9 +8881,9 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
   }
 
   return (
-    <Shell onCreateProgram={canCreateProgramSomewhere ? openProgramComposer : undefined} onOpenProgram={openProgramFromDirectory} profile={profile} organization={organization} route={route} onStartTour={activeProgram ? () => setTourOpen(true) : undefined} selectedProgram={activeProgram} setRoute={setRoute} navCounts={navCounts} pendingPublishCount={pendingPublishCount} roleName={currentRole?.name} user={firebaseUser} visibleNavItems={shellNavItems}>
+    <Shell onCreateProgram={canCreateProgramSomewhere ? openProgramComposer : undefined} onOpenProgram={openProgramFromDirectory} profile={profile} organization={organization} route={route} onStartTour={activeProgram && !onHome ? () => setTourOpen(true) : undefined} selectedProgram={onHome ? null : activeProgram} setRoute={setRoute} navCounts={navCounts} pendingPublishCount={onHome ? 0 : pendingPublishCount} roleName={currentRole?.name} user={firebaseUser} visibleNavItems={onHome ? homeNavItems : shellNavItems}>
       <CreateOrganizationDrawer onClose={() => setOrganizationDrawerOpen(false)} onCreated={handleOrganizationCreated} open={organizationDrawerOpen} profile={profile} user={firebaseUser} />
-      <WorkspaceTour onClose={() => setTourOpen(false)} open={tourOpen && Boolean(activeProgram)} />
+      <WorkspaceTour onClose={() => setTourOpen(false)} open={tourOpen && Boolean(activeProgram) && !onHome} />
       {programs.error || roles.error || ownMemberships.error || people.error || scheduleItems.error || venueCatalogs.error || partners.error || passes.error || members.error ? <p className="form-error">{programs.error || roles.error || ownMemberships.error || people.error || scheduleItems.error || venueCatalogs.error || partners.error || passes.error || members.error}</p> : null}
       {route === 'home' && (
         <ProgramDirectoryPage
@@ -8886,6 +8923,11 @@ function App() {
     window.addEventListener('hashchange', sync)
     return () => window.removeEventListener('hashchange', sync)
   }, [])
+
+  // The next sign-in lands on All programs again.
+  useEffect(() => {
+    if (!loading && !firebaseUser) writeSessionValue(landingSessionKey, null)
+  }, [firebaseUser, loading])
 
   // Reset the just-verified flag whenever the signed-in account changes.
   useEffect(() => {
