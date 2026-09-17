@@ -7055,6 +7055,36 @@ a:focus-visible,
   white-space: nowrap;
 }
 
+/* ---- Drawer sections: sentence-case headings with dividers ---- */
+
+.drawer-sections {
+  gap: 18px;
+}
+
+.drawer-section + .drawer-section {
+  padding-top: 18px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.drawer-section-label {
+  color: var(--ink);
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.drawer-note {
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.drawer-note .text-link {
+  display: inline;
+  font-size: 12.5px;
+}
+
 /* ---- Workspace tour ---- */
 
 .tour-button {

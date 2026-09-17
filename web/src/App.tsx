@@ -8396,29 +8396,32 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
           <div className="drawer-sections">
             {peopleError ? <p className="form-error">{peopleError}</p> : null}
             <div className="drawer-section">
-              <span className="drawer-section-label">Details</span>
+              <span className="drawer-section-label">Contact</span>
               <label>
                 Full name
-                <input value={manualName} onChange={(event) => setManualName(event.target.value)} required />
+                <input placeholder="e.g. Aditi Sharma" value={manualName} onChange={(event) => setManualName(event.target.value)} required />
               </label>
+              <label>
+                Email
+                <input placeholder="name@example.com" type="email" value={manualEmail} onChange={(event) => setManualEmail(event.target.value)} />
+                <small className="field-help">Links their pass to their Sang app account.</small>
+              </label>
+              <label>
+                Phone
+                <input placeholder="+91 98765 43210" type="tel" value={manualPhone} onChange={(event) => setManualPhone(event.target.value)} />
+              </label>
+            </div>
+
+            <div className="drawer-section">
+              <span className="drawer-section-label">Work or college</span>
               <div className="field-pair">
                 <label>
-                  Email
-                  <input type="email" value={manualEmail} onChange={(event) => setManualEmail(event.target.value)} />
-                </label>
-                <label>
-                  Phone
-                  <input placeholder="Optional" value={manualPhone} onChange={(event) => setManualPhone(event.target.value)} />
-                </label>
-              </div>
-              <div className="field-pair">
-                <label>
-                  Organization / college
-                  <input value={manualCompany} onChange={(event) => setManualCompany(event.target.value)} />
+                  Organization
+                  <input placeholder="e.g. IIT Bombay" value={manualCompany} onChange={(event) => setManualCompany(event.target.value)} />
                 </label>
                 <label>
                   Designation
-                  <input placeholder="Founder, delegate, student…" value={manualDesignation} onChange={(event) => setManualDesignation(event.target.value)} />
+                  <input placeholder="e.g. Student" value={manualDesignation} onChange={(event) => setManualDesignation(event.target.value)} />
                 </label>
               </div>
             </div>
@@ -8435,14 +8438,15 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
                 </label>
               ) : null}
               <label>
-                Program audience role
+                Role
                 <select value={programRoleId} onChange={(event) => setProgramRoleId(event.target.value)}>
                   {audienceRoles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
                 </select>
+                <small className="field-help">How this person appears on their pass.</small>
               </label>
-              {availableEvents.length > 0 && (
-                <div className="upload-field">
-                  <span>Event access and role</span>
+              {availableEvents.length > 0 ? (
+                <div className="field-group">
+                  <span className="field-label">Events they can enter</span>
                   <div className="access-list">
                     {availableEvents.map((programEvent) => {
                       const eventRoles = rolesForEvent(programEvent)
@@ -8470,21 +8474,20 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
                     })}
                   </div>
                 </div>
+              ) : (
+                <p className="muted-note">They can enter the program. Event access can be added once events exist.</p>
               )}
             </div>
 
-            {!editingPerson ? (
-              <div className="import-hint">
-                <span><Upload size={16} /></span>
-                <div>
-                  <strong>Adding many people?</strong>
-                  <small>Import a CSV. Events ticked above apply to rows without their own event columns.</small>
-                </div>
+            {!editingPerson && availableEvents.length > 0 ? (
+              <p className="drawer-note">
+                Adding many people?{' '}
                 <label aria-disabled={csvDisabled} className="text-link file-button">
-                  Import CSV
+                  Import a CSV
                   <input accept=".csv" disabled={csvDisabled} onChange={(changeEvent) => importCsvFromInput(changeEvent.target)} type="file" />
                 </label>
-              </div>
+                {' '}— rows without their own event columns get the events ticked above.
+              </p>
             ) : null}
           </div>
 
