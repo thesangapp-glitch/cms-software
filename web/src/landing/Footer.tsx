@@ -1,8 +1,13 @@
 import { Reveal } from './primitives'
 import { motion, useReducedMotion } from './motion'
+import { HostwellMark } from '../brand'
+import { sangAppStoreUrl, sangPlayStoreUrl, StoreLinks } from './StoreLinks'
 
-const columns = [
-  { title: 'Platform', links: ['SANG', 'Scanner', 'Organizer CRM', 'Analytics', 'Networking'] },
+type FooterLink = string | { label: string; href: string; external?: boolean }
+
+const columns: { title: string; links: FooterLink[] }[] = [
+  { title: 'Platform', links: [{ label: 'SANG', href: '#sang-story' }, { label: 'Scanner', href: '#platform' }, { label: 'Organizer CRM', href: '#crowd' }, 'Analytics', 'Networking'] },
+  { title: 'Get SANG', links: [{ label: 'App Store (iPhone)', href: sangAppStoreUrl, external: true }, { label: 'Google Play (Android)', href: sangPlayStoreUrl, external: true }] },
   { title: 'Solutions', links: ['College Events', 'Corporate Events', 'Conferences', 'Exhibitions', 'Concerts', 'Sports Events'] },
   { title: 'Company', links: ['About', 'Careers', 'Contact', 'Enterprise'] },
   { title: 'Resources', links: ['Documentation', 'Help Center', 'Privacy', 'Terms'] },
@@ -22,23 +27,27 @@ export function Footer() {
       />
       <div className="eos-shell" style={{ position: 'relative', zIndex: 1 }}>
         <Reveal>
-          <div className="eos-footer-brand">EventOS</div>
-          <div className="eos-footer-tag">The Operating System for Live Events.</div>
+          <div className="eos-footer-brand"><HostwellMark className="eos-footer-mark" size={72} />Hostwell</div>
+          <div className="eos-footer-tag">Run every live event, end to end.</div>
+          <StoreLinks label="Attendees use the SANG app" />
         </Reveal>
 
         <div className="eos-footer-cols">
           {columns.map((col) => (
             <div className="eos-footer-col" key={col.title}>
               <h5>{col.title}</h5>
-              {col.links.map((link) => (
-                <a href="#top" key={link}>{link}</a>
-              ))}
+              {col.links.map((link) => {
+                if (typeof link === 'string') return <a href="#top" key={link}>{link}</a>
+                return link.external
+                  ? <a href={link.href} key={link.label} rel="noopener noreferrer" target="_blank">{link.label}</a>
+                  : <a href={link.href} key={link.label}>{link.label}</a>
+              })}
             </div>
           ))}
         </div>
 
         <div className="eos-footer-bottom">
-          <span>© 2026 EventOS. All rights reserved.</span>
+          <span>© 2026 Hostwell. All rights reserved.</span>
           <span>One identity. One platform. One event ecosystem.</span>
         </div>
       </div>

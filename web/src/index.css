@@ -8155,3 +8155,20 @@ a:focus-visible,
   gap: 5px;
   font-size: 13px;
 }
+
+/* ---- Hostwell brand mark ---- */
+
+.rail-brand-svg,
+.loader-logo-svg,
+.brand-lockup > svg,
+.chooser-brand > svg {
+  flex: 0 0 auto;
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgba(67, 56, 202, 0.28);
+}
+
+.loader-logo-svg {
+  position: relative;
+  border-radius: 14px;
+  box-shadow: 0 12px 32px rgba(55, 48, 163, 0.26);
+}

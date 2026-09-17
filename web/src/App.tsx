@@ -83,6 +83,7 @@ import {
   type Query,
 } from 'firebase/firestore'
 import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage'
+import { HostwellMark } from './brand'
 import { auth, db, functions, storage } from './lib/firebase'
 import { LandingPage } from './landing/LandingPage'
 
@@ -1169,10 +1170,10 @@ function LoadingScreen({ message, blocked = false }: { message: string; blocked?
       <div className="loader-card">
         <div className={blocked ? 'loader-mark blocked' : 'loader-mark'}>
           {blocked ? null : <span aria-hidden="true" className="loader-ring" />}
-          <span className="loader-logo">{blocked ? <Lock size={20} /> : 'S'}</span>
+          {blocked ? <span className="loader-logo"><Lock size={20} /></span> : <HostwellMark className="loader-logo-svg" size={52} />}
         </div>
         <div className="loader-copy">
-          <strong>{blocked ? 'No CRM access' : 'Sang CRM'}</strong>
+          <strong>{blocked ? 'No workspace access' : 'Hostwell'}</strong>
           <span>{message}</span>
         </div>
         {blocked ? (
@@ -1645,10 +1646,10 @@ function Shell({
     <div className="workspace-shell">
       <aside className="workspace-rail">
         <div className="rail-brand">
-          <div className="rail-brand-mark">S</div>
+          <HostwellMark className="rail-brand-svg" size={30} />
           <div>
-            <strong>Sang CRM</strong>
-            <span>Event OS</span>
+            <strong>Hostwell</strong>
+            <span>For organizers</span>
           </div>
         </div>
 
@@ -1901,9 +1902,9 @@ function AuthPage({ onBack }: { onBack?: () => void }) {
       <div className="auth-layout">
         <aside className="auth-aside">
           <div className="brand-lockup large">
-            <div className="brand-mark">S</div>
+            <HostwellMark size={38} />
             <div>
-              <strong>Sang Event CRM</strong>
+              <strong>Hostwell</strong>
               <span>Event operations, end to end</span>
             </div>
           </div>
@@ -1938,7 +1939,7 @@ function AuthPage({ onBack }: { onBack?: () => void }) {
             <h1>{mode === 'signin' ? 'Welcome back' : 'Create your account'}</h1>
             <p>
               {mode === 'signin'
-                ? 'Sign in to your Sang workspace.'
+                ? 'Sign in to your Hostwell workspace.'
                 : 'Set up your organization in under a minute.'}
             </p>
           </header>
@@ -2085,7 +2086,7 @@ function VerifyEmailPage({ user, onVerified, onCancel }: { user: User; onVerifie
     <main className="auth-screen">
       <form className="auth-card" onSubmit={submit} style={{ maxWidth: 420, margin: '0 auto' }}>
         <div className="brand-lockup large">
-          <div className="brand-mark">S</div>
+          <HostwellMark size={38} />
           <div>
             <strong>Verify your email</strong>
             <span>Enter the code we sent you</span>
@@ -3714,8 +3715,8 @@ function ChooserFrame({ children, narrow = false }: { children: ReactNode; narro
     <main className="chooser-page">
       <header className="chooser-topbar">
         <div className="chooser-brand">
-          <div className="brand-mark">S</div>
-          <strong>Sang CRM</strong>
+          <HostwellMark size={30} />
+          <strong>Hostwell</strong>
         </div>
         <div className="chooser-account">
           {email ? <span>{email}</span> : null}
@@ -9021,7 +9022,7 @@ function App() {
 
   if (loading) {
     return (
-      <LoadingScreen message="Opening Sang Event CRM…" />
+      <LoadingScreen message="Opening Hostwell…" />
     )
   }
 

@@ -5,7 +5,7 @@ Guidance for working in this repo. Read the deep handoff at
 
 ## What this is
 
-Sang Event CRM — a multi-tenant event operations CRM for organizers (college fests,
+Hostwell (formerly "Sang Event CRM") — a multi-tenant event operations CRM for organizers (college fests,
 conferences, corporate events, competitions, workshops). Organizers create an
 organization → programs → events, import people, issue QR passes, and run gate
 check-ins. It links to a separate **Sang mobile app** (attendee side) via scan-to-join
@@ -19,6 +19,7 @@ QR links.
 ```
 web/          React 19 + Vite 8 + TypeScript + Tailwind 4 SPA. web/src/App.tsx is the
               entire CRM (~3100 lines, single file). web/src/landing/ is the marketing page.
+              web/src/brand.tsx holds the Hostwell logo (HostwellMark).
               web/src/lib/firebase.ts inits Firebase from VITE_FIREBASE_* env (web/.env.local).
 app-site/     Separate React + Vite site: the Sang *app* (digital business card) marketing
               site that owns sangapp.in. Unrelated to the CRM apart from sharing this repo.

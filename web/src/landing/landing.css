@@ -1,4 +1,4 @@
-/* EventOS marketing site — original identity, scoped under .eos */
+/* Hostwell marketing site — original identity, scoped under .eos */
 
 .eos {
   --eos-bg: #05070d;
@@ -1592,7 +1592,7 @@ body.eos-body {
 
 .eos-footer-cols {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   gap: 30px;
   padding-bottom: 50px;
   border-bottom: 1px solid var(--eos-line);
@@ -1756,5 +1756,101 @@ body.eos-body {
     animation-duration: 0.001ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
+  }
+}
+
+/* ---- Brand mark and SANG app store links ---- */
+
+.eos-logo-mark {
+  padding: 0;
+  background: none;
+}
+
+.eos-footer-brand {
+  display: flex;
+  align-items: center;
+  gap: clamp(14px, 2vw, 24px);
+}
+
+.eos-footer-mark {
+  width: clamp(44px, 8vw, 96px);
+  height: clamp(44px, 8vw, 96px);
+  flex: 0 0 auto;
+  border-radius: 22%;
+  box-shadow: var(--eos-glow);
+}
+
+.eos-footer .eos-footer-tag {
+  margin-bottom: 24px;
+}
+
+.eos-footer .eos-store {
+  margin-bottom: 56px;
+}
+
+.eos-store {
+  display: grid;
+  gap: 10px;
+  margin-top: 28px;
+}
+
+.eos-store-label {
+  color: var(--eos-faint);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.eos-store-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.eos-store-link {
+  min-height: 48px;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 18px 6px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 12px;
+  background: #000;
+  color: #fff;
+  text-decoration: none;
+  transition:
+    border-color 160ms ease,
+    transform 160ms ease;
+}
+
+.eos-store-link:hover {
+  border-color: rgba(255, 255, 255, 0.45);
+  transform: translateY(-1px);
+}
+
+.eos-store-link:focus-visible {
+  outline: 2px solid var(--eos-indigo);
+  outline-offset: 2px;
+}
+
+.eos-store-link span {
+  display: grid;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+}
+
+.eos-store-link small {
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  opacity: 0.8;
+}
+
+@media (min-width: 721px) and (max-width: 1024px) {
+  .eos-footer-cols {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }

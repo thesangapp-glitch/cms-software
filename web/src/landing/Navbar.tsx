@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { AnimatePresence } from 'framer-motion'
-import { Menu, Sparkles, X } from 'lucide-react'
+import { Menu, X } from 'lucide-react'
+import { HostwellMark } from '../brand'
 import { motion } from './motion'
 
 const links = [
@@ -38,8 +39,8 @@ export function Navbar({ onSignIn, onGetStarted }: { onSignIn: () => void; onGet
     <header className={scrolled || open ? 'eos-nav scrolled' : 'eos-nav'}>
       <div className="eos-shell eos-nav-inner">
         <button className="eos-logo" onClick={scrollTop} type="button">
-          <span className="eos-logo-mark"><Sparkles size={17} /></span>
-          EventOS
+          <HostwellMark className="eos-logo-mark" size={30} />
+          Hostwell
         </button>
 
         <nav className="eos-nav-links" aria-label="Primary">
