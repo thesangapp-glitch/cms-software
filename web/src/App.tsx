@@ -847,6 +847,7 @@ const landingSessionKey = 'sang-crm-landed'
 const newOrganizationSessionKey = 'sang-crm-new-org'
 // Set once per sign-in after sending someone with no programs to Create program.
 const emptyPromptSessionKey = 'sang-crm-empty-prompted'
+const startTourSessionKey = 'sang-crm-start-tour'
 
 function readSessionValue(key: string) {
   try {
@@ -2132,97 +2133,36 @@ function VerifyEmailPage({ user, onVerified, onCancel }: { user: User; onVerifie
   )
 }
 
-function OnboardingPage({ user, onComplete }: { user: User; onComplete: (profile: PeUser) => void }) {
-  const [displayName, setDisplayName] = useState(user.displayName || user.email?.split('@')[0] || '')
-  const [orgName, setOrgName] = useState('')
-  const [orgType, setOrgType] = useState(defaultOrgType)
-  const [website, setWebsite] = useState('')
-  const [logoUrl, setLogoUrl] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-
-  async function leaveSetup() {
-    setError('')
-    setLoading(true)
-    try {
-      await signOut(auth)
-    } catch (signOutError) {
-      setError(errorMessage(signOutError, 'Could not sign out'))
-      setLoading(false)
-    }
-  }
-
-  async function submit(event: FormEvent) {
-    event.preventDefault()
-    setLoading(true)
-    setError('')
-
-    try {
-      const profile = await createOrganizationWithOwner(user, { displayName, orgName, orgType, website, logoUrl })
-      // Step 2 is the program composer, with this organization already picked.
-      writeSessionValue(newOrganizationSessionKey, profile.activeOrgId || '')
-      onComplete(profile)
-    } catch (setupError) {
-      setError(errorMessage(setupError, 'Could not complete setup'))
-    } finally {
-      setLoading(false)
-    }
-  }
-
+function FirstProgramPage({
+  user,
+  profile,
+  onProfileChange,
+  onCreatingOrganization,
+  onCreated,
+}: {
+  user: User
+  profile: PeUser | null
+  onProfileChange: (profile: PeUser) => void
+  onCreatingOrganization: () => void
+  onCreated: (result: { orgId: string; programId: string }) => void
+}) {
+  const effectiveProfile: PeUser = profile ?? { uid: user.uid, displayName: user.displayName || '', email: user.email || '', organizationIds: [] }
+  const organizationOptions = useOrganizationOptions(effectiveProfile, user.uid)
   return (
-    <main className="auth-screen">
-      <form className="onboarding-card" onSubmit={submit}>
-        <div className="setup-card-head">
-          <div>
-            <span className="eyebrow">Step 1 of 2 · Organization</span>
-            <h1>Create your first program</h1>
-          </div>
-          <button className="secondary-button setup-signout" disabled={loading} onClick={leaveSetup} type="button">
-            <LogOut size={16} />
-            Sign out
-          </button>
-        </div>
-        <p>First, the organization that runs it: a college, club or company. Next you'll add the program's name, dates and venue.</p>
-        <div className="setup-account-note">
-          <ShieldCheck size={16} />
-          <span>
-            Signed in as <strong>{user.email || user.phoneNumber || user.displayName || 'this account'}</strong>.
-          </span>
-        </div>
-
-        <div className="form-grid two">
-          {!user.displayName && (
-            <label>
-              Owner name
-              <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} required />
-            </label>
-          )}
-          <label>
-            Organization name
-            <input placeholder="Your organization or event company" value={orgName} onChange={(event) => setOrgName(event.target.value)} required />
-          </label>
-          <label>
-            Organization type
-            <select value={orgType} onChange={(event) => setOrgType(event.target.value)}>
-              {orgTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </select>
-          </label>
-          <label>
-            Website
-            <input placeholder="https://..." value={website} onChange={(event) => setWebsite(event.target.value)} />
-          </label>
-        </div>
-        <ImageUploader folder="organization-logos" label="Organization logo" onChange={setLogoUrl} uid={user.uid} value={logoUrl} />
-
-        {error && <p className="form-error">{error}</p>}
-
-        <button className="primary-button" disabled={loading} type="submit">
-          {loading ? <Loader2 className="spin" size={17} /> : null}
-          Continue to program details
-          {loading ? null : <ChevronRight size={17} />}
-        </button>
-      </form>
-    </main>
+    <ChooserFrame>
+      <ProgramComposerPage
+        activeOrgId={effectiveProfile.activeOrgId || ''}
+        firstProgram
+        onCreated={onCreated}
+        onCreatingOrganization={onCreatingOrganization}
+        onOrganizationCreated={onProfileChange}
+        onProfileChange={onProfileChange}
+        organizationOptions={organizationOptions.options}
+        organizationsLoading={organizationOptions.loading}
+        profile={effectiveProfile}
+        user={user}
+      />
+    </ChooserFrame>
   )
 }
 
@@ -5075,6 +5015,8 @@ function ProgramComposerPage({
   organizationsLoading,
   onCreated,
   onCancel,
+  onProfileChange,
+  onCreatingOrganization,
   firstProgram = false,
 }: {
   user: User
@@ -5084,7 +5026,10 @@ function ProgramComposerPage({
   organizationOptions: OrganizationOption[]
   organizationsLoading: boolean
   onCreated: (result: { orgId: string; programId: string }) => void
-  onCancel: () => void
+  onCancel?: () => void
+  // Submitting also creates the organization for accounts that had none.
+  onCreatingOrganization?: () => void
+  onProfileChange?: (profile: PeUser) => void
   firstProgram?: boolean
 }) {
   const writableOrganizations = useMemo(
@@ -5094,6 +5039,10 @@ function ProgramComposerPage({
 
   const [targetOrgId, setTargetOrgId] = useState('')
   const [organizationDrawerOpen, setOrganizationDrawerOpen] = useState(false)
+  // With no organization yet, the form asks for one inline and creates it on submit.
+  const inlineOrganization = !organizationsLoading && writableOrganizations.length === 0 && !targetOrgId
+  const [newOrgName, setNewOrgName] = useState('')
+  const [newOrgType, setNewOrgType] = useState(defaultOrgType)
 
   const [name, setName] = useState('')
   const [tagline, setTagline] = useState('')
@@ -5134,8 +5083,12 @@ function ProgramComposerPage({
     event.preventDefault()
     setError('')
 
-    if (!targetOrgId) {
+    if (!targetOrgId && !inlineOrganization) {
       setError('Choose the organization this program belongs to.')
+      return
+    }
+    if (inlineOrganization && newOrgName.trim().length < 2) {
+      setError('Add the name of the organization running this program.')
       return
     }
     if (!selectedDraftVenue) {
@@ -5145,7 +5098,17 @@ function ProgramComposerPage({
 
     setBusy(true)
     try {
-      const orgId = targetOrgId
+      let orgId = targetOrgId
+      if (!orgId) {
+        setStep('Creating organization')
+        onCreatingOrganization?.()
+        const ownerName = (profile.displayName || user.displayName || user.email?.split('@')[0] || 'Organizer').trim()
+        const nextProfile = await createOrganizationWithOwner(user, { displayName: ownerName, orgName: newOrgName, orgType: newOrgType, website: '', logoUrl: '' }, profile)
+        orgId = nextProfile.activeOrgId || ''
+        // Keep it selected so a retry after a failed program write doesn't create another.
+        setTargetOrgId(orgId)
+        onProfileChange?.(nextProfile)
+      }
 
       setStep('Creating program')
       const createPayload: CreateProgramPayload = {
@@ -5221,22 +5184,27 @@ function ProgramComposerPage({
     <section className="page-stack">
       <section className="events-command command-premium">
         <div>
-          <span className="eyebrow">{firstProgram ? 'Step 2 of 2 · Program' : 'New program'}</span>
+          <span className="eyebrow">{firstProgram ? 'Welcome to Hostwell' : 'New program'}</span>
           <h1>{firstProgram ? 'Create your first program' : 'Create a program'}</h1>
           <p>
-            {targetOrganization ? (
+            {inlineOrganization ? (
+              'A program is your fest, conference or event series. Give it a name, dates and a venue. Events, people, passes and check-ins all live inside it.'
+            ) : targetOrganization ? (
               <>This program will be created in <strong>{formatName(targetOrganization.name)}</strong>. Set the dates, venue and artwork — events, people, passes and analytics all live inside it.</>
             ) : (
               'Choose the organization this program belongs to, then add its details.'
             )}
           </p>
         </div>
-        <button className="secondary-button" onClick={onCancel} type="button">
-          Cancel
-        </button>
+        {onCancel ? (
+          <button className="secondary-button" onClick={onCancel} type="button">
+            Cancel
+          </button>
+        ) : null}
       </section>
 
       <form className="card section-form" onSubmit={submit}>
+        {inlineOrganization ? null : (
         <section className="form-section">
           <div className="form-section-intro">
             <h2>Organization</h2>
@@ -5278,8 +5246,9 @@ function ProgramComposerPage({
             )}
           </div>
         </section>
+        )}
 
-        <fieldset className="form-sections-gate" disabled={!targetOrgId}>
+        <fieldset className="form-sections-gate" disabled={!targetOrgId && !inlineOrganization}>
         <section className="form-section">
           <div className="form-section-intro">
             <h2>Basics</h2>
@@ -5315,6 +5284,27 @@ function ProgramComposerPage({
             </label>
           </div>
         </section>
+
+        {inlineOrganization ? (
+          <section className="form-section">
+            <div className="form-section-intro">
+              <h2>Organized by</h2>
+              <p>The college, club or company running it. Your team and future programs live under it.</p>
+            </div>
+            <div className="form-section-fields form-grid two">
+              <label>
+                Organization name
+                <input placeholder="e.g. IIT Roorkee Tech Club" value={newOrgName} onChange={(event) => setNewOrgName(event.target.value)} required />
+              </label>
+              <label>
+                Organization type
+                <select value={newOrgType} onChange={(event) => setNewOrgType(event.target.value)}>
+                  {orgTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </select>
+              </label>
+            </div>
+          </section>
+        ) : null}
 
         <section className="form-section">
           <div className="form-section-intro">
@@ -8676,7 +8666,7 @@ function PassPreview({ payload, passCode }: { payload: string; passCode?: string
   )
 }
 
-function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; profile: PeUser; setProfile: (profile: PeUser) => void }) {
+function CrmApp({ firebaseUser, profile, setProfile, onNeedsFirstProgram }: { firebaseUser: User; profile: PeUser; setProfile: (profile: PeUser) => void; onNeedsFirstProgram: () => void }) {
   // Every sign-in starts on All programs; reloads within the session keep the current page.
   const [landed] = useState(() => readSessionValue(landingSessionKey) === firebaseUser.uid)
   const [route, setRouteState] = useState<RouteKey>(() => (landed ? readHashRoute() : 'home'))
@@ -8685,7 +8675,7 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
   const [needsOrgChoice, setNeedsOrgChoice] = useState(false)
   // Opened from the top bar / sidebar switchers; closes back to the current workspace.
   const [choosingProgram, setChoosingProgram] = useState(false)
-  const [tourOpen, setTourOpen] = useState(false)
+  const [tourOpen, setTourOpen] = useState(() => readSessionValue(startTourSessionKey) === '1')
   const [organizationDrawerOpen, setOrganizationDrawerOpen] = useState(false)
   const orgId = profile.activeOrgId || ''
   const ownMemberQuery = useMemo(() => (orgId ? query(collection(db, 'peTeamMembers'), where('orgId', '==', orgId), where('uid', '==', firebaseUser.uid), where('status', '==', 'active')) : null), [firebaseUser.uid, orgId])
@@ -8898,12 +8888,22 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
     setChoosingProgram(false)
   }
 
+  useEffect(() => {
+    if (tourOpen) writeSessionValue(startTourSessionKey, null)
+  }, [tourOpen])
+
+  // Signed in without access to the open organization: start over from Create program.
+  const lacksMembership = Boolean(orgId) && !ownMemberships.loading && !ownMemberships.error && !currentMember
+  useEffect(() => {
+    if (lacksMembership || (!orgId && profile.organizationIds.length === 0)) onNeedsFirstProgram()
+  }, [lacksMembership, onNeedsFirstProgram, orgId, profile.organizationIds.length])
+
   if (!orgId && profile.organizationIds.length > 0) {
     return <ProgramDirectoryPage onOpen={openProgramFromDirectory} profile={profile} user={firebaseUser} />
   }
 
   if (!orgId) {
-    return <OnboardingPage user={firebaseUser} onComplete={setProfile} />
+    return <LoadingScreen message="Opening your workspace…" />
   }
 
   if (needsOrgChoice || choosingProgram) {
@@ -8930,7 +8930,7 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
   }
 
   if (!currentMember) {
-    return <OnboardingPage user={firebaseUser} onComplete={setProfile} />
+    return <LoadingScreen message="Opening your workspace…" />
   }
 
   if (!currentRole || visibleNavItems.length === 0) {
@@ -9036,6 +9036,15 @@ function App() {
   const { firebaseUser, profile, setProfile, loading } = useAuthProfile()
   const [showAuth, setShowAuth] = useState(() => window.location.hash === '#/signin')
   const [emailVerified, setEmailVerified] = useState(false)
+  // Keeps Create program open once it starts creating an organization (the new profile can
+  // arrive mid-submit) or when CrmApp finds no membership in the open organization.
+  const [firstProgramOpen, setFirstProgramOpen] = useState(false)
+  const latestProfileRef = useRef<PeUser | null>(null)
+  const openFirstProgram = useCallback(() => setFirstProgramOpen(true), [])
+
+  useEffect(() => {
+    latestProfileRef.current = profile
+  }, [profile])
 
   useEffect(() => {
     const sync = () => setShowAuth(window.location.hash === '#/signin')
@@ -9052,6 +9061,7 @@ function App() {
 
   // Reset the just-verified flag whenever the signed-in account changes.
   useEffect(() => {
+    setFirstProgramOpen(false)
     setEmailVerified(false)
   }, [firebaseUser?.uid])
 
@@ -9095,11 +9105,32 @@ function App() {
     )
   }
 
-  if (!profile) {
-    return <OnboardingPage user={firebaseUser} onComplete={setProfile} />
+  if (firstProgramOpen || !profile || (!profile.activeOrgId && profile.organizationIds.length === 0)) {
+    return (
+      <FirstProgramPage
+        key={firebaseUser.uid}
+        onCreated={({ orgId, programId }) => {
+          window.localStorage.setItem('sang-crm-org-choice-confirmed', orgId)
+          window.localStorage.setItem('sang-crm-selected-program', programId)
+          writeSessionValue(landingSessionKey, firebaseUser.uid)
+          writeSessionValue(startTourSessionKey, '1')
+          window.location.hash = '/dashboard'
+          const base = latestProfileRef.current
+          if (base) setProfile({ ...base, activeOrgId: orgId, organizationIds: Array.from(new Set([...base.organizationIds, orgId])) })
+          setFirstProgramOpen(false)
+        }}
+        onCreatingOrganization={openFirstProgram}
+        onProfileChange={(nextProfile) => {
+          latestProfileRef.current = nextProfile
+          setProfile(nextProfile)
+        }}
+        profile={profile}
+        user={firebaseUser}
+      />
+    )
   }
 
-  return <CrmApp firebaseUser={firebaseUser} profile={profile} setProfile={setProfile} />
+  return <CrmApp firebaseUser={firebaseUser} onNeedsFirstProgram={openFirstProgram} profile={profile} setProfile={setProfile} />
 }
 
 export default App
