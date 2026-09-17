@@ -3733,6 +3733,8 @@ function ChooserFrame({ children, narrow = false }: { children: ReactNode; narro
 type ProgramDirectorySection = {
   organization: Organization
   canCreateProgram: boolean
+  // Can delete (archive) programs here; the server re-checks per program.
+  canManagePrograms: boolean
   programs: Program[]
   hasAccess: boolean
 }
@@ -3761,24 +3763,25 @@ function useProgramDirectory(organizationIds: string[], uid: string) {
           const organization = { id: orgSnapshot.id, ...orgSnapshot.data() } as Organization
           const member = memberSnapshot.exists() ? (memberSnapshot.data() as TeamMember) : null
           if (!member || member.status !== 'active') {
-            return { organization, canCreateProgram: false, programs: [], hasAccess: false }
+            return { organization, canCreateProgram: false, canManagePrograms: false, programs: [], hasAccess: false }
           }
           const roleSnapshot = await getDoc(doc(db, 'peOrganizations', orgId, 'roles', member.roleId))
           const role = roleSnapshot.exists() ? ({ id: roleSnapshot.id, ...roleSnapshot.data() } as Role) : undefined
           const canCreateProgram = Boolean(role && !isDeletedRole(role) && member.scope === 'organization' && hasPermission(role, 'program.write'))
+          const canManagePrograms = Boolean(role && !isDeletedRole(role) && member.scope !== 'event' && hasPermission(role, 'program.write'))
           const programsQuery = member.scope === 'organization'
             ? query(collection(db, 'pePrograms'), where('orgId', '==', orgId))
             : member.programId
               ? query(collection(db, 'pePrograms'), where('orgId', '==', orgId), where(documentId(), '==', member.programId))
               : null
-          if (!programsQuery) return { organization, canCreateProgram, programs: [], hasAccess: false }
+          if (!programsQuery) return { organization, canCreateProgram, canManagePrograms, programs: [], hasAccess: false }
           try {
             const snapshot = await getDocs(programsQuery)
             const programs = toRows<Program>(snapshot.docs).sort((a, b) => (a.startDate || '').localeCompare(b.startDate || ''))
-            return { organization, canCreateProgram, programs, hasAccess: true }
+            return { organization, canCreateProgram, canManagePrograms, programs, hasAccess: true }
           } catch {
             // The role may not include program read access in this organization.
-            return { organization, canCreateProgram, programs: [], hasAccess: false }
+            return { organization, canCreateProgram, canManagePrograms, programs: [], hasAccess: false }
           }
         } catch {
           return null
@@ -3795,7 +3798,16 @@ function useProgramDirectory(organizationIds: string[], uid: string) {
     }
   }, [organizationIdKey, uid])
 
-  return { sections, loading }
+  // Deleting archives the program server-side; mirror that locally instead of reloading everything.
+  const markArchived = useCallback((orgId: string, programId: string) => {
+    setSections((current) => current.map((section) => (
+      section.organization.id === orgId
+        ? { ...section, programs: section.programs.map((program) => (program.id === programId ? { ...program, status: 'archived' } : program)) }
+        : section
+    )))
+  }, [])
+
+  return { sections, loading, markArchived }
 }
 
 // Organizations are created on their own, from the program chooser. The new
@@ -3900,6 +3912,7 @@ function ProgramDirectoryPage({
   activeOrgId,
   onOpen,
   onCreateProgram,
+  onProgramDeleted,
   embedded = false,
 }: {
   profile: PeUser
@@ -3907,13 +3920,22 @@ function ProgramDirectoryPage({
   activeOrgId?: string
   onOpen: (orgId: string, programId: string) => void | Promise<void>
   onCreateProgram?: () => void
+  onProgramDeleted?: (orgId: string, programId: string) => void
   embedded?: boolean
 }) {
-  const { sections, loading } = useProgramDirectory(profile.organizationIds || [], user.uid)
+  const { sections: allSections, loading, markArchived } = useProgramDirectory(profile.organizationIds || [], user.uid)
   const [search, setSearch] = useState('')
   const [openingId, setOpeningId] = useState('')
+  const [confirmingId, setConfirmingId] = useState('')
+  const [deletingId, setDeletingId] = useState('')
+  const [showArchived, setShowArchived] = useState(false)
   const [error, setError] = useState('')
   const searchTerm = search.trim().toLowerCase()
+  const archivedCount = allSections.reduce((sum, section) => sum + section.programs.filter((program) => program.status === 'archived').length, 0)
+  const sections = allSections.map((section) => ({
+    ...section,
+    programs: section.programs.filter((program) => (showArchived ? program.status === 'archived' : program.status !== 'archived')),
+  }))
   const totalPrograms = sections.reduce((sum, section) => sum + section.programs.length, 0)
   const canCreateAnywhere = sections.some((section) => section.canCreateProgram)
   const visibleSections = [...sections]
@@ -3932,7 +3954,7 @@ function ProgramDirectoryPage({
 
   // One grid across organizations instead of a section (and mostly empty row) per organization.
   const programEntries = visibleSections.flatMap((section) => section.programs.map((program) => ({ program, section })))
-  const emptySections = visibleSections.filter((section) => section.programs.length === 0)
+  const emptySections = showArchived ? [] : visibleSections.filter((section) => section.programs.length === 0)
 
   async function open(orgId: string, programId: string) {
     setError('')
@@ -3945,15 +3967,32 @@ function ProgramDirectoryPage({
     }
   }
 
+  async function deleteProgram(orgId: string, programId: string) {
+    setError('')
+    setDeletingId(programId)
+    try {
+      await deleteProgramCallable({ orgId, programId })
+      markArchived(orgId, programId)
+      onProgramDeleted?.(orgId, programId)
+      setConfirmingId('')
+    } catch (deleteError) {
+      setError(errorMessage(deleteError, 'Unable to delete this program'))
+    } finally {
+      setDeletingId('')
+    }
+  }
+
   const content = (
     <>
       <div className="page-header">
         <div className="chooser-title">
-          <h1>{embedded ? 'All programs' : 'Choose a program'}</h1>
+          <h1>{showArchived ? 'Deleted programs' : embedded ? 'All programs' : 'Choose a program'}</h1>
           <p>
             {loading
               ? 'Loading your programs…'
-              : totalPrograms
+              : showArchived
+                ? 'Programs you deleted. Their people, passes and check-in history are kept.'
+                : totalPrograms
                 ? `${formatCount(totalPrograms)} program${totalPrograms === 1 ? '' : 's'} across ${formatCount(sections.length)} organization${sections.length === 1 ? '' : 's'}. Pick one to open its workspace.`
                 : 'No programs yet. Create one to open a workspace.'}
           </p>
@@ -3974,6 +4013,14 @@ function ProgramDirectoryPage({
 
       {error ? <p className="form-error">{error}</p> : null}
 
+      {!loading && (archivedCount > 0 || showArchived) ? (
+        <div className="directory-filter">
+          <button className="text-link" onClick={() => { setShowArchived((current) => !current); setConfirmingId('') }} type="button">
+            {showArchived ? <><ChevronLeft size={14} />Back to programs</> : <><Trash2 size={13} />Deleted programs ({formatCount(archivedCount)})</>}
+          </button>
+        </div>
+      ) : null}
+
       {loading ? (
         <section className="card">
           <div className="card-state">
@@ -3987,8 +4034,11 @@ function ProgramDirectoryPage({
             <div className="program-grid directory-grid">
               {programEntries.map(({ program, section }) => {
                 const artwork = program.bannerUrl || program.posterUrl
+                const canDelete = section.canManagePrograms && program.status !== 'archived'
+                const confirming = confirmingId === program.id
                 return (
-                  <button className="program-card compact" disabled={openingId !== ''} key={program.id} onClick={() => void open(section.organization.id, program.id)} type="button">
+                  <div className="directory-card" key={program.id}>
+                  <button className="program-card compact" disabled={openingId !== '' || confirming} onClick={() => void open(section.organization.id, program.id)} type="button">
                     <div className="program-card-art">{artwork ? <img alt="" src={artwork} /> : <CalendarDays size={20} />}</div>
                     <div className="program-card-body">
                       <span className="program-card-org">
@@ -4014,6 +4064,25 @@ function ProgramDirectoryPage({
                       </span>
                     </div>
                   </button>
+                  {canDelete && !confirming ? (
+                    <button aria-label={`Delete ${program.name}`} className="directory-card-delete" disabled={openingId !== '' || deletingId !== ''} onClick={() => setConfirmingId(program.id)} title="Delete program" type="button">
+                      <Trash2 size={15} />
+                    </button>
+                  ) : null}
+                  {confirming ? (
+                    <div className="directory-card-confirm" role="alertdialog" aria-label={`Delete ${program.name}?`}>
+                      <strong>Delete {formatName(program.name)}?</strong>
+                      <p>It leaves your workspace and the Sang app. People, passes and check-in history are kept.</p>
+                      <div>
+                        <button className="secondary-button compact-button" disabled={deletingId !== ''} onClick={() => setConfirmingId('')} type="button">Cancel</button>
+                        <button className="danger-button compact-button" disabled={deletingId !== ''} onClick={() => void deleteProgram(section.organization.id, program.id)} type="button">
+                          {deletingId === program.id ? <Loader2 className="spin" size={14} /> : <Trash2 size={14} />}
+                          {deletingId === program.id ? 'Deleting' : 'Delete'}
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                  </div>
                 )
               })}
             </div>
@@ -8891,6 +8960,11 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
           embedded
           onCreateProgram={canCreateProgramSomewhere ? openProgramComposer : undefined}
           onOpen={(targetOrgId, programId) => openProgramFromDirectory(targetOrgId, programId, 'dashboard')}
+          onProgramDeleted={(_, programId) => {
+            if (programId !== selectedProgramId) return
+            setSelectedProgramId('')
+            window.localStorage.removeItem('sang-crm-selected-program')
+          }}
           profile={profile}
           user={firebaseUser}
         />
