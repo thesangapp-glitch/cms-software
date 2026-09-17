@@ -1410,6 +1410,147 @@ function WorkspaceTour({ open, onClose }: { open: boolean; onClose: () => void }
   )
 }
 
+// Dropdown for jumping between programs across organizations without leaving
+// the current page. Opened from the sidebar organization card or the
+// breadcrumb program name.
+function WorkspaceSwitcher({
+  profile,
+  uid,
+  activeOrgId,
+  activeProgramId,
+  position,
+  onClose,
+  onOpenProgram,
+  onCreateProgram,
+}: {
+  profile: PeUser
+  uid: string
+  activeOrgId?: string
+  activeProgramId?: string
+  position: { top: number; left: number }
+  onClose: () => void
+  onOpenProgram: (orgId: string, programId: string) => void | Promise<void>
+  onCreateProgram?: () => void
+}) {
+  const { sections, loading } = useProgramDirectory(profile.organizationIds || [], uid)
+  const [search, setSearch] = useState('')
+  const [openingId, setOpeningId] = useState('')
+  const [error, setError] = useState('')
+  const panelRef = useRef<HTMLDivElement | null>(null)
+  const searchTerm = search.trim().toLowerCase()
+  const visibleSections = [...sections]
+    .sort((a, b) => {
+      if (a.organization.id === activeOrgId) return -1
+      if (b.organization.id === activeOrgId) return 1
+      return (a.organization.name || '').localeCompare(b.organization.name || '')
+    })
+    .map((section) => {
+      const organizationMatches = (section.organization.name || '').toLowerCase().includes(searchTerm)
+      return {
+        ...section,
+        organizationMatches,
+        programs: !searchTerm || organizationMatches
+          ? section.programs
+          : section.programs.filter((program) => (program.name || '').toLowerCase().includes(searchTerm)),
+      }
+    })
+    .filter((section) => !searchTerm || section.organizationMatches || section.programs.length > 0)
+
+  useEffect(() => {
+    const onPointer = (event: PointerEvent) => {
+      const target = event.target as Element | null
+      if (target?.closest('[data-switcher-trigger]')) return
+      if (panelRef.current && target && !panelRef.current.contains(target)) onClose()
+    }
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    document.addEventListener('pointerdown', onPointer)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('pointerdown', onPointer)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [onClose])
+
+  async function choose(orgId: string, programId: string) {
+    if (programId === activeProgramId) {
+      onClose()
+      return
+    }
+    setError('')
+    setOpeningId(programId)
+    try {
+      await onOpenProgram(orgId, programId)
+      onClose()
+    } catch (openError) {
+      setError(errorMessage(openError, 'Unable to open this program'))
+      setOpeningId('')
+    }
+  }
+
+  return (
+    <div aria-label="Switch program" className="switcher-panel" ref={panelRef} role="dialog" style={{ top: position.top, left: position.left }}>
+      <label className="search-field switcher-search">
+        <Search size={14} />
+        <input aria-label="Find a program or organization" autoFocus onChange={(event) => setSearch(event.target.value)} placeholder="Find a program or organization" type="search" value={search} />
+      </label>
+      <div className="switcher-body">
+        {loading ? (
+          <div className="card-state">
+            <Loader2 className="spin" size={15} />
+            Loading programs
+          </div>
+        ) : (
+          visibleSections.map((section) => (
+            <div className="switcher-group" key={section.organization.id}>
+              <div className="switcher-org">
+                <span className="org-mark tiny">{section.organization.logoUrl ? <img alt="" src={section.organization.logoUrl} /> : initialsFor(section.organization.name, 'O')}</span>
+                <span title={section.organization.name}>{formatName(section.organization.name)}</span>
+                {section.organization.id === activeOrgId ? <span className="tag">Current</span> : null}
+              </div>
+              {section.programs.length ? (
+                section.programs.map((program) => {
+                  const active = program.id === activeProgramId
+                  return (
+                    <button
+                      aria-current={active ? 'true' : undefined}
+                      className={active ? 'switcher-item active' : 'switcher-item'}
+                      disabled={openingId !== ''}
+                      key={program.id}
+                      onClick={() => void choose(section.organization.id, program.id)}
+                      type="button"
+                    >
+                      <span className={`status-dot ${program.status}`} />
+                      <span className="cell-main">
+                        <strong title={program.name}>{formatName(program.name)}</strong>
+                        <small>{formatDateRange(program.startDate, program.endDate)}</small>
+                      </span>
+                      {openingId === program.id ? <Loader2 className="spin" size={14} /> : active ? <Check size={14} /> : null}
+                    </button>
+                  )
+                })
+              ) : (
+                <p className="switcher-empty">{section.hasAccess ? 'No programs yet' : 'No access to programs here'}</p>
+              )}
+            </div>
+          ))
+        )}
+        {!loading && visibleSections.length === 0 ? <p className="switcher-empty">No programs or organizations match.</p> : null}
+      </div>
+      {error ? <p className="form-error switcher-error">{error}</p> : null}
+      {onCreateProgram ? (
+        <div className="switcher-foot">
+          <button className="text-link" onClick={() => { onClose(); onCreateProgram() }} type="button">
+            <Plus size={14} />
+            Create program
+          </button>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 function Shell({
   children,
   route,
@@ -1417,8 +1558,9 @@ function Shell({
   organization,
   selectedProgram,
   visibleNavItems,
-  onSwitchProgram,
-  onSwitchOrganization,
+  profile,
+  onOpenProgram,
+  onCreateProgram,
   user,
   roleName,
   navCounts,
@@ -1431,8 +1573,9 @@ function Shell({
   organization: Organization | null
   selectedProgram: Program | null
   visibleNavItems: typeof navItems
-  onSwitchProgram: () => void
-  onSwitchOrganization?: () => void
+  profile: PeUser
+  onOpenProgram: (orgId: string, programId: string) => void | Promise<void>
+  onCreateProgram?: () => void
   user: User
   roleName?: string
   navCounts?: Partial<Record<RouteKey, number>>
@@ -1440,6 +1583,12 @@ function Shell({
   onStartTour?: () => void
 }) {
   const activeKey: RouteKey = route === 'programCreate' ? 'programs' : route
+  const [switcher, setSwitcher] = useState<{ top: number; left: number } | null>(null)
+
+  function toggleSwitcher(event: React.MouseEvent<HTMLButtonElement>) {
+    const rect = event.currentTarget.getBoundingClientRect()
+    setSwitcher((current) => (current ? null : { top: rect.bottom + 6, left: Math.max(12, Math.min(rect.left, window.innerWidth - 348)) }))
+  }
   const groups = (Object.keys(navGroupLabels) as NavGroup[])
     .map((group) => ({ group, items: visibleNavItems.filter((item) => item.group === group) }))
     .filter((entry) => entry.items.length > 0)
@@ -1450,7 +1599,7 @@ function Shell({
         <strong title={organization?.name || undefined}>{formatName(organization?.name) || 'Organization'}</strong>
         <small>{orgTypeLabel(organization)}</small>
       </span>
-      {onSwitchOrganization ? <ChevronsUpDown size={15} /> : null}
+      <ChevronsUpDown size={15} />
     </>
   )
 
@@ -1465,11 +1614,7 @@ function Shell({
           </div>
         </div>
 
-        {onSwitchOrganization ? (
-          <button className="rail-org" data-tour="org-switcher" onClick={onSwitchOrganization} title="Switch program or organization" type="button">{orgContent}</button>
-        ) : (
-          <div className="rail-org" data-tour="org-switcher">{orgContent}</div>
-        )}
+        <button aria-expanded={Boolean(switcher)} className="rail-org" data-switcher-trigger data-tour="org-switcher" onClick={toggleSwitcher} title="Switch program or organization" type="button">{orgContent}</button>
 
         <nav aria-label="Primary navigation" className="rail-navs">
           {groups.map(({ group, items }) => (
@@ -1519,7 +1664,7 @@ function Shell({
             <ChevronRight aria-hidden="true" className="crumb-sep" size={14} />
             {selectedProgram ? (
               <>
-                <button className="crumb-program" data-tour="program-switcher" onClick={onSwitchProgram} title="Switch program" type="button">
+                <button aria-expanded={Boolean(switcher)} className="crumb-program" data-switcher-trigger data-tour="program-switcher" onClick={toggleSwitcher} title="Switch program" type="button">
                   <span title={selectedProgram.name}>{formatName(selectedProgram.name)}</span>
                   <ChevronDown size={14} />
                 </button>
@@ -1545,6 +1690,18 @@ function Shell({
         </header>
         <div className="workspace-content">{children}</div>
       </main>
+      {switcher ? (
+        <WorkspaceSwitcher
+          activeOrgId={organization?.id}
+          activeProgramId={selectedProgram?.id}
+          onClose={() => setSwitcher(null)}
+          onCreateProgram={onCreateProgram}
+          onOpenProgram={onOpenProgram}
+          position={switcher}
+          profile={profile}
+          uid={user.uid}
+        />
+      ) : null}
     </div>
   )
 }
@@ -8508,9 +8665,11 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
     if (switchingOrganization) {
       setProfile({ ...profile, activeOrgId: targetOrgId, organizationIds: Array.from(new Set([...profile.organizationIds, targetOrgId])) })
     }
+    // Switching from inside the workspace keeps the current page; sign-in and
+    // Create program land on the dashboard.
+    if (needsOrgChoice || !orgId || route === 'programCreate') setRoute('dashboard')
     setNeedsOrgChoice(false)
     setChoosingProgram(false)
-    setRoute('dashboard')
   }
 
   if (!orgId && profile.organizationIds.length > 0) {
@@ -8574,13 +8733,10 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
     setTourOpen(true)
   }
 
-  function openProgramDirectory() {
-    setChoosingProgram(true)
-  }
 
   if (route === 'programCreate' && (canCreateProgram || canCreateProgramSomewhere)) {
     return (
-      <Shell onSwitchOrganization={openProgramDirectory} onSwitchProgram={openProgramDirectory} organization={organization} route={route} selectedProgram={null} setRoute={setRoute} navCounts={navCounts} pendingPublishCount={pendingPublishCount} roleName={currentRole?.name} user={firebaseUser} visibleNavItems={programFreeNavItems}>
+      <Shell onCreateProgram={canCreateProgramSomewhere ? openProgramComposer : undefined} onOpenProgram={openProgramFromDirectory} profile={profile} organization={organization} route={route} selectedProgram={null} setRoute={setRoute} navCounts={navCounts} pendingPublishCount={pendingPublishCount} roleName={currentRole?.name} user={firebaseUser} visibleNavItems={programFreeNavItems}>
         <ProgramComposerPage
           activeOrgId={orgId}
           onCancel={() => setRoute(sortedPrograms.length > 0 ? 'programs' : 'dashboard')}
@@ -8606,7 +8762,7 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
   }
 
   return (
-    <Shell onSwitchOrganization={openProgramDirectory} onSwitchProgram={openProgramDirectory} organization={organization} route={route} onStartTour={activeProgram ? () => setTourOpen(true) : undefined} selectedProgram={activeProgram} setRoute={setRoute} navCounts={navCounts} pendingPublishCount={pendingPublishCount} roleName={currentRole?.name} user={firebaseUser} visibleNavItems={shellNavItems}>
+    <Shell onCreateProgram={canCreateProgramSomewhere ? openProgramComposer : undefined} onOpenProgram={openProgramFromDirectory} profile={profile} organization={organization} route={route} onStartTour={activeProgram ? () => setTourOpen(true) : undefined} selectedProgram={activeProgram} setRoute={setRoute} navCounts={navCounts} pendingPublishCount={pendingPublishCount} roleName={currentRole?.name} user={firebaseUser} visibleNavItems={shellNavItems}>
       <CreateOrganizationDrawer onClose={() => setOrganizationDrawerOpen(false)} onCreated={handleOrganizationCreated} open={organizationDrawerOpen} profile={profile} user={firebaseUser} />
       <WorkspaceTour onClose={() => setTourOpen(false)} open={tourOpen && Boolean(activeProgram)} />
       {programs.error || roles.error || ownMemberships.error || people.error || scheduleItems.error || venueCatalogs.error || partners.error || passes.error || members.error ? <p className="form-error">{programs.error || roles.error || ownMemberships.error || people.error || scheduleItems.error || venueCatalogs.error || partners.error || passes.error || members.error}</p> : null}

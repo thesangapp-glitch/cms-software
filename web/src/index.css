@@ -6731,6 +6731,130 @@ a:focus-visible,
   }
 }
 
+/* ---- Program / organization switcher dropdown ---- */
+
+.switcher-panel {
+  position: fixed;
+  z-index: 2500;
+  width: 336px;
+  max-width: calc(100vw - 24px);
+  max-height: min(70vh, 560px);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.16);
+  animation: switcher-in 140ms ease;
+}
+
+.switcher-search {
+  width: auto;
+  margin: 10px;
+}
+
+.switcher-body {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 6px 8px;
+}
+
+.switcher-group + .switcher-group {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.switcher-org {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.switcher-org > span:nth-child(2) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.switcher-org .tag {
+  height: 18px;
+  flex: 0 0 auto;
+  font-size: 11px;
+}
+
+.switcher-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+}
+
+.switcher-item:hover:not(:disabled) {
+  background: #f1f5f9;
+}
+
+.switcher-item.active {
+  background: var(--accent-soft);
+}
+
+.switcher-item.active svg {
+  color: var(--accent);
+}
+
+.switcher-item .cell-main {
+  flex: 1 1 auto;
+}
+
+.switcher-item .cell-main strong {
+  font-size: 13px;
+}
+
+.switcher-empty {
+  padding: 4px 8px 8px;
+  color: var(--faint);
+  font-size: 12.5px;
+}
+
+.switcher-error {
+  margin: 0 12px 8px;
+}
+
+.switcher-foot {
+  padding: 9px 14px;
+  border-top: 1px solid var(--line-soft);
+  background: #f8fafc;
+}
+
+@keyframes switcher-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .switcher-panel {
+    animation: none;
+  }
+}
+
 /* ---- Workspace tour ---- */
 
 .tour-button {
