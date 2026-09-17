@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import {
-  Activity,
   ArrowLeft,
   BadgeCheck,
   Bold,
@@ -87,7 +86,7 @@ import { LandingPage } from './landing/LandingPage'
 
 // Check-in and analytics routes are intentionally out of scope for this release.
 // Backend scanPassToken/createScannerSession remain live; only the CRM surface is hidden.
-type RouteKey = 'dashboard' | 'events' | 'venues' | 'patrons' | 'programs' | 'programCreate' | 'settings' | 'roles' | 'team' | 'people'
+type RouteKey = 'dashboard' | 'events' | 'venues' | 'patrons' | 'programs' | 'programCreate' | 'settings' | 'organization' | 'roles' | 'team' | 'people'
 type PersonKind = string
 type ProgramMode = 'standalone' | 'multiEvent'
 type TeamScope = 'organization' | 'program' | 'event'
@@ -380,16 +379,6 @@ function suggestedTeamScopeForRole(role?: Role): TeamScope {
   if (roleText.includes('event') || roleText.includes('gate')) return 'event'
   if (roleText.includes('program')) return 'program'
   return 'organization'
-}
-
-function formatDateTime(value?: string) {
-  if (!value) return 'Time pending'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return new Intl.DateTimeFormat('en-IN', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(date)
 }
 
 function timestampMs(value: unknown) {
@@ -742,7 +731,8 @@ const routeLabels: Record<RouteKey, string> = {
   patrons: 'Patrons',
   programs: 'Programs',
   programCreate: 'Create program',
-  settings: 'Settings',
+  settings: 'Program settings',
+  organization: 'Organization settings',
   roles: 'Roles',
   team: 'Team',
   people: 'People & passes',
@@ -761,12 +751,13 @@ const navItems: Array<{ key: RouteKey; icon: typeof LayoutDashboard; group: NavG
   { key: 'dashboard', icon: LayoutDashboard, group: 'program' },
   { key: 'events', icon: CalendarDays, group: 'program' },
   { key: 'people', icon: Users, group: 'program' },
+  { key: 'team', icon: ShieldCheck, group: 'program' },
   { key: 'venues', icon: MapPin, group: 'program' },
   { key: 'patrons', icon: BadgeCheck, group: 'program' },
+  { key: 'settings', icon: Settings, group: 'program' },
   { key: 'programs', icon: Layers, group: 'organization' },
-  { key: 'team', icon: ShieldCheck, group: 'organization' },
   { key: 'roles', icon: Lock, group: 'organization' },
-  { key: 'settings', icon: Settings, group: 'organization' },
+  { key: 'organization', icon: Building2, group: 'organization' },
 ]
 
 function hasPermission(role: Role | undefined, permission: string) {
@@ -790,7 +781,9 @@ function canOpenRoute(route: RouteKey, role: Role | undefined, member: TeamMembe
     case 'programCreate':
       return hasPermission(role, 'program.write') && member.scope === 'organization'
     case 'settings':
-      return (hasPermission(role, 'program.write') && member.scope !== 'event') || (hasPermission(role, 'team.write') && member.scope === 'organization')
+      return hasPermission(role, 'program.write') && member.scope !== 'event'
+    case 'organization':
+      return hasPermission(role, 'team.write') && member.scope === 'organization'
     case 'roles':
       return hasPermission(role, 'roles.write') && member.scope === 'organization'
     case 'team':
@@ -1077,6 +1070,7 @@ function avatarClass(seed: string) {
 const shortDateFormat = new Intl.DateTimeFormat('en-IN', { day: 'numeric', month: 'short' })
 const longDateFormat = new Intl.DateTimeFormat('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
 const clockFormat = new Intl.DateTimeFormat('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false })
+const agendaDayFormat = new Intl.DateTimeFormat('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })
 
 // Date-only strings ("2026-03-14") parse as UTC in JS; pin them to local midnight.
 function parseLocalDate(value?: string) {
@@ -1204,12 +1198,14 @@ function Drawer({
   open,
   onClose,
   children,
+  wide = false,
 }: {
   title: string
   description?: string
   open: boolean
   onClose: () => void
   children: ReactNode
+  wide?: boolean
 }) {
   useEffect(() => {
     if (!open) return
@@ -1229,7 +1225,7 @@ function Drawer({
 
   return (
     <div className="drawer-backdrop" role="presentation">
-      <section aria-label={title} aria-modal="true" className="drawer" role="dialog">
+      <section aria-label={title} aria-modal="true" className={wide ? 'drawer wide' : 'drawer'} role="dialog">
         <div className="drawer-head">
           <div>
             <h2>{title}</h2>
@@ -1519,15 +1515,14 @@ function Shell({
         <header className="workspace-topbar">
           <nav aria-label="Breadcrumb" className="crumbs">
             <span className="crumb-org" title={organization?.name || undefined}>{formatName(organization?.name) || 'Organization'}</span>
-            <span className="crumb-sep">/</span>
+            <ChevronRight aria-hidden="true" className="crumb-sep" size={14} />
             {selectedProgram ? (
               <>
                 <button className="crumb-program" data-tour="program-switcher" onClick={onSwitchProgram} title="Switch program" type="button">
-                  <span className={`status-dot ${selectedProgram.status}`} />
                   <span title={selectedProgram.name}>{formatName(selectedProgram.name)}</span>
                   <ChevronDown size={14} />
                 </button>
-                <span className="crumb-sep">/</span>
+                <ChevronRight aria-hidden="true" className="crumb-sep" size={14} />
               </>
             ) : null}
             <span className="crumb-current">{routeLabels[route]}</span>
@@ -2019,19 +2014,6 @@ function OnboardingPage({ user, onComplete }: { user: User; onComplete: (profile
         </button>
       </form>
     </main>
-  )
-}
-
-function Stat({ icon: Icon, label, value, detail }: { icon: typeof Activity; label: string; value: string; detail: string }) {
-  return (
-    <article className="stat-card">
-      <div className="stat-icon">
-        <Icon size={19} />
-      </div>
-      <span>{label}</span>
-      <strong>{value}</strong>
-      <p>{detail}</p>
-    </article>
   )
 }
 
@@ -3921,6 +3903,7 @@ function ProgramWorkspaceDashboard({
       </div>
 
       <div className="ws-grid">
+        <div className="ws-main">
         <section className="card">
           <div className="card-head">
             <div>
@@ -3958,6 +3941,86 @@ function ProgramWorkspaceDashboard({
             </div>
           )}
         </section>
+        <section className="card">
+          <div className="card-head">
+            <div>
+              <h2>Networking</h2>
+              <p>Sang-to-Sang connections made at this program</p>
+            </div>
+            <div className="card-head-actions">
+              {connectionAnalytics?.generatedAt ? <span className="muted-note">Updated {formatAnalyticsTimestamp(connectionAnalytics.generatedAt)}</span> : null}
+              <button aria-label="Refresh connection analytics" className="icon-button" disabled={connectionAnalyticsLoading} onClick={() => void loadConnectionAnalytics()} title="Refresh" type="button">
+                {connectionAnalyticsLoading ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}
+              </button>
+            </div>
+          </div>
+  
+          {connectionAnalyticsError ? <p className="form-error table-message">{connectionAnalyticsError}</p> : null}
+  
+          {connectionAnalyticsLoading && !connectionAnalytics ? (
+            <div className="card-state">
+              <Loader2 className="spin" size={16} />
+              Loading connection analytics
+            </div>
+          ) : connectionAnalytics && connectionAnalytics.totalConnections > 0 ? (
+            <>
+              {connectionAnalytics.limitReached ? (
+                <div className="card-note">
+                  <ShieldCheck size={15} />
+                  Large program: this report shows the first 1,000 connection records.
+                </div>
+              ) : null}
+              <div className="net-grid">
+                <section>
+                  <div className="net-totals">
+                    <div>
+                      <span>Total connections</span>
+                      <strong>{formatCount(connectionAnalytics.totalConnections)}</strong>
+                    </div>
+                    <div>
+                      <span>Unique Sang users</span>
+                      <strong>{formatCount(connectionAnalytics.uniquePeopleCount)}</strong>
+                    </div>
+                    <div>
+                      <span>Latest activity</span>
+                      <strong>{formatAnalyticsTimestamp(latestConnectionAt)}</strong>
+                    </div>
+                  </div>
+                  <div className="net-label">
+                    <span>Connections by event</span>
+                    <span>Unique users</span>
+                  </div>
+                  {connectionAnalytics.eventBreakdown.map((eventStat) => (
+                    <div className="bar-list-row" key={eventStat.eventId || eventStat.eventName}>
+                      <span title={eventStat.eventName}>{eventStat.eventName}</span>
+                      <span className="bar-track">
+                        <i style={{ width: `calc((100% - 64px) * ${(eventStat.connectionCount / maxConnections).toFixed(4)})` }} />
+                        <b>{formatCount(eventStat.connectionCount)}</b>
+                      </span>
+                      <span>{formatCount(eventStat.uniquePeopleCount)}</span>
+                    </div>
+                  ))}
+                </section>
+                <section>
+                  <div className="net-label">
+                    <span>Recent activity</span>
+                    <span>Last {formatCount(connectionAnalytics.recentConnections.length)}</span>
+                  </div>
+                  {connectionAnalytics.recentConnections.map((connection, index) => (
+                    <div className="activity-row" key={`${connection.eventId || connection.eventName}-${connection.connectedAt || index}`}>
+                      <span className="activity-icon"><Link2 size={13} /></span>
+                      <span>New connection at <strong>{connection.eventName || program.name}</strong></span>
+                      <small>{formatAnalyticsTimestamp(connection.connectedAt)}</small>
+                    </div>
+                  ))}
+                </section>
+              </div>
+            </>
+          ) : (
+            <EmptyState title="No event connections yet" body="When attendees connect through Sang during this program, totals and event-wise counts will appear here." />
+          )}
+        </section>
+        </div>
 
         <div className="ws-side">
           <section className="card" data-tour="publishing">
@@ -4029,85 +4092,6 @@ function ProgramWorkspaceDashboard({
         </div>
       </div>
 
-      <section className="card">
-        <div className="card-head">
-          <div>
-            <h2>Networking</h2>
-            <p>Sang-to-Sang connections made at this program</p>
-          </div>
-          <div className="card-head-actions">
-            {connectionAnalytics?.generatedAt ? <span className="muted-note">Updated {formatAnalyticsTimestamp(connectionAnalytics.generatedAt)}</span> : null}
-            <button aria-label="Refresh connection analytics" className="icon-button" disabled={connectionAnalyticsLoading} onClick={() => void loadConnectionAnalytics()} title="Refresh" type="button">
-              {connectionAnalyticsLoading ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}
-            </button>
-          </div>
-        </div>
-
-        {connectionAnalyticsError ? <p className="form-error table-message">{connectionAnalyticsError}</p> : null}
-
-        {connectionAnalyticsLoading && !connectionAnalytics ? (
-          <div className="card-state">
-            <Loader2 className="spin" size={16} />
-            Loading connection analytics
-          </div>
-        ) : connectionAnalytics && connectionAnalytics.totalConnections > 0 ? (
-          <>
-            {connectionAnalytics.limitReached ? (
-              <div className="card-note">
-                <ShieldCheck size={15} />
-                Large program: this report shows the first 1,000 connection records.
-              </div>
-            ) : null}
-            <div className="net-grid">
-              <section>
-                <div className="net-totals">
-                  <div>
-                    <span>Total connections</span>
-                    <strong>{formatCount(connectionAnalytics.totalConnections)}</strong>
-                  </div>
-                  <div>
-                    <span>Unique Sang users</span>
-                    <strong>{formatCount(connectionAnalytics.uniquePeopleCount)}</strong>
-                  </div>
-                  <div>
-                    <span>Latest activity</span>
-                    <strong>{formatAnalyticsTimestamp(latestConnectionAt)}</strong>
-                  </div>
-                </div>
-                <div className="net-label">
-                  <span>Connections by event</span>
-                  <span>Unique users</span>
-                </div>
-                {connectionAnalytics.eventBreakdown.map((eventStat) => (
-                  <div className="bar-list-row" key={eventStat.eventId || eventStat.eventName}>
-                    <span title={eventStat.eventName}>{eventStat.eventName}</span>
-                    <span className="bar-track">
-                      <i style={{ width: `calc((100% - 64px) * ${(eventStat.connectionCount / maxConnections).toFixed(4)})` }} />
-                      <b>{formatCount(eventStat.connectionCount)}</b>
-                    </span>
-                    <span>{formatCount(eventStat.uniquePeopleCount)}</span>
-                  </div>
-                ))}
-              </section>
-              <section>
-                <div className="net-label">
-                  <span>Recent activity</span>
-                  <span>Last {formatCount(connectionAnalytics.recentConnections.length)}</span>
-                </div>
-                {connectionAnalytics.recentConnections.map((connection, index) => (
-                  <div className="activity-row" key={`${connection.eventId || connection.eventName}-${connection.connectedAt || index}`}>
-                    <span className="activity-icon"><Link2 size={13} /></span>
-                    <span>New connection at <strong>{connection.eventName || program.name}</strong></span>
-                    <small>{formatAnalyticsTimestamp(connection.connectedAt)}</small>
-                  </div>
-                ))}
-              </section>
-            </div>
-          </>
-        ) : (
-          <EmptyState title="No event connections yet" body="When attendees connect through Sang during this program, totals and event-wise counts will appear here." />
-        )}
-      </section>
     </>
   )
 }
@@ -4126,68 +4110,78 @@ function VenuesPage({
   const [venueLibraryOpen, setVenueLibraryOpen] = useState(false)
 
   return (
-    <section className="page-stack">
-      <section className="venue-page-hero">
-        <div>
-          <span className="eyebrow">Program venue library</span>
-          <h1>{formatName(program.name)} venues</h1>
-          <p>Save campuses, auditoriums, halls, rooms, stages, zones, and booth areas once. Schedule rows can reuse these saved venues with coordinates and room details.</p>
-        </div>
-        <button className="primary-button" onClick={() => setVenueLibraryOpen(true)} type="button">
-          <Plus size={17} />
-          Add venue
-        </button>
-      </section>
-
-      <div className="stats-grid">
-        <Stat icon={MapPin} label="Saved venues" value={formatCount(venues.length)} detail="Reusable in event schedules" />
-        <Stat icon={Building2} label="Rooms and halls" value={formatCount(roomCount)} detail="Inside saved venues" />
-        <Stat icon={CalendarDays} label="Program" value={program.mode === 'standalone' ? 'Single' : 'Multi'} detail="Venue library is program scoped" />
-        <Stat icon={Check} label="Schedule ready" value={venues.length ? 'Yes' : 'No'} detail={venues.length ? 'Dropdown suggestions active' : 'Add the first venue'} />
-      </div>
-
-      <section className="panel">
-        <div className="panel-heading">
-          <div>
-            <span className="eyebrow">Saved library</span>
-            <h2>Venues, halls, rooms</h2>
-          </div>
-          <button className="secondary-button" onClick={() => setVenueLibraryOpen(true)} type="button">
-            <Pencil size={16} />
-            Manage venues
+    <>
+      <PageHeader
+        actions={(
+          <button className="primary-button" onClick={() => setVenueLibraryOpen(true)} type="button">
+            <Plus size={15} />
+            Add venue
           </button>
-        </div>
-
-        {venues.length === 0 ? (
-          <EmptyState title="No saved venues yet" body="Add the first venue with map coordinates, then add halls, rooms, stages, or zones under it." />
-        ) : (
-          <div className="venue-page-grid">
-            {venues.map((venue) => (
-              <article className="venue-page-card" key={venue.id}>
-                <div className="venue-page-card-head">
-                  <span><MapPin size={17} /></span>
-                  <button className="icon-button" onClick={() => setVenueLibraryOpen(true)} title="Edit venue" type="button">
-                    <Pencil size={16} />
-                  </button>
-                </div>
-                <strong>{venue.name}</strong>
-                <p>{venue.address || 'Address not added yet'}</p>
-                <small>
-                  {venue.latitude !== undefined && venue.longitude !== undefined
-                    ? `${venue.latitude.toFixed(5)}, ${venue.longitude.toFixed(5)}`
-                    : 'Coordinates pending'}
-                </small>
-                <div className="venue-card-rooms">
-                  {venue.rooms?.length ? venue.rooms.slice(0, 5).map((room) => (
-                    <span className="chip" key={room.id}>{room.name}{room.floor ? ` - ${room.floor}` : ''}</span>
-                  )) : <span className="chip muted-chip">No rooms added</span>}
-                  {(venue.rooms?.length || 0) > 5 && <span className="chip">+{(venue.rooms?.length || 0) - 5}</span>}
-                </div>
-              </article>
-            ))}
-          </div>
         )}
-      </section>
+        description={`Campuses, halls, rooms and stages for ${formatName(program.name)}. Events and schedule blocks pick from this list.`}
+        title="Venues"
+      />
+
+      {venues.length === 0 ? (
+        <section className="card">
+          <div className="empty-with-action">
+            <EmptyState title="No venues yet" body="Add the main campus or venue with its map pin, then list the halls, rooms and stages inside it." />
+            <button className="primary-button" onClick={() => setVenueLibraryOpen(true)} type="button">
+              <Plus size={15} />
+              Add venue
+            </button>
+          </div>
+        </section>
+      ) : (
+        <>
+          <div className="summary-line">
+            <span><b>{formatCount(venues.length)}</b> venue{venues.length === 1 ? '' : 's'}</span>
+            <span><b>{formatCount(roomCount)}</b> hall{roomCount === 1 ? '' : 's'} and rooms</span>
+          </div>
+          <div className="venue-grid">
+            {venues.map((venue) => {
+              const rooms = venue.rooms || []
+              const pinned = typeof venue.latitude === 'number' && typeof venue.longitude === 'number'
+              return (
+                <article className="card venue-card" key={venue.id}>
+                  <div className="venue-card-head">
+                    <span className="venue-card-icon"><MapPin size={17} /></span>
+                    <span className="cell-main">
+                      <strong title={venue.name}>{venue.name}</strong>
+                      <small title={venue.address}>{venue.address || 'Address not added yet'}</small>
+                    </span>
+                    <button aria-label={`Edit ${venue.name}`} className="icon-button ghost" onClick={() => setVenueLibraryOpen(true)} title="Edit venue" type="button">
+                      <Pencil size={15} />
+                    </button>
+                  </div>
+                  <div className="venue-card-meta">
+                    <span className={pinned ? 'inline-icon-text on' : 'inline-icon-text'}>
+                      <MapPin size={13} />
+                      {pinned ? 'Pinned on map' : 'No map pin yet'}
+                    </span>
+                    <span className="inline-icon-text">
+                      <Building2 size={13} />
+                      {formatCount(rooms.length)} hall{rooms.length === 1 ? '' : 's'}
+                    </span>
+                  </div>
+                  {rooms.length ? (
+                    <div className="venue-rooms">
+                      {rooms.map((room) => (
+                        <div className="venue-room" key={room.id || room.name}>
+                          <span>{room.name}</span>
+                          <small>{[room.floor, room.capacity ? `${room.capacity} seats` : ''].filter(Boolean).join(' · ')}</small>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="muted-note venue-card-note">No halls or rooms added yet.</p>
+                  )}
+                </article>
+              )
+            })}
+          </div>
+        </>
+      )}
 
       <VenueLibraryModal
         orgId={orgId}
@@ -4196,7 +4190,7 @@ function VenuesPage({
         program={program}
         venueCatalog={venueCatalog}
       />
-    </section>
+    </>
   )
 }
 
@@ -4229,6 +4223,8 @@ function PatronsPage({
   const [status, setStatus] = useState<'active' | 'hidden'>('active')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+
+  const [partnerDrawerOpen, setPartnerDrawerOpen] = useState(false)
 
   function resetForm() {
     setEditingPartner(null)
@@ -4281,6 +4277,7 @@ function PatronsPage({
         status,
       })
       resetForm()
+      setPartnerDrawerOpen(false)
     } catch (partnerError) {
       setError(errorMessage(partnerError, 'Unable to save patron.'))
     } finally {
@@ -4312,141 +4309,188 @@ function PatronsPage({
       .join('') || 'P'
   }
 
+  function openNewPartner() {
+    resetForm()
+    setError('')
+    setPartnerDrawerOpen(true)
+  }
+
+  function openEditPartner(partner: ProgramPartner) {
+    startEdit(partner)
+    setError('')
+    setPartnerDrawerOpen(true)
+  }
+
+  function closePartnerDrawer() {
+    setPartnerDrawerOpen(false)
+    resetForm()
+  }
+
+  function exportPartners() {
+    downloadCsv('sang-program-patrons.csv', sortedPartners.map((partner) => ({
+      name: partner.name,
+      tier: partner.tier || '',
+      category: partner.category || '',
+      booth: partner.booth || '',
+      website: partner.websiteUrl || '',
+      status: partner.status || 'active',
+    })))
+  }
+
   return (
-    <section className="page-stack">
-      <section className="venue-page-hero patrons-hero">
-        <div>
-          <span className="eyebrow">Patrons and sponsors</span>
-          <h1>{formatName(program.name)} partners</h1>
-          <p>Manage sponsor logos, tiers, categories, booth locations, websites, and short descriptions shown inside the Sang mobile app.</p>
-        </div>
-        <span className="schedule-count"><BadgeCheck size={16} /> {formatCount(visiblePartners.length)} live</span>
-      </section>
+    <>
+      <PageHeader
+        actions={(
+          <>
+            <button className="secondary-button" disabled={!sortedPartners.length} onClick={exportPartners} type="button">
+              <Download size={15} />
+              Export CSV
+            </button>
+            <button className="primary-button" onClick={openNewPartner} type="button">
+              <Plus size={15} />
+              Add sponsor
+            </button>
+          </>
+        )}
+        description={`Sponsors and partners shown in the Sang app for ${formatName(program.name)}.`}
+        title="Patrons"
+      />
+      {error && !partnerDrawerOpen ? <p className="form-error">{error}</p> : null}
 
-      <div className="stats-grid">
-        <Stat icon={BadgeCheck} label="Visible patrons" value={formatCount(visiblePartners.length)} detail="Shown in mobile app" />
-        <Stat icon={Building2} label="Hidden" value={formatCount(hiddenPartners)} detail="Saved but not visible" />
-        <Stat icon={Ticket} label="Program" value={program.mode === 'standalone' ? 'Single' : 'Multi'} detail="Partners are program scoped" />
-        <Stat icon={Link2} label="Websites" value={formatCount(visiblePartners.filter((partner) => partner.websiteUrl).length)} detail="External links captured" />
-      </div>
-
-      <section className="page-grid">
-        <form className="panel form-panel" onSubmit={savePartner}>
-          <div className="panel-heading">
+      {sortedPartners.length === 0 ? (
+        <section className="card">
+          <div className="empty-with-action">
+            <EmptyState title="No sponsors yet" body="Add title sponsors, partners, exhibitors and community partners. Visible ones appear in the Patrons tab of the Sang app." />
+            <button className="primary-button" onClick={openNewPartner} type="button">
+              <Plus size={15} />
+              Add sponsor
+            </button>
+          </div>
+        </section>
+      ) : (
+        <section className="card data-table-card">
+          <div className="card-head">
             <div>
-              <span className="eyebrow">{editingPartner ? 'Edit patron' : 'Add patron'}</span>
-              <h2>{editingPartner ? editingPartner.name : 'Partner profile'}</h2>
+              <h2>{formatCount(sortedPartners.length)} sponsor{sortedPartners.length === 1 ? '' : 's'}</h2>
+              <p>{formatCount(visiblePartners.length)} visible in the Sang app · {formatCount(hiddenPartners)} hidden</p>
             </div>
-            <BadgeCheck size={20} />
           </div>
-          {error && <p className="form-error">{error}</p>}
-          <ImageUploader folder="program-partners" label="Logo" onChange={setLogoUrl} uid={uid} value={logoUrl} />
-          <label>
-            Name
-            <input placeholder="Sang Labs" value={name} onChange={(event) => setName(event.target.value)} required />
-          </label>
-          <div className="form-grid two">
-            <label>
-              Tier
-              <input placeholder="Title Partner, Gold Patron..." value={tier} onChange={(event) => setTier(event.target.value)} />
-            </label>
-            <label>
-              Category
-              <input placeholder="Fintech, hiring, community..." value={category} onChange={(event) => setCategory(event.target.value)} />
-            </label>
-            <label>
-              Booth
-              <input placeholder="A1, Hall 2, booth 18..." value={booth} onChange={(event) => setBooth(event.target.value)} />
-            </label>
-            <label>
-              Sort order
-              <input min={0} type="number" value={sortOrder} onChange={(event) => setSortOrder(Number(event.target.value || 0))} />
-            </label>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Sponsor</th>
+                  <th>Tier</th>
+                  <th>Category</th>
+                  <th>Booth</th>
+                  <th>Website</th>
+                  <th>Visibility</th>
+                  <th className="actions-col">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedPartners.map((partner) => (
+                  <tr key={partner.id}>
+                    <td>
+                      <div className="person-cell">
+                        <span className="partner-mark">{partner.logoUrl ? <img alt="" src={partner.logoUrl} /> : initialsFor(partner.name)}</span>
+                        <span className="cell-main">
+                          <strong title={partner.name}>{partner.name}</strong>
+                          <small>{richTextToPlainText(partner.description) || 'No description yet'}</small>
+                        </span>
+                      </div>
+                    </td>
+                    <td>{partner.tier || 'Partner'}</td>
+                    <td className="cell-muted">{partner.category || '—'}</td>
+                    <td className="cell-muted">{partner.booth || '—'}</td>
+                    <td>
+                      {partner.websiteUrl ? (
+                        <a className="text-link" href={partner.websiteUrl} rel="noreferrer" target="_blank">
+                          Visit
+                          <Link2 size={13} />
+                        </a>
+                      ) : <span className="cell-muted">—</span>}
+                    </td>
+                    <td><span className={`status ${partner.status === 'hidden' ? 'draft' : 'active'}`}>{partner.status === 'hidden' ? 'Hidden' : 'Visible'}</span></td>
+                    <td className="actions-col">
+                      <div className="table-actions">
+                        <button aria-label={`Edit ${partner.name}`} className="icon-button ghost" onClick={() => openEditPartner(partner)} title="Edit sponsor" type="button">
+                          <Pencil size={16} />
+                        </button>
+                        <button aria-label={`Delete ${partner.name}`} className="icon-button ghost danger-icon" disabled={busy} onClick={() => removePartner(partner)} title="Delete sponsor" type="button">
+                          {busy ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-          <label>
-            Website
-            <input placeholder="https://..." value={websiteUrl} onChange={(event) => setWebsiteUrl(event.target.value)} />
-          </label>
-          <label>
-            Visibility
-            <select value={status} onChange={(event) => setStatus(event.target.value as 'active' | 'hidden')}>
-              <option value="active">Visible in Sang app</option>
-              <option value="hidden">Hidden for now</option>
-            </select>
-          </label>
-          <RichTextEditor label="Description" onChange={setDescription} placeholder="Short sponsor or patron introduction for attendees." value={description} />
-          <div className="action-row split-actions">
-            <button className="secondary-button" onClick={resetForm} type="button">
-              <X size={16} />
-              Clear
+        </section>
+      )}
+
+      <Drawer
+        description="Visible sponsors appear in the Patrons tab of the Sang app."
+        onClose={closePartnerDrawer}
+        open={partnerDrawerOpen}
+        title={editingPartner ? `Edit ${editingPartner.name}` : 'Add sponsor'}
+      >
+        <form className="drawer-form" onSubmit={savePartner}>
+          <div className="drawer-sections">
+            {error ? <p className="form-error">{error}</p> : null}
+            <div className="drawer-section">
+              <ImageUploader folder="program-partners" label="Logo" onChange={setLogoUrl} uid={uid} value={logoUrl} />
+              <label>
+                Name
+                <input placeholder="Company or organization" value={name} onChange={(event) => setName(event.target.value)} required />
+              </label>
+              <div className="field-pair">
+                <label>
+                  Tier
+                  <input placeholder="Title sponsor, Gold…" value={tier} onChange={(event) => setTier(event.target.value)} />
+                </label>
+                <label>
+                  Category
+                  <input placeholder="Fintech, hiring, community…" value={category} onChange={(event) => setCategory(event.target.value)} />
+                </label>
+              </div>
+              <div className="field-pair">
+                <label>
+                  Booth
+                  <input placeholder="A1, Hall 2…" value={booth} onChange={(event) => setBooth(event.target.value)} />
+                </label>
+                <label>
+                  Sort order
+                  <input min={0} type="number" value={sortOrder} onChange={(event) => setSortOrder(Number(event.target.value || 0))} />
+                </label>
+              </div>
+              <label>
+                Website
+                <input placeholder="https://" value={websiteUrl} onChange={(event) => setWebsiteUrl(event.target.value)} />
+              </label>
+              <label>
+                Visibility
+                <select value={status} onChange={(event) => setStatus(event.target.value as 'active' | 'hidden')}>
+                  <option value="active">Visible in the Sang app</option>
+                  <option value="hidden">Hidden for now</option>
+                </select>
+              </label>
+              <RichTextEditor label="Description" onChange={setDescription} placeholder="A short introduction attendees will see." value={description} />
+            </div>
+          </div>
+          <div className="drawer-foot">
+            <button className="secondary-button" disabled={busy} onClick={closePartnerDrawer} type="button">
+              Cancel
             </button>
             <button className="primary-button" disabled={busy} type="submit">
-              {busy ? <Loader2 className="spin" size={17} /> : <Save size={17} />}
-              {editingPartner ? 'Save patron' : 'Add patron'}
+              {busy ? <Loader2 className="spin" size={15} /> : <Save size={15} />}
+              {editingPartner ? 'Save sponsor' : 'Add sponsor'}
             </button>
           </div>
         </form>
-
-        <section className="panel">
-          <div className="panel-heading">
-            <div>
-              <span className="eyebrow">Mobile directory</span>
-              <h2>Patrons list</h2>
-            </div>
-            <button
-              className="icon-button"
-              disabled={!sortedPartners.length}
-              onClick={() => downloadCsv('sang-program-patrons.csv', sortedPartners.map((partner) => ({
-                name: partner.name,
-                tier: partner.tier || '',
-                category: partner.category || '',
-                booth: partner.booth || '',
-                website: partner.websiteUrl || '',
-                status: partner.status || 'active',
-              })))}
-              title="Download patrons CSV"
-              type="button"
-            >
-              <Download size={18} />
-            </button>
-          </div>
-          {sortedPartners.length === 0 ? (
-            <EmptyState title="No patrons yet" body="Add title partners, sponsors, exhibitors, and community partners here. Active records appear in the Sang mobile Patrons tab." />
-          ) : (
-            <div className="partner-list">
-              {sortedPartners.map((partner) => (
-                <article className="partner-card" key={partner.id}>
-                  <div className="partner-logo">
-                    {partner.logoUrl ? <img alt="" src={partner.logoUrl} /> : <span>{initialsFor(partner.name)}</span>}
-                  </div>
-                  <div className="partner-body">
-                    <div className="partner-topline">
-                      <strong>{partner.name}</strong>
-                      <span className={`status ${partner.status === 'hidden' ? 'draft' : 'active'}`}>{partner.status || 'active'}</span>
-                    </div>
-                    <p>{richTextToPlainText(partner.description) || 'No description yet.'}</p>
-                    <div className="chip-row">
-                      <span className="chip">{partner.tier || 'Partner'}</span>
-                      {partner.category && <span className="chip">{partner.category}</span>}
-                      {partner.booth && <span className="chip">Booth {partner.booth}</span>}
-                      {partner.websiteUrl && <span className="chip">Website</span>}
-                    </div>
-                  </div>
-                  <div className="table-actions">
-                    <button className="icon-button" onClick={() => startEdit(partner)} title="Edit patron" type="button">
-                      <Pencil size={16} />
-                    </button>
-                    <button className="icon-button danger-icon" disabled={busy} onClick={() => removePartner(partner)} title="Delete patron" type="button">
-                      {busy ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />}
-                    </button>
-                  </div>
-                </article>
-              ))}
-            </div>
-          )}
-        </section>
-      </section>
-    </section>
+      </Drawer>
+    </>
   )
 }
 
@@ -4602,6 +4646,8 @@ function useOrganizationOptions(profile: PeUser, uid: string) {
 
 function ProgramComposerPage({
   user,
+  profile,
+  onOrganizationCreated,
   activeOrgId,
   organizationOptions,
   organizationsLoading,
@@ -4609,6 +4655,8 @@ function ProgramComposerPage({
   onCancel,
 }: {
   user: User
+  profile: PeUser
+  onOrganizationCreated: (profile: PeUser) => void
   activeOrgId: string
   organizationOptions: OrganizationOption[]
   organizationsLoading: boolean
@@ -4621,6 +4669,7 @@ function ProgramComposerPage({
   )
 
   const [targetOrgId, setTargetOrgId] = useState('')
+  const [organizationDrawerOpen, setOrganizationDrawerOpen] = useState(false)
 
   const [name, setName] = useState('')
   const [tagline, setTagline] = useState('')
@@ -4646,14 +4695,16 @@ function ProgramComposerPage({
 
   const selectedDraftVenue = draftVenues.find((venue) => venue.id === selectedVenueId) || null
 
-  // Default to the workspace the organizer is already in. New organizations are
-  // created from the program chooser, not here.
+  // Nothing is preselected: the organizer picks an organization or adds one. An
+  // organization just created (here or on the Programs page) is selected once it loads.
   useEffect(() => {
-    if (organizationsLoading || targetOrgId) return
-    const preferred = writableOrganizations.find((organization) => organization.id === activeOrgId)
-      || writableOrganizations[0]
-    if (preferred) setTargetOrgId(preferred.id)
-  }, [activeOrgId, organizationsLoading, targetOrgId, writableOrganizations])
+    const createdOrgId = window.sessionStorage.getItem('sang-crm-new-org')
+    if (!createdOrgId || organizationsLoading) return
+    if (writableOrganizations.some((organization) => organization.id === createdOrgId)) {
+      setTargetOrgId(createdOrgId)
+      window.sessionStorage.removeItem('sang-crm-new-org')
+    }
+  }, [organizationsLoading, writableOrganizations])
 
   async function submit(event: FormEvent) {
     event.preventDefault()
@@ -4751,10 +4802,8 @@ function ProgramComposerPage({
           <p>
             {targetOrganization ? (
               <>This program will be created in <strong>{formatName(targetOrganization.name)}</strong>. Set the dates, venue and artwork — events, people, passes and analytics all live inside it.</>
-            ) : organizationsLoading ? (
-              'Loading your organization…'
             ) : (
-              'None of your organizations let you create programs yet. Create an organization from the Programs page first.'
+              'Choose the organization this program belongs to, then add its details.'
             )}
           </p>
         </div>
@@ -4763,9 +4812,56 @@ function ProgramComposerPage({
         </button>
       </section>
 
-      <form className="composer-layout single" onSubmit={submit}>
-        <div className="composer-form">
-          <div className="form-grid two">
+      <form className="card section-form" onSubmit={submit}>
+        <section className="form-section">
+          <div className="form-section-intro">
+            <h2>Organization</h2>
+            <p>Who runs this program? Pick one of your organizations or add a new one.</p>
+          </div>
+          <div className="form-section-fields">
+            {organizationsLoading ? (
+              <p className="muted-note"><Loader2 className="spin" size={14} /> Loading your organizations</p>
+            ) : (
+              <div aria-label="Organization" className="org-choice-grid" role="radiogroup">
+                {writableOrganizations.map((organization) => {
+                  const selected = targetOrgId === organization.id
+                  return (
+                    <button
+                      aria-checked={selected}
+                      className={selected ? 'org-choice selected' : 'org-choice'}
+                      key={organization.id}
+                      onClick={() => { setError(''); setTargetOrgId(organization.id) }}
+                      role="radio"
+                      type="button"
+                    >
+                      <span className="org-mark">{organization.logoUrl ? <img alt="" src={organization.logoUrl} /> : initialsFor(organization.name, 'O')}</span>
+                      <span className="org-choice-text">
+                        <strong title={organization.name}>{formatName(organization.name)}</strong>
+                        <small>{orgTypeLabel(organization)}{organization.id === activeOrgId ? ' · Current' : ''}</small>
+                      </span>
+                      <span aria-hidden="true" className="org-choice-radio">{selected ? <Check size={11} strokeWidth={3} /> : null}</span>
+                    </button>
+                  )
+                })}
+                <button className="org-choice add" onClick={() => setOrganizationDrawerOpen(true)} type="button">
+                  <span className="org-mark add"><Plus size={16} /></span>
+                  <span className="org-choice-text">
+                    <strong>Add a new organization</strong>
+                    <small>Create one and run this program under it</small>
+                  </span>
+                </button>
+              </div>
+            )}
+          </div>
+        </section>
+
+        <fieldset className="form-sections-gate" disabled={!targetOrgId}>
+        <section className="form-section">
+          <div className="form-section-intro">
+            <h2>Basics</h2>
+            <p>Name and type. The subtitle appears under the name in the Sang app.</p>
+          </div>
+          <div className="form-section-fields form-grid two">
             <label>
               Program name
               <input placeholder="Annual Tech Summit 2026" value={name} onChange={(event) => setName(event.target.value)} required />
@@ -4783,7 +4879,7 @@ function ProgramComposerPage({
             {programType === 'custom' && (
               <label>
                 Custom program type
-                <input placeholder="Symposium, hackathon, annual meet..." value={customProgramType} onChange={(event) => setCustomProgramType(event.target.value)} required />
+                <input placeholder="Symposium, hackathon, annual meet…" value={customProgramType} onChange={(event) => setCustomProgramType(event.target.value)} required />
               </label>
             )}
             <label>
@@ -4793,68 +4889,102 @@ function ProgramComposerPage({
                 <option value="standalone">Standalone program/event</option>
               </select>
             </label>
-            <label>
-              Start date
-              <input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} required />
-            </label>
-            <label>
-              Start time
-              <input type="time" value={startTime} onChange={(event) => setStartTime(event.target.value)} />
-            </label>
-            <label>
-              End date
-              <input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} required />
-            </label>
-            <label>
-              End time
-              <input type="time" value={endTime} onChange={(event) => setEndTime(event.target.value)} />
-            </label>
           </div>
+        </section>
 
-          <div className="form-grid three">
-            <ImageUploader folder="program-logos" label="Program logo" onChange={setLogoUrl} uid={user.uid} value={logoUrl} />
-            <ImageUploader folder="program-banners" label="Program banner" onChange={setBannerUrl} uid={user.uid} value={bannerUrl} />
-            <ImageUploader folder="program-posters" label="Program poster" onChange={setPosterUrl} uid={user.uid} value={posterUrl} />
+        <section className="form-section">
+          <div className="form-section-intro">
+            <h2>Dates and venue</h2>
+            <p>When and where it runs. Halls and rooms can be added later.</p>
           </div>
-
-          <ProgramVenueSelector
-            helper="Choose the broad program venue. Halls, rooms, stages, and booths stay optional and can be refined later in the venue library and schedule."
-            label="Program venue"
-            onAddVenue={() => setVenueDraftOpen(true)}
-            onChoose={(selection) => setSelectedVenueId(selection.venueId)}
-            value={selectedVenueId}
-            venues={draftVenues}
-          />
-
-          <div className="assignment-box">
-            <span>Access and results</span>
+          <div className="form-section-fields">
             <div className="form-grid two">
-              <label className="check-row">
-                <input checked={competitive} onChange={(event) => { setCompetitive(event.target.checked); if (!event.target.checked) setResultsEnabled(false) }} type="checkbox" />
-                <span>This program has competition/results</span>
+              <label>
+                Start date
+                <input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} required />
               </label>
-              {competitive && (
-                <label className="check-row">
-                  <input checked={resultsEnabled} onChange={(event) => setResultsEnabled(event.target.checked)} type="checkbox" />
-                  <span>Results will be published from CRM</span>
-                </label>
-              )}
+              <label>
+                Start time
+                <input type="time" value={startTime} onChange={(event) => setStartTime(event.target.value)} />
+              </label>
+              <label>
+                End date
+                <input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} required />
+              </label>
+              <label>
+                End time
+                <input type="time" value={endTime} onChange={(event) => setEndTime(event.target.value)} />
+              </label>
             </div>
+            <ProgramVenueSelector
+              helper="The main venue for the program. Halls, rooms and stages can be refined later."
+              label="Program venue"
+              onAddVenue={() => setVenueDraftOpen(true)}
+              onChoose={(selection) => setSelectedVenueId(selection.venueId)}
+              value={selectedVenueId}
+              venues={draftVenues}
+            />
           </div>
+        </section>
 
-          <RichTextEditor label="About this program" onChange={setDescription} placeholder="Write a polished program overview with headings, bullets, and highlights." value={description} />
+        <section className="form-section">
+          <div className="form-section-intro">
+            <h2>Artwork</h2>
+            <p>Optional. Logo, wide banner and poster for program cards and the Sang app.</p>
+          </div>
+          <div className="form-section-fields form-grid three">
+            <ImageUploader folder="program-logos" label="Logo" onChange={setLogoUrl} uid={user.uid} value={logoUrl} />
+            <ImageUploader folder="program-banners" label="Banner" onChange={setBannerUrl} uid={user.uid} value={bannerUrl} />
+            <ImageUploader folder="program-posters" label="Poster" onChange={setPosterUrl} uid={user.uid} value={posterUrl} />
+          </div>
+        </section>
 
+        <section className="form-section">
+          <div className="form-section-intro">
+            <h2>Competition and results</h2>
+            <p>Turn these on if events in this program are judged.</p>
+          </div>
+          <div className="form-section-fields">
+            <label className="toggle-row">
+              <input checked={competitive} onChange={(event) => { setCompetitive(event.target.checked); if (!event.target.checked) setResultsEnabled(false) }} type="checkbox" />
+              <span>
+                <strong>This program has competitions</strong>
+                <small>Events can be marked competitive, with judging rounds.</small>
+              </span>
+            </label>
+            {competitive && (
+              <label className="toggle-row">
+                <input checked={resultsEnabled} onChange={(event) => setResultsEnabled(event.target.checked)} type="checkbox" />
+                <span>
+                  <strong>Publish results from the CRM</strong>
+                  <small>Winners are shared with attendees in the Sang app.</small>
+                </span>
+              </label>
+            )}
+          </div>
+        </section>
+
+        <section className="form-section">
+          <div className="form-section-intro">
+            <h2>About</h2>
+            <p>Shown on the program page in the Sang app.</p>
+          </div>
+          <div className="form-section-fields">
+            <RichTextEditor label="About this program" onChange={setDescription} placeholder="A short overview with highlights." value={description} />
+          </div>
+        </section>
+
+        </fieldset>
+
+        <div className="form-footer">
           {error && <p className="form-error">{error}</p>}
-
-          <div className="action-row">
-            <button className="secondary-button" disabled={busy} onClick={onCancel} type="button">
-              Cancel
-            </button>
-            <button className="primary-button" disabled={busy} type="submit">
-              {busy ? <Loader2 className="spin" size={17} /> : <Plus size={17} />}
-              {busy ? step || 'Working' : 'Create program'}
-            </button>
-          </div>
+          <button className="secondary-button" disabled={busy} onClick={onCancel} type="button">
+            Cancel
+          </button>
+          <button className="primary-button" disabled={busy || !targetOrgId} title={targetOrgId ? undefined : 'Choose an organization first'} type="submit">
+            {busy ? <Loader2 className="spin" size={15} /> : <Plus size={15} />}
+            {busy ? step || 'Working' : 'Create program'}
+          </button>
         </div>
       </form>
 
@@ -4867,6 +4997,16 @@ function ProgramComposerPage({
         }}
         open={venueDraftOpen}
         venues={draftVenues}
+      />
+      <CreateOrganizationDrawer
+        onClose={() => setOrganizationDrawerOpen(false)}
+        onCreated={(nextProfile) => {
+          setOrganizationDrawerOpen(false)
+          onOrganizationCreated(nextProfile)
+        }}
+        open={organizationDrawerOpen}
+        profile={profile}
+        user={user}
       />
     </section>
   )
@@ -5755,6 +5895,7 @@ function ScheduleManager({
   const [publishing, setPublishing] = useState(false)
   const [venueModalOpen, setVenueModalOpen] = useState(false)
   const [venueModalSeed, setVenueModalSeed] = useState('')
+  const [editorOpen, setEditorOpen] = useState(false)
   const sortedItems = [...scheduleItems].sort((a, b) => (a.startsAt || '').localeCompare(b.startsAt || ''))
   const savedVenues = useMemo(() => [...(venueCatalog?.venues || [])].sort((a, b) => a.name.localeCompare(b.name)), [venueCatalog])
   const audienceRoles = useMemo(() => getAudienceRoles(roles), [roles])
@@ -5890,6 +6031,7 @@ function ScheduleManager({
         })
       }
       setRows([createDraftRow()])
+      setEditorOpen(false)
     } catch (scheduleError) {
       setError(errorMessage(scheduleError, 'Unable to add schedule rows.'))
     } finally {
@@ -5903,156 +6045,218 @@ function ScheduleManager({
     await deleteScheduleItemCallable({ orgId, scheduleItemId: item.id })
   }
 
+  const agendaTime = (item: ScheduleItem) => {
+    const start = parseLocalDate(item.startsAt)
+    if (!start) return 'Time pending'
+    const end = parseLocalDate(item.endsAt)
+    if (!end) return clockFormat.format(start)
+    return start.toDateString() === end.toDateString()
+      ? `${clockFormat.format(start)} – ${clockFormat.format(end)}`
+      : `${clockFormat.format(start)} – ${shortDateFormat.format(end)}, ${clockFormat.format(end)}`
+  }
+  const scheduleDays = sortedItems.reduce<Array<{ key: string; label: string; items: ScheduleItem[] }>>((days, item) => {
+    const start = parseLocalDate(item.startsAt)
+    const key = start ? start.toDateString() : 'pending'
+    let day = days.find((entry) => entry.key === key)
+    if (!day) {
+      day = { key, label: start ? agendaDayFormat.format(start) : 'Time pending', items: [] }
+      days.push(day)
+    }
+    day.items.push(item)
+    return days
+  }, [])
+
+  function openScheduleEditor() {
+    setError('')
+    setEditorOpen(true)
+  }
+
   return (
-    <section className="schedule-manager">
-      <div className="schedule-manager-head">
+    <section className="card schedule-manager">
+      <div className="card-head">
         <div>
-          <span className="eyebrow">Schedule</span>
-          <h2>{event ? 'Time blocks for this event' : 'Program schedule'}</h2>
-          <p>{sortedItems.length ? `${sortedItems.length} schedule blocks added` : 'Build the exact event timeline: sessions, rounds, breaks, check-in windows, and result slots.'}</p>
+          <h2>{event ? 'Schedule' : 'Program schedule'}</h2>
+          <p>{sortedItems.length ? `${formatCount(sortedItems.length)} time block${sortedItems.length === 1 ? '' : 's'}` : 'Check-in, sessions, rounds, breaks and results.'}</p>
         </div>
-        <div className="schedule-head-actions">
-          <span className="schedule-count"><Clock size={16} /> {sortedItems.length}</span>
-          <button className="primary-button" disabled={publishing} onClick={publishSchedule} type="button">
-            {publishing ? <Loader2 className="spin" size={17} /> : <UploadCloud size={17} />}
+        <div className="card-head-actions">
+          <button className="secondary-button compact-button" disabled={publishing || sortedItems.length === 0} onClick={publishSchedule} type="button">
+            {publishing ? <Loader2 className="spin" size={14} /> : <UploadCloud size={14} />}
             Publish schedule
+          </button>
+          <button className="primary-button compact-button" onClick={openScheduleEditor} type="button">
+            <Plus size={14} />
+            Add time blocks
           </button>
         </div>
       </div>
+      {error && !editorOpen ? <p className="form-error table-message">{error}</p> : null}
 
-      <form className="schedule-form schedule-form-card" onSubmit={addScheduleItems}>
-        {error && <p className="form-error">{error}</p>}
-        <div className="schedule-bulk-head">
-          <span>Title</span>
-          <span>Type</span>
-          <span>Start</span>
-          <span>End</span>
-          <span>Visibility</span>
-          <span>{event ? 'Workshop / group' : 'Event / group'}</span>
-          <span>Venue / hall</span>
-          <span>Note</span>
-          <span />
+      {sortedItems.length === 0 ? (
+        <div className="empty-with-action">
+          <EmptyState title="No schedule yet" body="Add check-in, sessions, rounds, breaks, performances and result announcements." />
+          <button className="primary-button" onClick={openScheduleEditor} type="button">
+            <Plus size={15} />
+            Add time blocks
+          </button>
         </div>
-        <div className="schedule-bulk-list">
-          {rows.map((row, index) => (
-            <div className="schedule-bulk-row" key={row.id}>
-              <label>
-                <span>Schedule title</span>
-                <input placeholder={`Schedule ${index + 1}`} value={row.title} onChange={(eventChange) => updateRow(row.id, { title: eventChange.target.value })} />
-              </label>
-              <label>
-                <span>Type</span>
-                <select value={row.type} onChange={(eventChange) => updateRow(row.id, { type: eventChange.target.value as ScheduleType })}>
-                  {scheduleTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-                </select>
-              </label>
-              <label>
-                <span>Starts</span>
-                <input type="datetime-local" value={row.startsAt} onChange={(eventChange) => updateRow(row.id, { startsAt: eventChange.target.value })} />
-              </label>
-              <label>
-                <span>Ends</span>
-                <input type="datetime-local" value={row.endsAt} onChange={(eventChange) => updateRow(row.id, { endsAt: eventChange.target.value })} />
-              </label>
-              <label>
-                <span>Visibility</span>
-                <select value={row.visibility} onChange={(eventChange) => updateRow(row.id, { visibility: eventChange.target.value as ScheduleVisibility })}>
-                  <option value="public">Public</option>
-                  <option value="rolesOnly">Roles only</option>
-                  <option value="participantsOnly">Participants</option>
-                  <option value="staffOnly">Staff only</option>
-                </select>
-              </label>
-              <div className="schedule-group-fields">
-                {!fixedEventId && (
-                  <label>
-                    <span>Event</span>
-                    <select value={row.eventId} onChange={(eventChange) => updateRow(row.id, { eventId: eventChange.target.value })}>
-                      <option value="">Program-level</option>
-                      {programEvents.map((programEvent) => <option key={programEvent.id} value={programEvent.id}>{programEvent.name}</option>)}
-                    </select>
-                  </label>
-                )}
-                <label>
-                  <span>Workshop under</span>
-                  <select value={row.parentScheduleItemId} onChange={(eventChange) => updateRow(row.id, { parentScheduleItemId: eventChange.target.value })}>
-                    <option value="">Main schedule item</option>
-                    {availableParentItems.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
-                  </select>
-                </label>
-                <input placeholder="Group label" value={row.groupLabel} onChange={(eventChange) => updateRow(row.id, { groupLabel: eventChange.target.value })} />
+      ) : (
+        <div className="agenda">
+          {scheduleDays.map((day) => (
+            <div className="agenda-day" key={day.key}>
+              <div className="agenda-day-label">
+                {day.label}
+                <small>{formatCount(day.items.length)} block{day.items.length === 1 ? '' : 's'}</small>
               </div>
-              <ScheduleVenueSelector
-                onAddVenue={() => openVenueModal()}
-                onChange={(changes) => updateRow(row.id, changes)}
-                row={row}
-                venues={savedVenues}
-              />
-              <label>
-                <span>Note</span>
-                <input placeholder="Brief note" value={row.description} onChange={(eventChange) => updateRow(row.id, { description: eventChange.target.value })} />
-              </label>
-              <button className="icon-button danger-icon" onClick={() => removeRow(row.id)} title="Remove row" type="button">
-                <Trash2 size={16} />
-              </button>
-              {row.type === 'custom' && (
-                <label className="schedule-custom-type">
-                  <span>Custom type</span>
-                  <input placeholder="Poster viewing, rehearsal..." value={row.customTypeLabel} onChange={(eventChange) => updateRow(row.id, { customTypeLabel: eventChange.target.value })} />
-                </label>
-              )}
-              {(row.visibility === 'rolesOnly' || row.visibility === 'participantsOnly') && (
-                <div className="schedule-role-picker">
-                  {audienceRoles.map((role) => (
-                    <label className="check-chip" key={role.id}>
-                      <input checked={row.allowedRoleIds.includes(role.id)} onChange={(eventChange) => toggleScheduleRole(row, role.id, eventChange.target.checked)} type="checkbox" />
-                      <span>{role.name}</span>
-                    </label>
-                  ))}
-                </div>
-              )}
+              {day.items.map((item) => {
+                const typeLabel = item.type === 'custom' && item.customTypeLabel ? item.customTypeLabel : optionLabel(scheduleTypeOptions, item.type)
+                const place = [item.venueName || event?.venueName || program.venueName || 'Venue pending', item.roomName].filter(Boolean).join(' · ')
+                const roleRestricted = item.visibility === 'rolesOnly' || item.visibility === 'participantsOnly'
+                return (
+                  <div className="agenda-row" key={item.id}>
+                    <span className="agenda-time tabular">{agendaTime(item)}</span>
+                    <div className="agenda-main">
+                      <div className="agenda-title">
+                        <strong>{item.title}</strong>
+                        <span className="chip">{typeLabel}</span>
+                      </div>
+                      <div className="meta-row">
+                        <span><MapPin size={12} />{place}</span>
+                        {item.eventId && !event ? <span><CalendarDays size={12} />{programEvents.find((programEvent) => programEvent.id === item.eventId)?.name || 'Event'}</span> : null}
+                        {item.parentScheduleItemId ? <span><GitBranch size={12} />Under {availableParentItems.find((parent) => parent.id === item.parentScheduleItemId)?.title || 'another block'}</span> : null}
+                        {roleRestricted ? <span><ShieldCheck size={12} />{(item.allowedRoleNames?.length ? item.allowedRoleNames : item.allowedRoleIds || []).join(', ') || 'Selected roles'}</span> : null}
+                      </div>
+                      {item.description ? <p>{item.description}</p> : null}
+                    </div>
+                    <span className={`status ${item.status}`}>{statusLabel(item.status)}</span>
+                    <button aria-label={`Delete ${item.title}`} className="icon-button ghost danger-icon" onClick={() => removeScheduleItem(item)} title="Delete time block" type="button">
+                      <Trash2 size={15} />
+                    </button>
+                  </div>
+                )
+              })}
             </div>
           ))}
         </div>
-        <div className="action-row split-actions">
-          <button className="secondary-button" onClick={addRow} type="button">
-            <Plus size={17} />
-            Add new row
-          </button>
-          <button className="primary-button" disabled={busy} type="submit">
-            {busy ? <Loader2 className="spin" size={17} /> : <Save size={17} />}
-            Save schedule rows
-          </button>
-        </div>
-      </form>
-
-      {sortedItems.length === 0 ? (
-        <EmptyState title="No schedule yet" body="Add every date/time block here: check-in, rounds, sessions, breaks, performances, judging, or result announcements." />
-      ) : (
-        <div className="schedule-list schedule-timeline">
-          {sortedItems.map((item) => (
-            <article className="schedule-item" key={item.id}>
-              <span className="timeline-dot" />
-              <div className="schedule-item-main">
-                <div className="schedule-item-top">
-                  <span className={`status ${item.status}`}>{statusLabel(item.status)}</span>
-                  <small>{item.type === 'custom' && item.customTypeLabel ? item.customTypeLabel : optionLabel(scheduleTypeOptions, item.type)}</small>
-                </div>
-                <strong>{item.title}</strong>
-                <p>{formatDateTime(item.startsAt)} {item.endsAt ? `to ${formatDateTime(item.endsAt)}` : ''}</p>
-                <small><MapPin size={13} /> {item.venueName || event?.venueName || program.venueName || 'Venue pending'} {item.roomName ? `- ${item.roomName}` : ''}</small>
-                {item.eventId && !event ? <small><CalendarDays size={13} /> {programEvents.find((programEvent) => programEvent.id === item.eventId)?.name || 'Event schedule'}</small> : null}
-                {item.parentScheduleItemId ? <small><GitBranch size={13} /> Workshop under {availableParentItems.find((parent) => parent.id === item.parentScheduleItemId)?.title || 'schedule group'}</small> : null}
-                {item.visibility === 'rolesOnly' || item.visibility === 'participantsOnly' ? <small><ShieldCheck size={13} /> {(item.allowedRoleNames?.length ? item.allowedRoleNames : item.allowedRoleIds || []).join(', ') || 'Role-based'}</small> : null}
-                {item.description && <p>{item.description}</p>}
-              </div>
-              <button className="icon-button" onClick={() => removeScheduleItem(item)} title="Delete schedule item" type="button">
-                <Trash2 size={16} />
-              </button>
-            </article>
-          ))}
-        </div>
       )}
+
+      <Drawer
+        description="Fill in one or more blocks, then save them together."
+        onClose={() => setEditorOpen(false)}
+        open={editorOpen}
+        title={event ? `Add time blocks to ${event.name}` : 'Add time blocks'}
+        wide
+      >
+        <form className="drawer-form" onSubmit={addScheduleItems}>
+          <div className="drawer-sections schedule-editor">
+            {error ? <p className="form-error">{error}</p> : null}
+            <div className="schedule-bulk-list">
+              {rows.map((row, index) => (
+                <div className="schedule-bulk-row" key={row.id}>
+                  <div className="schedule-row-head">
+                    <strong>Block {index + 1}</strong>
+                    {rows.length > 1 ? (
+                      <button aria-label={`Remove block ${index + 1}`} className="icon-button ghost danger-icon" onClick={() => removeRow(row.id)} title="Remove block" type="button">
+                        <Trash2 size={15} />
+                      </button>
+                    ) : null}
+                  </div>
+                  <label className="span-2">
+                    <span>Title</span>
+                    <input placeholder="Keynote, Round 1, Lunch break…" value={row.title} onChange={(eventChange) => updateRow(row.id, { title: eventChange.target.value })} />
+                  </label>
+                  <label>
+                    <span>Type</span>
+                    <select value={row.type} onChange={(eventChange) => updateRow(row.id, { type: eventChange.target.value as ScheduleType })}>
+                      {scheduleTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                  </label>
+                  <label>
+                    <span>Visible to</span>
+                    <select value={row.visibility} onChange={(eventChange) => updateRow(row.id, { visibility: eventChange.target.value as ScheduleVisibility })}>
+                      <option value="public">Everyone</option>
+                      <option value="rolesOnly">Selected roles</option>
+                      <option value="participantsOnly">Participants</option>
+                      <option value="staffOnly">Staff only</option>
+                    </select>
+                  </label>
+                  {row.type === 'custom' && (
+                    <label className="span-2">
+                      <span>Custom type</span>
+                      <input placeholder="Poster viewing, rehearsal…" value={row.customTypeLabel} onChange={(eventChange) => updateRow(row.id, { customTypeLabel: eventChange.target.value })} />
+                    </label>
+                  )}
+                  <label>
+                    <span>Starts</span>
+                    <input type="datetime-local" value={row.startsAt} onChange={(eventChange) => updateRow(row.id, { startsAt: eventChange.target.value })} />
+                  </label>
+                  <label>
+                    <span>Ends</span>
+                    <input type="datetime-local" value={row.endsAt} onChange={(eventChange) => updateRow(row.id, { endsAt: eventChange.target.value })} />
+                  </label>
+                  {(row.visibility === 'rolesOnly' || row.visibility === 'participantsOnly') && (
+                    <div className="schedule-role-picker span-2">
+                      {audienceRoles.map((role) => (
+                        <label className="check-chip" key={role.id}>
+                          <input checked={row.allowedRoleIds.includes(role.id)} onChange={(eventChange) => toggleScheduleRole(row, role.id, eventChange.target.checked)} type="checkbox" />
+                          <span>{role.name}</span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                  <div className="span-2">
+                    <ScheduleVenueSelector
+                      onAddVenue={() => openVenueModal()}
+                      onChange={(changes) => updateRow(row.id, changes)}
+                      row={row}
+                      venues={savedVenues}
+                    />
+                  </div>
+                  <div className="schedule-group-fields span-2">
+                    {!fixedEventId && (
+                      <label>
+                        <span>Event</span>
+                        <select value={row.eventId} onChange={(eventChange) => updateRow(row.id, { eventId: eventChange.target.value })}>
+                          <option value="">Program-level</option>
+                          {programEvents.map((programEvent) => <option key={programEvent.id} value={programEvent.id}>{programEvent.name}</option>)}
+                        </select>
+                      </label>
+                    )}
+                    <label>
+                      <span>Part of</span>
+                      <select value={row.parentScheduleItemId} onChange={(eventChange) => updateRow(row.id, { parentScheduleItemId: eventChange.target.value })}>
+                        <option value="">Main schedule</option>
+                        {availableParentItems.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
+                      </select>
+                    </label>
+                    <label>
+                      <span>Group label</span>
+                      <input placeholder="Track A, Workshop 2…" value={row.groupLabel} onChange={(eventChange) => updateRow(row.id, { groupLabel: eventChange.target.value })} />
+                    </label>
+                  </div>
+                  <label className="span-2">
+                    <span>Note</span>
+                    <input placeholder="Optional short note" value={row.description} onChange={(eventChange) => updateRow(row.id, { description: eventChange.target.value })} />
+                  </label>
+                </div>
+              ))}
+            </div>
+            <button className="secondary-button" onClick={addRow} type="button">
+              <Plus size={15} />
+              Add another block
+            </button>
+          </div>
+          <div className="drawer-foot">
+            <button className="secondary-button" disabled={busy} onClick={() => setEditorOpen(false)} type="button">
+              Cancel
+            </button>
+            <button className="primary-button" disabled={busy} type="submit">
+              {busy ? <Loader2 className="spin" size={15} /> : <Save size={15} />}
+              Save {formatCount(rows.length)} block{rows.length === 1 ? '' : 's'}
+            </button>
+          </div>
+        </form>
+      </Drawer>
+
       <VenueLibraryModal
         orgId={orgId}
         onClose={() => setVenueModalOpen(false)}
@@ -6066,23 +6270,21 @@ function ScheduleManager({
 }
 
 function SettingsPage({
+  section,
   orgId,
   uid,
   organization,
   program,
-  programs,
   venueCatalog,
-  onProgramSelect,
   canManageOrganization,
   canManageProgram,
 }: {
+  section: 'program' | 'organization'
   orgId: string
   uid: string
   organization: Organization | null
   program: Program | null
-  programs: Program[]
   venueCatalog?: ProgramVenueCatalog | null
-  onProgramSelect: (programId: string) => void
   canManageOrganization: boolean
   canManageProgram: boolean
 }) {
@@ -6091,6 +6293,8 @@ function SettingsPage({
   const [website, setWebsite] = useState(organization?.website || '')
   const [logoUrl, setLogoUrl] = useState(organization?.logoUrl || '')
   const [orgBusy, setOrgBusy] = useState(false)
+  const [orgSaved, setOrgSaved] = useState(false)
+  const [orgError, setOrgError] = useState('')
 
   useEffect(() => {
     setOrgName(organization?.name || '')
@@ -6102,82 +6306,83 @@ function SettingsPage({
   async function saveOrganization(event: FormEvent) {
     event.preventDefault()
     setOrgBusy(true)
+    setOrgSaved(false)
+    setOrgError('')
     try {
       await updateOrganizationCallable({ orgId, name: orgName.trim(), orgType, website: website.trim(), logoUrl: logoUrl.trim() })
+      setOrgSaved(true)
+    } catch (saveError) {
+      setOrgError(errorMessage(saveError, 'Unable to save the organization'))
     } finally {
       setOrgBusy(false)
     }
   }
 
-  return (
-    <section className="page-stack">
-      <section className="settings-hero">
-        <div>
-          <span className="eyebrow">Workspace profile</span>
-          <h1>Organization and program settings</h1>
-          <p>Manage public identity, program artwork, entry rules, and result settings from one place.</p>
-        </div>
-      </section>
-
-      <div className="page-grid settings-grid">
-        {canManageOrganization && (
-          <form className="panel form-panel" onSubmit={saveOrganization}>
-            <div className="panel-heading">
+  if (section === 'organization') {
+    return (
+      <>
+        <PageHeader description="Your organization's name, type, website and logo. They appear across every program and in the Sang app." title="Organization settings" />
+        {canManageOrganization ? (
+          <form className="card settings-card" onSubmit={saveOrganization}>
+            <div className="card-head">
               <div>
-                <span className="eyebrow">Organization</span>
-                <h2>Profile details</h2>
+                <h2>Organization profile</h2>
+                <p>Shown on program pages, passes and the Sang app.</p>
               </div>
-              <Building2 size={20} />
             </div>
-            <ImageUploader folder="organization-logos" label="Organization logo" onChange={setLogoUrl} uid={uid} value={logoUrl} />
-            <label>
-              Organization name
-              <input value={orgName} onChange={(event) => setOrgName(event.target.value)} required />
-            </label>
-            <label>
-              Organization type
-              <select value={orgType} onChange={(event) => setOrgType(event.target.value)}>
-                {orgTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-              </select>
-            </label>
-            <label>
-              Website
-              <input placeholder="https://..." value={website} onChange={(event) => setWebsite(event.target.value)} />
-            </label>
-            <button className="primary-button" disabled={orgBusy} type="submit">
-              {orgBusy ? <Loader2 className="spin" size={17} /> : <Save size={17} />}
-              Save organization
-            </button>
+            <div className="settings-card-body">
+              <div className="settings-logo">
+                <ImageUploader folder="organization-logos" label="Logo" onChange={setLogoUrl} uid={uid} value={logoUrl} />
+              </div>
+              <div className="settings-fields">
+                <label>
+                  Organization name
+                  <input value={orgName} onChange={(event) => { setOrgName(event.target.value); setOrgSaved(false) }} required />
+                </label>
+                <label>
+                  Organization type
+                  <select value={orgType} onChange={(event) => { setOrgType(event.target.value); setOrgSaved(false) }}>
+                    {orgTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                  </select>
+                </label>
+                <label>
+                  Website
+                  <input placeholder="https://" value={website} onChange={(event) => { setWebsite(event.target.value); setOrgSaved(false) }} />
+                </label>
+              </div>
+            </div>
+            <div className="settings-card-foot">
+              {orgError ? <p className="form-error">{orgError}</p> : null}
+              {orgSaved ? <p className="form-success">Organization saved.</p> : null}
+              <button className="primary-button" disabled={orgBusy} type="submit">
+                {orgBusy ? <Loader2 className="spin" size={15} /> : <Save size={15} />}
+                Save changes
+              </button>
+            </div>
           </form>
-        )}
-
-        {canManageProgram && (
-          <section className="panel">
-            <div className="panel-heading">
-              <div>
-                <span className="eyebrow">Program</span>
-                <h2>Program profile and rules</h2>
-              </div>
-              <Settings size={20} />
-            </div>
-            {programs.length > 1 && (
-              <label className="settings-program-select">
-                Program workspace
-                <select value={program?.id || ''} onChange={(event) => onProgramSelect(event.target.value)}>
-                  <option value="">Select program</option>
-                  {programs.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-                </select>
-              </label>
-            )}
-            {program ? (
-              <ProgramSettingsForm orgId={orgId} program={program} uid={uid} venueCatalog={venueCatalog} />
-            ) : (
-              <EmptyState title="Choose a program" body="Create or select a program before editing program artwork, entry rules, and result settings." />
-            )}
+        ) : (
+          <section className="card">
+            <EmptyState title="Owner access needed" body="Only organization owners can change the organization profile." />
           </section>
         )}
-      </div>
-    </section>
+      </>
+    )
+  }
+
+  return (
+    <>
+      <PageHeader
+        description={program ? `Details, dates, artwork, entry rules and results for ${formatName(program.name)}.` : 'Open a program to edit its settings.'}
+        title="Program settings"
+      />
+      {canManageProgram && program ? (
+        <ProgramSettingsForm orgId={orgId} program={program} uid={uid} venueCatalog={venueCatalog} />
+      ) : (
+        <section className="card">
+          <EmptyState title="Choose a program" body="Open a program from the switcher in the top bar to edit its settings." />
+        </section>
+      )}
+    </>
   )
 }
 
@@ -6289,110 +6494,149 @@ function ProgramSettingsForm({
   }
 
   return (
-    <div className="program-settings-stack">
-      <form className="settings-form" onSubmit={saveProgram}>
-        <div className="form-grid two">
-          <label>
-            Program name
-            <input value={name} onChange={(event) => setName(event.target.value)} required />
-          </label>
-          <label>
-            Short subtitle
-            <input maxLength={120} placeholder="One line attendees will see in the Sang app" value={tagline} onChange={(event) => setTagline(event.target.value)} />
-          </label>
-          <label>
-            Program type
-            <select value={programType} onChange={(event) => setProgramType(event.target.value)}>
-              {programTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </select>
-          </label>
-          {programType === 'custom' && (
+    <>
+      <form className="card section-form" onSubmit={saveProgram}>
+        <section className="form-section">
+          <div className="form-section-intro">
+            <h2>Basics</h2>
+            <p>Name, type and status. The subtitle appears under the name in the Sang app.</p>
+          </div>
+          <div className="form-section-fields form-grid two">
             <label>
-              Custom program type
-              <input placeholder="Symposium, hackathon, annual meet..." value={customProgramType} onChange={(event) => setCustomProgramType(event.target.value)} />
+              Program name
+              <input value={name} onChange={(event) => setName(event.target.value)} required />
             </label>
-          )}
-          <label>
-            Mode
-            <select value={mode} onChange={(event) => setMode(event.target.value as ProgramMode)}>
-              <option value="multiEvent">Multi-event program</option>
-              <option value="standalone">Standalone program/event</option>
-            </select>
-          </label>
-          <label>
-            Status
-            <select value={status} onChange={(event) => setStatus(event.target.value as Program['status'])}>
-              <option value="draft">Draft</option>
-              <option value="live">Live</option>
-              <option value="archived">Archived</option>
-            </select>
-          </label>
-          <label>
-            Start date
-            <input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} required />
-          </label>
-          <label>
-            Start time
-            <input type="time" value={startTime} onChange={(event) => setStartTime(event.target.value)} />
-          </label>
-          <label>
-            End date
-            <input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} required />
-          </label>
-          <label>
-            End time
-            <input type="time" value={endTime} onChange={(event) => setEndTime(event.target.value)} />
-          </label>
-        </div>
+            <label>
+              Short subtitle
+              <input maxLength={120} placeholder="One line attendees will see in the Sang app" value={tagline} onChange={(event) => setTagline(event.target.value)} />
+            </label>
+            <label>
+              Program type
+              <select value={programType} onChange={(event) => setProgramType(event.target.value)}>
+                {programTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </select>
+            </label>
+            {programType === 'custom' && (
+              <label>
+                Custom program type
+                <input placeholder="Symposium, hackathon, annual meet…" value={customProgramType} onChange={(event) => setCustomProgramType(event.target.value)} />
+              </label>
+            )}
+            <label>
+              Mode
+              <select value={mode} onChange={(event) => setMode(event.target.value as ProgramMode)}>
+                <option value="multiEvent">Multi-event program</option>
+                <option value="standalone">Standalone program/event</option>
+              </select>
+            </label>
+            <label>
+              Status
+              <select value={status} onChange={(event) => setStatus(event.target.value as Program['status'])}>
+                <option value="draft">Draft</option>
+                <option value="live">Live</option>
+                <option value="archived">Archived</option>
+              </select>
+            </label>
+          </div>
+        </section>
 
-        <div className="form-grid three">
-          <ImageUploader folder="program-logos" label="Program logo" onChange={setLogoUrl} uid={uid} value={logoUrl} />
-          <ImageUploader folder="program-banners" label="Program banner" onChange={setBannerUrl} uid={uid} value={bannerUrl} />
-          <ImageUploader folder="program-posters" label="Program poster" onChange={setPosterUrl} uid={uid} value={posterUrl} />
-        </div>
+        <section className="form-section">
+          <div className="form-section-intro">
+            <h2>Dates and venue</h2>
+            <p>When and where the program runs. Halls and rooms are picked per schedule block.</p>
+          </div>
+          <div className="form-section-fields">
+            <div className="form-grid two">
+              <label>
+                Start date
+                <input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} required />
+              </label>
+              <label>
+                Start time
+                <input type="time" value={startTime} onChange={(event) => setStartTime(event.target.value)} />
+              </label>
+              <label>
+                End date
+                <input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} required />
+              </label>
+              <label>
+                End time
+                <input type="time" value={endTime} onChange={(event) => setEndTime(event.target.value)} />
+              </label>
+            </div>
+            <ProgramVenueSelector
+              helper={venueName && !selectedProgramVenueId ? 'This venue is not in the venue library yet. Add it from the dropdown, then select it here.' : 'The main venue for the program.'}
+              label="Program venue"
+              onAddVenue={() => setVenueModalOpen(true)}
+              onChoose={(selection) => {
+                setVenueName(selection.venueName)
+                setVenueAddress(selection.address)
+                setDirectionsNote(selection.directionsNote || '')
+                setLatitude(selection.latitude)
+                setLongitude(selection.longitude)
+              }}
+              value={selectedProgramVenueId}
+              venues={savedVenues}
+            />
+          </div>
+        </section>
 
-        <ProgramVenueSelector
-          helper={venueName && !selectedProgramVenueId ? 'This saved program venue is not in the venue library yet. Add it from the dropdown, then select it here.' : 'Choose the broad program venue. Halls and rooms stay optional for schedule-level planning.'}
-          label="Program venue"
-          onAddVenue={() => setVenueModalOpen(true)}
-          onChoose={(selection) => {
-            setVenueName(selection.venueName)
-            setVenueAddress(selection.address)
-            setDirectionsNote(selection.directionsNote || '')
-            setLatitude(selection.latitude)
-            setLongitude(selection.longitude)
-          }}
-          value={selectedProgramVenueId}
-          venues={savedVenues}
-        />
+        <section className="form-section">
+          <div className="form-section-intro">
+            <h2>Artwork</h2>
+            <p>Logo, wide banner and poster used on program cards and in the Sang app.</p>
+          </div>
+          <div className="form-section-fields form-grid three">
+            <ImageUploader folder="program-logos" label="Logo" onChange={setLogoUrl} uid={uid} value={logoUrl} />
+            <ImageUploader folder="program-banners" label="Banner" onChange={setBannerUrl} uid={uid} value={bannerUrl} />
+            <ImageUploader folder="program-posters" label="Poster" onChange={setPosterUrl} uid={uid} value={posterUrl} />
+          </div>
+        </section>
 
-        <div className="assignment-box">
-          <span>Competition and access</span>
-          <div className="form-grid two">
-            <label className="check-row">
+        <section className="form-section">
+          <div className="form-section-intro">
+            <h2>Competition and results</h2>
+            <p>Turn these on if events in this program are judged.</p>
+          </div>
+          <div className="form-section-fields">
+            <label className="toggle-row">
               <input checked={competitive} onChange={(event) => { setCompetitive(event.target.checked); if (!event.target.checked) setResultsEnabled(false) }} type="checkbox" />
-              <span>This program has competition/results</span>
+              <span>
+                <strong>This program has competitions</strong>
+                <small>Events can be marked competitive, with judging rounds.</small>
+              </span>
             </label>
             {competitive && (
-              <label className="check-row">
+              <label className="toggle-row">
                 <input checked={resultsEnabled} onChange={(event) => setResultsEnabled(event.target.checked)} type="checkbox" />
-                <span>Results will be published from CRM</span>
+                <span>
+                  <strong>Publish results from the CRM</strong>
+                  <small>Winners are shared with attendees in the Sang app.</small>
+                </span>
               </label>
             )}
           </div>
-        </div>
+        </section>
 
-        <RichTextEditor label="About this program" onChange={setDescription} placeholder="Write a polished program overview with headings, bullets, and highlights." value={description} />
-        <RichTextEditor label="How to reach this program" onChange={setDirectionsNote} placeholder="Gate instructions, parking, metro, hall route, entry desk notes..." value={directionsNote} />
+        <section className="form-section">
+          <div className="form-section-intro">
+            <h2>About and directions</h2>
+            <p>Shown on the program page in the Sang app.</p>
+          </div>
+          <div className="form-section-fields">
+            <RichTextEditor label="About this program" onChange={setDescription} placeholder="A short overview with highlights." value={description} />
+            <RichTextEditor label="How to reach the venue" onChange={setDirectionsNote} placeholder="Gate, parking, metro, entry desk…" value={directionsNote} />
+          </div>
+        </section>
 
-        <div className="action-row">
+        <div className="form-footer">
           <button className="danger-button" onClick={archiveProgram} type="button">
-            <Trash2 size={16} />
+            <Trash2 size={15} />
             Delete program
           </button>
           <button className="primary-button" disabled={busy} type="submit">
-            {busy ? <Loader2 className="spin" size={17} /> : <Save size={17} />}
-            Save program
+            {busy ? <Loader2 className="spin" size={15} /> : <Save size={15} />}
+            Save changes
           </button>
         </div>
       </form>
@@ -6405,8 +6649,23 @@ function ProgramSettingsForm({
         seedName={venueName}
         venueCatalog={venueCatalog}
       />
-    </div>
+    </>
   )
+}
+
+// Plain-language names for permission keys shown on the Roles page.
+const permissionLabels: Record<string, string> = {
+  '*': 'Full access',
+  'program.read': 'View programs',
+  'program.write': 'Manage programs',
+  'event.write': 'Manage events',
+  'roles.write': 'Manage roles',
+  'team.write': 'Manage team',
+  'people.import': 'Add and import people',
+  'passes.issue': 'Issue passes',
+  'exports.create': 'Export data',
+  'checkin.scan': 'Scan at the gate',
+  'analytics.read': 'View analytics',
 }
 
 function RolesPage({ orgId, roles }: { orgId: string; roles: Role[] }) {
@@ -6416,6 +6675,8 @@ function RolesPage({ orgId, roles }: { orgId: string; roles: Role[] }) {
   const [selected, setSelected] = useState<string[]>(['program.read'])
   const [deletingRoleId, setDeletingRoleId] = useState('')
   const [error, setError] = useState('')
+  const [roleDrawerOpen, setRoleDrawerOpen] = useState(false)
+  const permissionLabel = (permission: string) => permissionLabels[permission] || permission
   const teamRoles = roles.filter((role) => roleCategory(role) === 'team' && !isDeletedRole(role))
   const savedAudienceRoles = roles.filter((role) => roleCategory(role) === 'audience' && !isDeletedRole(role))
   const audienceRoles = getAudienceRoles(roles)
@@ -6436,6 +6697,7 @@ function RolesPage({ orgId, roles }: { orgId: string; roles: Role[] }) {
       setName('')
       setDescription('')
       if (category === 'team') setSelected(['program.read'])
+      setRoleDrawerOpen(false)
     } catch (createError) {
       setError(errorMessage(createError, 'Unable to save role.'))
     }
@@ -6455,117 +6717,159 @@ function RolesPage({ orgId, roles }: { orgId: string; roles: Role[] }) {
     }
   }
 
+  function openRoleDrawer(nextCategory: RoleCategory) {
+    setError('')
+    setCategory(nextCategory)
+    setRoleDrawerOpen(true)
+  }
+
   return (
     <>
-    <PageHeader description="Decide what each team role can see and change across the CRM." title="Roles" />
-    <section className="page-grid">
-      <form className="panel form-panel" onSubmit={createRole}>
-        <div className="panel-heading">
-          <div>
-            <span className="eyebrow">Access model</span>
-            <h2>Create role</h2>
-          </div>
-          <ShieldCheck size={20} />
-        </div>
-        {error && <p className="form-error">{error}</p>}
-        <label>
-          Role category
-          <select value={category} onChange={(event) => setCategory(event.target.value as RoleCategory)}>
-            <option value="audience">Audience role</option>
-            <option value="team">Team role</option>
-          </select>
-        </label>
-        <label>
-          Role name
-          <input placeholder={category === 'team' ? 'Competition Coordinator' : 'Startup'} value={name} onChange={(event) => setName(event.target.value)} required />
-        </label>
-        {category === 'team' && (
+      <PageHeader
+        actions={(
           <>
-            <label>
-              Description
-              <textarea value={description} onChange={(event) => setDescription(event.target.value)} />
-            </label>
-            <div className="permission-grid">
-              {permissions.map((permission) => (
-                <label className="check-row" key={permission}>
-                  <input
-                    checked={selected.includes(permission)}
-                    onChange={(event) => setSelected((current) => event.target.checked ? [...current, permission] : current.filter((item) => item !== permission))}
-                    type="checkbox"
-                  />
-                  <span>{permission}</span>
-                </label>
-              ))}
-            </div>
+            <button className="secondary-button" onClick={() => openRoleDrawer('audience')} type="button">
+              <Plus size={15} />
+              Audience role
+            </button>
+            <button className="primary-button" onClick={() => openRoleDrawer('team')} type="button">
+              <Plus size={15} />
+              Team role
+            </button>
           </>
         )}
-        <button className="primary-button" type="submit"><Plus size={17} />Save role</button>
-      </form>
+        description="Team roles decide what staff can do in the CRM. Audience roles label attendees and control event entry."
+        title="Roles"
+      />
+      {error && !roleDrawerOpen ? <p className="form-error">{error}</p> : null}
 
-      <section className="panel">
-        <div className="panel-heading">
+      <section className="card">
+        <div className="card-head">
           <div>
-            <span className="eyebrow">Current</span>
             <h2>Team roles</h2>
+            <p>Assign these to people on the Team page.</p>
           </div>
-          <Eye size={20} />
+          <span className="muted-note">{formatCount(teamRoles.length)} role{teamRoles.length === 1 ? '' : 's'}</span>
         </div>
-        <div className="role-grid">
+        <div className="role-list">
           {teamRoles.map((role) => (
-            <article className="role-card" key={role.id}>
-              <div className="role-card-head">
-                <strong>{role.name}</strong>
-                <button className="icon-button danger-icon" disabled={deletingRoleId === role.id} onClick={() => deleteRole(role.id, role.name)} title="Delete role" type="button">
-                  {deletingRoleId === role.id ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />}
-                </button>
+            <div className="role-row" key={role.id}>
+              <div className="role-row-main">
+                <strong>
+                  {role.name}
+                  {role.isDefault ? <span className="tag neutral">Default</span> : null}
+                </strong>
+                <small>{role.description || 'No description'}</small>
               </div>
-              <p>{role.description || 'No description'}</p>
-              <div className="chip-row">
-                {role.permissions.slice(0, 5).map((permission) => <span className="chip" key={permission}>{permission}</span>)}
-                {role.permissions.length > 5 && <span className="chip">+{role.permissions.length - 5}</span>}
+              <div className="chip-row role-permissions">
+                {role.permissions.includes('*')
+                  ? <span className="chip accent">Full access</span>
+                  : role.permissions.map((permission) => <span className="chip" key={permission}>{permissionLabel(permission)}</span>)}
               </div>
-            </article>
+              <button aria-label={`Delete ${role.name}`} className="icon-button ghost danger-icon" disabled={deletingRoleId === role.id} onClick={() => deleteRole(role.id, role.name)} title="Delete role" type="button">
+                {deletingRoleId === role.id ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />}
+              </button>
+            </div>
           ))}
         </div>
-        <div className="panel-heading inset-heading">
+      </section>
+
+      <section className="card">
+        <div className="card-head">
           <div>
-            <span className="eyebrow">Audience</span>
             <h2>Audience roles</h2>
+            <p>Labels for attendees, used for event access and passes.</p>
           </div>
-          <Ticket size={20} />
+          <span className="muted-note">{formatCount(audienceRoles.length)} role{audienceRoles.length === 1 ? '' : 's'}</span>
         </div>
-        <div className="role-grid compact-role-grid">
+        <div className="audience-role-list">
           {audienceRoles.map((role) => {
             const saved = savedAudienceRoles.some((savedRole) => savedRole.id === role.id)
             return (
-              <article className="role-card audience-role-card" key={role.id}>
-                <div className="role-card-head">
-                  <strong>{role.name}</strong>
-                  <button className="icon-button danger-icon" disabled={deletingRoleId === role.id} onClick={() => deleteRole(role.id, role.name)} title="Delete role" type="button">
-                    {deletingRoleId === role.id ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />}
-                  </button>
-                </div>
-                <div className="chip-row">
-                  <span className="chip">Audience</span>
-                  <span className="chip">{saved ? 'Saved' : 'Preset'}</span>
-                </div>
-              </article>
+              <span className="audience-role" key={role.id}>
+                {role.name}
+                {saved ? null : <small>Preset</small>}
+                <button aria-label={`Delete ${role.name}`} className="audience-role-remove" disabled={deletingRoleId === role.id} onClick={() => deleteRole(role.id, role.name)} title="Delete role" type="button">
+                  {deletingRoleId === role.id ? <Loader2 className="spin" size={12} /> : <X size={12} />}
+                </button>
+              </span>
             )
           })}
         </div>
       </section>
-    </section>
+
+      <Drawer
+        description={category === 'team' ? 'Choose what people with this role can do in the CRM.' : 'An attendee label used for event access and passes.'}
+        onClose={() => setRoleDrawerOpen(false)}
+        open={roleDrawerOpen}
+        title={category === 'team' ? 'New team role' : 'New audience role'}
+      >
+        <form className="drawer-form" onSubmit={createRole}>
+          <div className="drawer-sections">
+            {error ? <p className="form-error">{error}</p> : null}
+            <div className="drawer-section">
+              <label>
+                Role type
+                <select value={category} onChange={(event) => setCategory(event.target.value as RoleCategory)}>
+                  <option value="audience">Audience role</option>
+                  <option value="team">Team role</option>
+                </select>
+              </label>
+              <label>
+                Role name
+                <input placeholder={category === 'team' ? 'Competition coordinator' : 'Startup founder'} value={name} onChange={(event) => setName(event.target.value)} required />
+              </label>
+              {category === 'team' ? (
+                <label>
+                  Description
+                  <textarea placeholder="What this role is for" value={description} onChange={(event) => setDescription(event.target.value)} />
+                </label>
+              ) : null}
+            </div>
+            {category === 'team' ? (
+              <div className="drawer-section">
+                <span className="drawer-section-label">Permissions</span>
+                <div className="permission-list">
+                  {permissions.map((permission) => (
+                    <label className="toggle-row" key={permission}>
+                      <input
+                        checked={selected.includes(permission)}
+                        onChange={(event) => setSelected((current) => event.target.checked ? [...current, permission] : current.filter((item) => item !== permission))}
+                        type="checkbox"
+                      />
+                      <span>
+                        <strong>{permissionLabel(permission)}</strong>
+                        <small>{permission}</small>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
+          <div className="drawer-foot">
+            <button className="secondary-button" onClick={() => setRoleDrawerOpen(false)} type="button">
+              Cancel
+            </button>
+            <button className="primary-button" type="submit">
+              <Plus size={15} />
+              Create role
+            </button>
+          </div>
+        </form>
+      </Drawer>
     </>
   )
 }
 
-function TeamPage({ orgId, roles, programs, events, members, people }: { orgId: string; roles: Role[]; programs: Program[]; events: ProgramEvent[]; members: TeamMember[]; people: ProgramPerson[] }) {
+function TeamPage({ orgId, program, roles, programs, events, members, people }: { orgId: string; program?: Program | null; roles: Role[]; programs: Program[]; events: ProgramEvent[]; members: TeamMember[]; people: ProgramPerson[] }) {
   const teamRoles = useMemo(() => roles.filter((role) => roleCategory(role) === 'team' && !isDeletedRole(role)), [roles])
   const audienceRoles = useMemo(() => getAudienceRoles(roles), [roles])
-  const visibleMembers = members.filter((member) => member.status !== 'deleted' && member.status !== 'claimed')
+  // Inside a program, show organization-wide members plus those scoped to this program or its events.
+  const visibleMembers = members.filter((member) => member.status !== 'deleted' && member.status !== 'claimed' && (!program || member.scope === 'organization' || member.programId === program.id))
   const [email, setEmail] = useState('')
   const [displayName, setDisplayName] = useState('')
-  const [profileProgramId, setProfileProgramId] = useState('')
+  const [profileProgramId, setProfileProgramId] = useState(program?.id || '')
   const [personLookup, setPersonLookup] = useState('')
   const [selectedPersonId, setSelectedPersonId] = useState('')
   const [newPersonName, setNewPersonName] = useState('')
@@ -6813,7 +7117,7 @@ function TeamPage({ orgId, roles, programs, events, members, people }: { orgId: 
           Invite member
         </button>
       )}
-      description="Who can work in this organization, with which role, and where."
+      description={program ? `Who can work on ${formatName(program.name)}. Organization-wide members appear in every program.` : 'Who can work in this organization, with which role, and where.'}
       title="Team"
     />
     {error && !inviteOpen && !editingMember ? <p className="form-error">{error}</p> : null}
@@ -8039,7 +8343,7 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
   }
 
   // Events, venues and patrons live inside a program; hide them until one is open.
-  const shellNavItems = activeProgram ? visibleNavItems : visibleNavItems.filter((item) => item.key !== 'events' && item.key !== 'venues' && item.key !== 'patrons')
+  const shellNavItems = activeProgram ? visibleNavItems : visibleNavItems.filter((item) => item.key !== 'events' && item.key !== 'venues' && item.key !== 'patrons' && item.key !== 'settings')
   // Create program isn't inside a program, so the Program section would point at the previously open one.
   const programFreeNavItems = visibleNavItems.filter((item) => item.group !== 'program')
 
@@ -8047,7 +8351,7 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
   // With several programs the program chooser handles it instead.
   useEffect(() => {
     if (programs.loading || activeProgram || sortedPrograms.length > 1) return
-    if (route === 'events' || route === 'venues' || route === 'patrons') setRoute('programs')
+    if (route === 'events' || route === 'venues' || route === 'patrons' || route === 'settings') setRoute('programs')
   }, [activeProgram, programs.loading, route, sortedPrograms.length])
 
   const emptyOrgPromptedRef = useRef('')
@@ -8063,6 +8367,7 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
   // A new organization becomes the open workspace; its first program comes next.
   function handleOrganizationCreated(nextProfile: PeUser) {
     window.localStorage.setItem('sang-crm-org-choice-confirmed', nextProfile.activeOrgId || '')
+    window.sessionStorage.setItem('sang-crm-new-org', nextProfile.activeOrgId || '')
     window.localStorage.removeItem('sang-crm-selected-program')
     setSelectedProgramId('')
     setProfile(nextProfile)
@@ -8151,12 +8456,6 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
     setTourOpen(true)
   }
 
-  function chooseProgramInSettings(programId: string) {
-    setSelectedProgramId(programId)
-    window.localStorage.setItem('sang-crm-selected-program', programId)
-    setRoute('settings')
-  }
-
   function openProgramDirectory() {
     setChoosingProgram(true)
   }
@@ -8169,7 +8468,9 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
           onCancel={() => setRoute(sortedPrograms.length > 0 ? 'programs' : 'dashboard')}
           onCreated={finishProgramCreation}
           organizationOptions={organizationOptions.options}
+          onOrganizationCreated={handleOrganizationCreated}
           organizationsLoading={organizationOptions.loading}
+          profile={profile}
           user={firebaseUser}
         />
       </Shell>
@@ -8200,9 +8501,10 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
       {route === 'patrons' && activeProgram && <PatronsPage orgId={orgId} partners={activePartners} program={activeProgram} uid={firebaseUser.uid} />}
       {route === 'patrons' && !activeProgram && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} onCreateOrganization={() => setOrganizationDrawerOpen(true)} onCreateProgram={openProgramComposer} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} venueCatalogs={venueCatalogs.rows} />}
       {route === 'programs' && <ProgramsPage canCreateProgram={canCreateProgram} canDeleteProgram={canManageProgram} events={events.rows} onChoose={chooseProgram} onCreateOrganization={() => setOrganizationDrawerOpen(true)} onCreateProgram={openProgramComposer} orgId={orgId} programs={sortedPrograms} uid={firebaseUser.uid} venueCatalogs={venueCatalogs.rows} />}
-      {route === 'settings' && <SettingsPage canManageOrganization={canManageOrganization} canManageProgram={canManageProgram} onProgramSelect={chooseProgramInSettings} orgId={orgId} organization={organization} program={activeProgram} programs={sortedPrograms} uid={firebaseUser.uid} venueCatalog={activeVenueCatalog} />}
+      {route === 'settings' && <SettingsPage section="program" canManageOrganization={canManageOrganization} canManageProgram={canManageProgram} orgId={orgId} organization={organization} program={activeProgram} uid={firebaseUser.uid} venueCatalog={activeVenueCatalog} />}
+      {route === 'organization' && <SettingsPage section="organization" canManageOrganization={canManageOrganization} canManageProgram={canManageProgram} orgId={orgId} organization={organization} program={activeProgram} uid={firebaseUser.uid} venueCatalog={activeVenueCatalog} />}
       {route === 'roles' && <RolesPage orgId={orgId} roles={roles.rows} />}
-      {route === 'team' && <TeamPage events={events.rows} members={members.rows} orgId={orgId} people={people.rows} programs={sortedPrograms} roles={roles.rows} />}
+      {route === 'team' && <TeamPage events={events.rows} program={activeProgram} members={members.rows} orgId={orgId} people={people.rows} programs={sortedPrograms} roles={roles.rows} />}
       {route === 'people' && <PeoplePage events={activeProgram ? activeEvents : events.rows} orgId={orgId} passes={activeProgram ? activePasses : passes.rows} people={activeProgram ? activePeople : people.rows} programs={activeProgram ? [activeProgram] : sortedPrograms} roles={roles.rows} />}
     </Shell>
   )
