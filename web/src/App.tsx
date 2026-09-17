@@ -2161,7 +2161,6 @@ function RichTextEditor({
     <div className="rich-text-field">
       <div className="rich-text-label-row">
         <span>{label}</span>
-        <small>Rich text</small>
       </div>
       <div className="rich-text-shell">
         <div className="rich-text-toolbar" aria-label={`${label} formatting`}>
@@ -2248,6 +2247,17 @@ function Modal({
   )
 }
 
+// What each upload box asks for, keyed by storage folder.
+const uploadHints: Record<string, string> = {
+  'organization-logos': 'Square PNG, JPG or SVG · at least 256 × 256 px',
+  'program-logos': 'Square PNG, JPG or SVG · at least 256 × 256 px',
+  'program-partners': 'PNG or SVG with a clear background · at least 256 px wide',
+  'program-banners': 'Wide image · 1600 × 600 px recommended',
+  'program-posters': 'Portrait image · 1080 × 1350 px recommended',
+  'event-posters': 'Portrait image · 1080 × 1350 px recommended',
+  'event-profiles': 'Square headshot · at least 400 × 400 px',
+}
+
 function ImageUploader({
   label,
   value,
@@ -2287,8 +2297,8 @@ function ImageUploader({
       <span>{label}</span>
       <label className={value ? 'poster-drop has-image' : 'poster-drop'}>
         {value ? <img alt="" src={value} /> : <Upload size={22} />}
-        <strong>{uploading ? 'Uploading...' : value ? 'Replace image' : 'Upload image'}</strong>
-        <small>Poster, banner, or event artwork</small>
+        <strong>{uploading ? 'Uploading…' : value ? 'Replace image' : 'Click to upload'}</strong>
+        <small>{uploadHints[folder] || 'PNG or JPG image'}</small>
         <input accept="image/*" disabled={uploading} onChange={(event) => chooseFile(event.target.files?.[0])} type="file" />
       </label>
       {error && <p className="form-error">{error}</p>}
@@ -4194,6 +4204,8 @@ function VenuesPage({
   )
 }
 
+const sponsorTierOptions = ['Title sponsor', 'Presenting sponsor', 'Gold', 'Silver', 'Bronze', 'Partner', 'Community partner', 'Media partner']
+
 function PatronsPage({
   orgId,
   uid,
@@ -4213,7 +4225,7 @@ function PatronsPage({
   const hiddenPartners = sortedPartners.length - visiblePartners.length
   const [editingPartner, setEditingPartner] = useState<ProgramPartner | null>(null)
   const [name, setName] = useState('')
-  const [tier, setTier] = useState('Title Partner')
+  const [tier, setTier] = useState('')
   const [category, setCategory] = useState('')
   const [booth, setBooth] = useState('')
   const [websiteUrl, setWebsiteUrl] = useState('')
@@ -4229,7 +4241,7 @@ function PatronsPage({
   function resetForm() {
     setEditingPartner(null)
     setName('')
-    setTier('Title Partner')
+    setTier('')
     setCategory('')
     setBooth('')
     setWebsiteUrl('')
@@ -4440,45 +4452,61 @@ function PatronsPage({
           <div className="drawer-sections">
             {error ? <p className="form-error">{error}</p> : null}
             <div className="drawer-section">
+              <span className="drawer-section-label">Brand</span>
               <ImageUploader folder="program-partners" label="Logo" onChange={setLogoUrl} uid={uid} value={logoUrl} />
               <label>
-                Name
-                <input placeholder="Company or organization" value={name} onChange={(event) => setName(event.target.value)} required />
+                Sponsor name
+                <input placeholder="e.g. Kestrel Labs" value={name} onChange={(event) => setName(event.target.value)} required />
               </label>
+              <label>
+                Website
+                <input placeholder="https://example.com" type="url" value={websiteUrl} onChange={(event) => setWebsiteUrl(event.target.value)} />
+              </label>
+            </div>
+
+            <div className="drawer-section">
+              <span className="drawer-section-label">Placement</span>
               <div className="field-pair">
                 <label>
                   Tier
-                  <input placeholder="Title sponsor, Gold…" value={tier} onChange={(event) => setTier(event.target.value)} />
+                  <select value={tier} onChange={(event) => setTier(event.target.value)}>
+                    <option value="">Choose a tier</option>
+                    {[...sponsorTierOptions, ...(tier && !sponsorTierOptions.includes(tier) ? [tier] : [])].map((option) => (
+                      <option key={option} value={option}>{option}</option>
+                    ))}
+                  </select>
                 </label>
                 <label>
                   Category
-                  <input placeholder="Fintech, hiring, community…" value={category} onChange={(event) => setCategory(event.target.value)} />
+                  <input placeholder="e.g. Technology" value={category} onChange={(event) => setCategory(event.target.value)} />
                 </label>
               </div>
               <div className="field-pair">
                 <label>
-                  Booth
-                  <input placeholder="A1, Hall 2…" value={booth} onChange={(event) => setBooth(event.target.value)} />
+                  Booth or stall
+                  <input placeholder="e.g. A1" value={booth} onChange={(event) => setBooth(event.target.value)} />
                 </label>
                 <label>
-                  Sort order
+                  Display order
                   <input min={0} type="number" value={sortOrder} onChange={(event) => setSortOrder(Number(event.target.value || 0))} />
+                  <small className="field-help">Lower numbers appear first.</small>
                 </label>
               </div>
               <label>
-                Website
-                <input placeholder="https://" value={websiteUrl} onChange={(event) => setWebsiteUrl(event.target.value)} />
-              </label>
-              <label>
                 Visibility
                 <select value={status} onChange={(event) => setStatus(event.target.value as 'active' | 'hidden')}>
-                  <option value="active">Visible in the Sang app</option>
-                  <option value="hidden">Hidden for now</option>
+                  <option value="active">Show in the Sang app</option>
+                  <option value="hidden">Hide for now</option>
                 </select>
               </label>
-              <RichTextEditor label="Description" onChange={setDescription} placeholder="A short introduction attendees will see." value={description} />
+            </div>
+
+            <div className="drawer-section">
+              <span className="drawer-section-label">About</span>
+              <RichTextEditor label="Short description" onChange={setDescription} placeholder="One or two sentences about the sponsor, shown to attendees." value={description} />
             </div>
           </div>
+
           <div className="drawer-foot">
             <button className="secondary-button" disabled={busy} onClick={closePartnerDrawer} type="button">
               Cancel
