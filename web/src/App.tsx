@@ -1505,9 +1505,9 @@ function WorkspaceSwitcher({
           visibleSections.map((section) => (
             <div className="switcher-group" key={section.organization.id}>
               <div className="switcher-org">
-                <span className="org-mark tiny">{section.organization.logoUrl ? <img alt="" src={section.organization.logoUrl} /> : initialsFor(section.organization.name, 'O')}</span>
+                <span className="org-mark tiny">{section.organization.logoUrl ? <img alt="" src={section.organization.logoUrl} /> : initialsFor(section.organization.name, 'O').charAt(0)}</span>
                 <span title={section.organization.name}>{formatName(section.organization.name)}</span>
-                {section.organization.id === activeOrgId ? <span className="tag">Current</span> : null}
+                {section.organization.id === activeOrgId ? <small>Current organization</small> : null}
               </div>
               {section.programs.length ? (
                 section.programs.map((program) => {
@@ -1536,7 +1536,8 @@ function WorkspaceSwitcher({
                         title="Open dashboard"
                         type="button"
                       >
-                        <LayoutDashboard size={14} />
+                        <LayoutDashboard size={13} />
+                        Dashboard
                       </button>
                     </div>
                   )
@@ -1605,7 +1606,7 @@ function Shell({
     .filter((entry) => entry.items.length > 0)
   const orgContent = (
     <>
-      <span className="rail-org-mark">{organization?.logoUrl ? <img alt="" src={organization.logoUrl} /> : initialsFor(organization?.name, 'O')}</span>
+      <span className="rail-org-mark">{organization?.logoUrl ? <img alt="" src={organization.logoUrl} /> : initialsFor(organization?.name, 'O').charAt(0)}</span>
       <span className="rail-org-text">
         <strong title={organization?.name || undefined}>{formatName(organization?.name) || 'Organization'}</strong>
         <small>{orgTypeLabel(organization)}</small>
@@ -3957,7 +3958,7 @@ function ProgramDirectoryPage({
                     <div className="program-card-art">{artwork ? <img alt="" src={artwork} /> : <CalendarDays size={20} />}</div>
                     <div className="program-card-body">
                       <span className="program-card-org">
-                        <span className="org-mark tiny">{section.organization.logoUrl ? <img alt="" src={section.organization.logoUrl} /> : initialsFor(section.organization.name, 'O')}</span>
+                        <span className="org-mark tiny">{section.organization.logoUrl ? <img alt="" src={section.organization.logoUrl} /> : initialsFor(section.organization.name, 'O').charAt(0)}</span>
                         <span title={section.organization.name}>{formatName(section.organization.name)}</span>
                         {section.organization.id === activeOrgId ? <span className="tag">Current</span> : null}
                       </span>
@@ -3988,7 +3989,7 @@ function ProgramDirectoryPage({
             <section className="card directory-empty-list">
               {emptySections.map((section) => (
                 <div className="directory-empty-row" key={section.organization.id}>
-                  <span className="org-mark small">{section.organization.logoUrl ? <img alt="" src={section.organization.logoUrl} /> : initialsFor(section.organization.name, 'O')}</span>
+                  <span className="org-mark small">{section.organization.logoUrl ? <img alt="" src={section.organization.logoUrl} /> : initialsFor(section.organization.name, 'O').charAt(0)}</span>
                   <span className="cell-main">
                     <strong title={section.organization.name}>{formatName(section.organization.name)}</strong>
                     <small>{section.hasAccess ? 'No programs in this organization yet' : "You don't have access to programs here yet. Ask its owner for a role."}</small>
@@ -5114,7 +5115,7 @@ function ProgramComposerPage({
                       role="radio"
                       type="button"
                     >
-                      <span className="org-mark">{organization.logoUrl ? <img alt="" src={organization.logoUrl} /> : initialsFor(organization.name, 'O')}</span>
+                      <span className="org-mark">{organization.logoUrl ? <img alt="" src={organization.logoUrl} /> : initialsFor(organization.name, 'O').charAt(0)}</span>
                       <span className="org-choice-text">
                         <strong title={organization.name}>{formatName(organization.name)}</strong>
                         <small>{orgTypeLabel(organization)}{organization.id === activeOrgId ? ' · Current' : ''}</small>

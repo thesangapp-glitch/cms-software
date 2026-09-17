@@ -7991,3 +7991,40 @@ a:focus-visible,
 .switcher-dashboard:focus-visible {
   color: var(--accent-strong);
 }
+
+/* ---- Switcher clarity ---- */
+
+.switcher-org {
+  color: var(--ink);
+}
+
+.switcher-org small {
+  flex: 0 0 auto;
+  color: var(--faint);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.switcher-dashboard {
+  width: auto;
+  height: 28px;
+  min-height: 28px;
+  gap: 5px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.switcher-dashboard.icon-button.ghost {
+  border-color: var(--line);
+  background: #fff;
+}
+
+.switcher-row:hover .switcher-dashboard,
+.switcher-dashboard:hover:not(:disabled) {
+  border-color: #c7d2fe;
+  color: var(--accent-strong);
+}
