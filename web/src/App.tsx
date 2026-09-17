@@ -1429,7 +1429,7 @@ function WorkspaceSwitcher({
   activeProgramId?: string
   position: { top: number; left: number }
   onClose: () => void
-  onOpenProgram: (orgId: string, programId: string) => void | Promise<void>
+  onOpenProgram: (orgId: string, programId: string, nextRoute?: RouteKey) => void | Promise<void>
   onCreateProgram?: () => void
 }) {
   const { sections, loading } = useProgramDirectory(profile.organizationIds || [], uid)
@@ -1473,15 +1473,15 @@ function WorkspaceSwitcher({
     }
   }, [onClose])
 
-  async function choose(orgId: string, programId: string) {
-    if (programId === activeProgramId) {
+  async function choose(orgId: string, programId: string, nextRoute?: RouteKey) {
+    if (programId === activeProgramId && !nextRoute) {
       onClose()
       return
     }
     setError('')
     setOpeningId(programId)
     try {
-      await onOpenProgram(orgId, programId)
+      await onOpenProgram(orgId, programId, nextRoute)
       onClose()
     } catch (openError) {
       setError(errorMessage(openError, 'Unable to open this program'))
@@ -1513,11 +1513,11 @@ function WorkspaceSwitcher({
                 section.programs.map((program) => {
                   const active = program.id === activeProgramId
                   return (
-                    <button
-                      aria-current={active ? 'true' : undefined}
-                      className={active ? 'switcher-item active' : 'switcher-item'}
-                      disabled={openingId !== ''}
-                      key={program.id}
+                    <div className={active ? 'switcher-row active' : 'switcher-row'} key={program.id}>
+                      <button
+                        aria-current={active ? 'true' : undefined}
+                        className="switcher-item"
+                        disabled={openingId !== ''}
                       onClick={() => void choose(section.organization.id, program.id)}
                       type="button"
                     >
@@ -1527,7 +1527,18 @@ function WorkspaceSwitcher({
                         <small>{formatDateRange(program.startDate, program.endDate)}</small>
                       </span>
                       {openingId === program.id ? <Loader2 className="spin" size={14} /> : active ? <Check size={14} /> : null}
-                    </button>
+                      </button>
+                      <button
+                        aria-label={`Open the ${program.name} dashboard`}
+                        className="icon-button ghost switcher-dashboard"
+                        disabled={openingId !== ''}
+                        onClick={() => void choose(section.organization.id, program.id, 'dashboard')}
+                        title="Open dashboard"
+                        type="button"
+                      >
+                        <LayoutDashboard size={14} />
+                      </button>
+                    </div>
                   )
                 })
               ) : (
@@ -1574,7 +1585,7 @@ function Shell({
   selectedProgram: Program | null
   visibleNavItems: typeof navItems
   profile: PeUser
-  onOpenProgram: (orgId: string, programId: string) => void | Promise<void>
+  onOpenProgram: (orgId: string, programId: string, nextRoute?: RouteKey) => void | Promise<void>
   onCreateProgram?: () => void
   user: User
   roleName?: string
@@ -8678,7 +8689,7 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
   // Events, venues and patrons live inside a program; hide them until one is open.
   const shellNavItems = activeProgram ? visibleNavItems : visibleNavItems.filter((item) => item.key !== 'events' && item.key !== 'venues' && item.key !== 'patrons' && item.key !== 'settings')
   // Create program isn't inside a program, so the Program section would point at the previously open one.
-  const programFreeNavItems = visibleNavItems.filter((item) => item.group !== 'program')
+  const programFreeNavItems = visibleNavItems.filter((item) => item.group !== 'program' || item.key === 'dashboard')
 
   // Without an open program those routes only render the program list, so land on it directly.
   // With several programs the program chooser handles it instead.
@@ -8712,7 +8723,7 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
 
   // Opens a program from the directory, switching the active organization first
   // when the program belongs to a different one.
-  async function openProgramFromDirectory(targetOrgId: string, programId: string) {
+  async function openProgramFromDirectory(targetOrgId: string, programId: string, nextRoute?: RouteKey) {
     const switchingOrganization = targetOrgId !== orgId
     if (switchingOrganization) {
       await setActiveOrganizationCallable({ orgId: targetOrgId })
@@ -8725,7 +8736,8 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
     }
     // Switching from inside the workspace keeps the current page; sign-in and
     // Create program land on the dashboard.
-    if (needsOrgChoice || !orgId || route === 'programCreate') setRoute('dashboard')
+    if (nextRoute) setRoute(nextRoute)
+    else if (needsOrgChoice || !orgId || route === 'programCreate') setRoute('dashboard')
     setNeedsOrgChoice(false)
     setChoosingProgram(false)
   }

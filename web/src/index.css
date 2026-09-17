@@ -7947,3 +7947,47 @@ a:focus-visible,
   font-weight: 400;
   line-height: 1.4;
 }
+
+/* ---- Switcher rows with a dashboard shortcut ---- */
+
+.switcher-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: 8px;
+}
+
+.switcher-row:hover {
+  background: #f1f5f9;
+}
+
+.switcher-row.active {
+  background: var(--accent-soft);
+}
+
+.switcher-row .switcher-item {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: transparent;
+}
+
+.switcher-row .switcher-item:hover:not(:disabled) {
+  background: transparent;
+}
+
+.switcher-row.active .switcher-item svg {
+  color: var(--accent);
+}
+
+.switcher-dashboard {
+  width: 30px;
+  height: 30px;
+  min-height: 30px;
+  margin-right: 4px;
+  color: var(--faint);
+}
+
+.switcher-row:hover .switcher-dashboard,
+.switcher-dashboard:focus-visible {
+  color: var(--accent-strong);
+}
