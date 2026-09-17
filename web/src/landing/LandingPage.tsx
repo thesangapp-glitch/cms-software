@@ -9,12 +9,13 @@ import { Pricing } from './Pricing'
 import { Footer } from './Footer'
 
 /**
- * EventOS marketing site. `onSignIn` routes into the existing SANG AuthPage —
+ * Hostwell marketing site. `onSignIn` routes into the existing SANG AuthPage —
  * this component never renders its own authentication UI.
  */
 export function LandingPage({ onSignIn }: { onSignIn: () => void }) {
   useEffect(() => {
-    document.title = 'EventOS — The Operating System for Live Events'
+    const prevTitle = document.title
+    document.title = 'Hostwell — Run every live event, end to end'
     const html = document.documentElement
     const prevScroll = html.style.scrollBehavior
     const prevBg = html.style.background
@@ -22,6 +23,7 @@ export function LandingPage({ onSignIn }: { onSignIn: () => void }) {
     html.style.background = '#05070d'
     document.body.classList.add('eos-body')
     return () => {
+      document.title = prevTitle
       html.style.scrollBehavior = prevScroll
       html.style.background = prevBg
       document.body.classList.remove('eos-body')

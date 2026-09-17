@@ -26,6 +26,9 @@ export default function Navbar() {
               {item.label}
             </HashLink>
           ))}
+          <a href={LINKS.hostwell} target="_blank" rel="noopener" onClick={() => setOpen(false)}>
+            For organizers
+          </a>
           <a
             className="btn btn--primary nav__cta"
             href={LINKS.appStore}

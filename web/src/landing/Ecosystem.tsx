@@ -40,7 +40,7 @@ function Problem() {
           ))}
         </Stagger>
         <Reveal delay={0.1} className="eos-better">
-          <h3>There is a better way. <span className="eos-gradient-text">EventOS.</span></h3>
+          <h3>There is a better way. <span className="eos-gradient-text">Hostwell.</span></h3>
         </Reveal>
       </div>
     </section>

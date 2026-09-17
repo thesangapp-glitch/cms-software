@@ -416,6 +416,52 @@ h1, h2, h3, h4 { line-height: 1.15; letter-spacing: -0.02em; font-weight: 800; }
 /* ============================================================
    Responsive
    ============================================================ */
+/* ============================================================
+   Hostwell (organizer workspace) promo
+   ============================================================ */
+.hostwell__inner {
+  display: grid;
+  grid-template-columns: 0.8fr 1.2fr;
+  gap: 48px;
+  align-items: center;
+  padding: 40px;
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+.hostwell__brand {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 28px;
+  border-radius: 18px;
+  background: linear-gradient(145deg, #1e1b4b 0%, #312e81 60%, #4338ca 100%);
+  color: #fff;
+}
+.hostwell__brand svg { border-radius: 16px; box-shadow: 0 12px 30px rgba(0, 0, 0, 0.3); }
+.hostwell__brand b { display: block; font-size: 30px; letter-spacing: -0.02em; line-height: 1.1; }
+.hostwell__brand span { color: #c7d2fe; font-size: 14px; }
+.hostwell__copy h2 { font-size: clamp(26px, 3.4vw, 36px); margin: 12px 0 12px; }
+.hostwell__copy > p { color: var(--muted); font-size: 16.5px; margin-bottom: 20px; }
+.hostwell__list { list-style: none; display: grid; grid-template-columns: 1fr 1fr; gap: 10px 20px; margin-bottom: 26px; }
+.hostwell__list li { display: flex; gap: 10px; font-size: 14.5px; }
+.hostwell__list li span { color: #4f46e5; font-weight: 700; }
+[data-theme='dark'] .hostwell__list li span { color: #a5b4fc; }
+.hostwell__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 18px; }
+.hostwell__actions .btn--primary { background: linear-gradient(120deg, #4338ca 0%, #6366f1 100%); box-shadow: 0 10px 24px rgba(67, 56, 202, 0.35); }
+.hostwell__url { color: var(--muted); font-weight: 600; font-size: 14.5px; }
+.hostwell__url:hover { color: var(--text); }
+
+@media (max-width: 900px) {
+  .hostwell__inner { grid-template-columns: 1fr; gap: 28px; padding: 24px; }
+  .hostwell__brand { flex-direction: row; align-items: center; padding: 20px; }
+}
+@media (max-width: 520px) {
+  .hostwell__list { grid-template-columns: 1fr; }
+}
+
 @media (max-width: 900px) {
   .hero__inner { grid-template-columns: 1fr; text-align: center; }
   .hero__copy { margin: 0 auto; }
