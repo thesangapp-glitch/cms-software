@@ -8038,3 +8038,27 @@ a:focus-visible,
 .rail-navs > .rail-group:first-child {
   margin-top: 14px;
 }
+
+/* ---- Networking in the dashboard side column ---- */
+
+.ws-side .net-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.ws-side .net-grid > section + section {
+  border-top: 1px solid var(--line-soft);
+  border-left: 0;
+}
+
+.ws-side .net-totals {
+  gap: 8px 18px;
+}
+
+.ws-side .bar-list-row {
+  grid-template-columns: minmax(0, 1fr) 44px;
+  gap: 4px 12px;
+}
+
+.ws-side .bar-list-row > span:first-child {
+  grid-column: 1 / -1;
+}

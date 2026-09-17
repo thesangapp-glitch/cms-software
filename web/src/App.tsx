@@ -4218,81 +4218,25 @@ function ProgramWorkspaceDashboard({
         <section className="card">
           <div className="card-head">
             <div>
-              <h2>Networking</h2>
-              <p>Sang-to-Sang connections made at this program</p>
+              <h2>Setup</h2>
+              <p>{setupDone} of {setupItems.length} done</p>
             </div>
-            <div className="card-head-actions">
-              {connectionAnalytics?.generatedAt ? <span className="muted-note">Updated {formatAnalyticsTimestamp(connectionAnalytics.generatedAt)}</span> : null}
-              <button aria-label="Refresh connection analytics" className="icon-button" disabled={connectionAnalyticsLoading} onClick={() => void loadConnectionAnalytics()} title="Refresh" type="button">
-                {connectionAnalyticsLoading ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}
-              </button>
-            </div>
+            <span className="muted-note tabular">{setupPercent}%</span>
           </div>
-  
-          {connectionAnalyticsError ? <p className="form-error table-message">{connectionAnalyticsError}</p> : null}
-  
-          {connectionAnalyticsLoading && !connectionAnalytics ? (
-            <div className="card-state">
-              <Loader2 className="spin" size={16} />
-              Loading connection analytics
-            </div>
-          ) : connectionAnalytics && connectionAnalytics.totalConnections > 0 ? (
-            <>
-              {connectionAnalytics.limitReached ? (
-                <div className="card-note">
-                  <ShieldCheck size={15} />
-                  Large program: this report shows the first 1,000 connection records.
-                </div>
-              ) : null}
-              <div className="net-grid">
-                <section>
-                  <div className="net-totals">
-                    <div>
-                      <span>Total connections</span>
-                      <strong>{formatCount(connectionAnalytics.totalConnections)}</strong>
-                    </div>
-                    <div>
-                      <span>Unique Sang users</span>
-                      <strong>{formatCount(connectionAnalytics.uniquePeopleCount)}</strong>
-                    </div>
-                    <div>
-                      <span>Latest activity</span>
-                      <strong>{formatAnalyticsTimestamp(latestConnectionAt)}</strong>
-                    </div>
-                  </div>
-                  <div className="net-label">
-                    <span>Connections by event</span>
-                    <span>Unique users</span>
-                  </div>
-                  {connectionAnalytics.eventBreakdown.map((eventStat) => (
-                    <div className="bar-list-row" key={eventStat.eventId || eventStat.eventName}>
-                      <span title={eventStat.eventName}>{eventStat.eventName}</span>
-                      <span className="bar-track">
-                        <i style={{ width: `calc((100% - 64px) * ${(eventStat.connectionCount / maxConnections).toFixed(4)})` }} />
-                        <b>{formatCount(eventStat.connectionCount)}</b>
-                      </span>
-                      <span>{formatCount(eventStat.uniquePeopleCount)}</span>
-                    </div>
-                  ))}
-                </section>
-                <section>
-                  <div className="net-label">
-                    <span>Recent activity</span>
-                    <span>Last {formatCount(connectionAnalytics.recentConnections.length)}</span>
-                  </div>
-                  {connectionAnalytics.recentConnections.map((connection, index) => (
-                    <div className="activity-row" key={`${connection.eventId || connection.eventName}-${connection.connectedAt || index}`}>
-                      <span className="activity-icon"><Link2 size={13} /></span>
-                      <span>New connection at <strong>{connection.eventName || program.name}</strong></span>
-                      <small>{formatAnalyticsTimestamp(connection.connectedAt)}</small>
-                    </div>
-                  ))}
-                </section>
+          <div className="setup-list">
+            <div className="meter green"><i style={{ width: `${setupPercent}%` }} /></div>
+            {setupItems.map((item) => (
+              <div className={item.done ? 'setup-item done' : 'setup-item'} key={item.label}>
+                <span className="setup-check"><Check size={12} strokeWidth={3} /></span>
+                <span>{item.label}</span>
+                {item.done ? (
+                  <small>{item.detail}</small>
+                ) : (
+                  <button className="text-link setup-action" onClick={() => setRoute(item.route)} type="button">{item.detail}</button>
+                )}
               </div>
-            </>
-          ) : (
-            <EmptyState title="No event connections yet" body="When attendees connect through Sang during this program, totals and event-wise counts will appear here." />
-          )}
+            ))}
+          </div>
         </section>
         </div>
 
@@ -4343,25 +4287,81 @@ function ProgramWorkspaceDashboard({
           <section className="card">
             <div className="card-head">
               <div>
-                <h2>Setup</h2>
-                <p>{setupDone} of {setupItems.length} done</p>
+                <h2>Networking</h2>
+                <p>Sang-to-Sang connections made at this program</p>
               </div>
-              <span className="muted-note tabular">{setupPercent}%</span>
+              <div className="card-head-actions">
+                {connectionAnalytics?.generatedAt ? <span className="muted-note">Updated {formatAnalyticsTimestamp(connectionAnalytics.generatedAt)}</span> : null}
+                <button aria-label="Refresh connection analytics" className="icon-button" disabled={connectionAnalyticsLoading} onClick={() => void loadConnectionAnalytics()} title="Refresh" type="button">
+                  {connectionAnalyticsLoading ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}
+                </button>
+              </div>
             </div>
-            <div className="setup-list">
-              <div className="meter green"><i style={{ width: `${setupPercent}%` }} /></div>
-              {setupItems.map((item) => (
-                <div className={item.done ? 'setup-item done' : 'setup-item'} key={item.label}>
-                  <span className="setup-check"><Check size={12} strokeWidth={3} /></span>
-                  <span>{item.label}</span>
-                  {item.done ? (
-                    <small>{item.detail}</small>
-                  ) : (
-                    <button className="text-link setup-action" onClick={() => setRoute(item.route)} type="button">{item.detail}</button>
-                  )}
+  
+            {connectionAnalyticsError ? <p className="form-error table-message">{connectionAnalyticsError}</p> : null}
+  
+            {connectionAnalyticsLoading && !connectionAnalytics ? (
+              <div className="card-state">
+                <Loader2 className="spin" size={16} />
+                Loading connection analytics
+              </div>
+            ) : connectionAnalytics && connectionAnalytics.totalConnections > 0 ? (
+              <>
+                {connectionAnalytics.limitReached ? (
+                  <div className="card-note">
+                    <ShieldCheck size={15} />
+                    Large program: this report shows the first 1,000 connection records.
+                  </div>
+                ) : null}
+                <div className="net-grid">
+                  <section>
+                    <div className="net-totals">
+                      <div>
+                        <span>Total connections</span>
+                        <strong>{formatCount(connectionAnalytics.totalConnections)}</strong>
+                      </div>
+                      <div>
+                        <span>Unique Sang users</span>
+                        <strong>{formatCount(connectionAnalytics.uniquePeopleCount)}</strong>
+                      </div>
+                      <div>
+                        <span>Latest activity</span>
+                        <strong>{formatAnalyticsTimestamp(latestConnectionAt)}</strong>
+                      </div>
+                    </div>
+                    <div className="net-label">
+                      <span>Connections by event</span>
+                      <span>Unique users</span>
+                    </div>
+                    {connectionAnalytics.eventBreakdown.map((eventStat) => (
+                      <div className="bar-list-row" key={eventStat.eventId || eventStat.eventName}>
+                        <span title={eventStat.eventName}>{eventStat.eventName}</span>
+                        <span className="bar-track">
+                          <i style={{ width: `calc((100% - 64px) * ${(eventStat.connectionCount / maxConnections).toFixed(4)})` }} />
+                          <b>{formatCount(eventStat.connectionCount)}</b>
+                        </span>
+                        <span>{formatCount(eventStat.uniquePeopleCount)}</span>
+                      </div>
+                    ))}
+                  </section>
+                  <section>
+                    <div className="net-label">
+                      <span>Recent activity</span>
+                      <span>Last {formatCount(connectionAnalytics.recentConnections.length)}</span>
+                    </div>
+                    {connectionAnalytics.recentConnections.map((connection, index) => (
+                      <div className="activity-row" key={`${connection.eventId || connection.eventName}-${connection.connectedAt || index}`}>
+                        <span className="activity-icon"><Link2 size={13} /></span>
+                        <span>New connection at <strong>{connection.eventName || program.name}</strong></span>
+                        <small>{formatAnalyticsTimestamp(connection.connectedAt)}</small>
+                      </div>
+                    ))}
+                  </section>
                 </div>
-              ))}
-            </div>
+              </>
+            ) : (
+              <EmptyState title="No event connections yet" body="When attendees connect through Sang during this program, totals and event-wise counts will appear here." />
+            )}
           </section>
         </div>
       </div>
