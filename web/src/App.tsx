@@ -844,6 +844,9 @@ async function uploadEventImage(uid: string, file: File, folder: string) {
 }
 
 const landingSessionKey = 'sang-crm-landed'
+const newOrganizationSessionKey = 'sang-crm-new-org'
+// Set once per sign-in after sending someone with no programs to Create program.
+const emptyPromptSessionKey = 'sang-crm-empty-prompted'
 
 function readSessionValue(key: string) {
   try {
@@ -2156,6 +2159,8 @@ function OnboardingPage({ user, onComplete }: { user: User; onComplete: (profile
 
     try {
       const profile = await createOrganizationWithOwner(user, { displayName, orgName, orgType, website, logoUrl })
+      // Step 2 is the program composer, with this organization already picked.
+      writeSessionValue(newOrganizationSessionKey, profile.activeOrgId || '')
       onComplete(profile)
     } catch (setupError) {
       setError(errorMessage(setupError, 'Could not complete setup'))
@@ -2169,15 +2174,15 @@ function OnboardingPage({ user, onComplete }: { user: User; onComplete: (profile
       <form className="onboarding-card" onSubmit={submit}>
         <div className="setup-card-head">
           <div>
-            <span className="eyebrow">Workspace setup</span>
-            <h1>Set up your organization</h1>
+            <span className="eyebrow">Step 1 of 2 · Organization</span>
+            <h1>Create your first program</h1>
           </div>
           <button className="secondary-button setup-signout" disabled={loading} onClick={leaveSetup} type="button">
             <LogOut size={16} />
             Sign out
           </button>
         </div>
-        <p>Add the organization that will manage your programs, team, guests, passes, and event operations.</p>
+        <p>First, the organization that runs it: a college, club or company. Next you'll add the program's name, dates and venue.</p>
         <div className="setup-account-note">
           <ShieldCheck size={16} />
           <span>
@@ -2212,8 +2217,9 @@ function OnboardingPage({ user, onComplete }: { user: User; onComplete: (profile
         {error && <p className="form-error">{error}</p>}
 
         <button className="primary-button" disabled={loading} type="submit">
-          {loading ? <Loader2 className="spin" size={17} /> : <Sparkles size={17} />}
-          Create workspace
+          {loading ? <Loader2 className="spin" size={17} /> : null}
+          Continue to program details
+          {loading ? null : <ChevronRight size={17} />}
         </button>
       </form>
     </main>
@@ -3914,6 +3920,7 @@ function ProgramDirectoryPage({
   onOpen,
   onCreateProgram,
   onProgramDeleted,
+  onEmpty,
   embedded = false,
 }: {
   profile: PeUser
@@ -3922,6 +3929,8 @@ function ProgramDirectoryPage({
   onOpen: (orgId: string, programId: string) => void | Promise<void>
   onCreateProgram?: () => void
   onProgramDeleted?: (orgId: string, programId: string) => void
+  // Called once when the directory loads with no programs anywhere and one can be created.
+  onEmpty?: () => void
   embedded?: boolean
 }) {
   const { sections: allSections, loading, markArchived } = useProgramDirectory(profile.organizationIds || [], user.uid)
@@ -3939,6 +3948,12 @@ function ProgramDirectoryPage({
   }))
   const totalPrograms = sections.reduce((sum, section) => sum + section.programs.length, 0)
   const canCreateAnywhere = sections.some((section) => section.canCreateProgram)
+  const hasNoPrograms = !loading && !showArchived && totalPrograms === 0
+  const onEmptyRef = useRef(onEmpty)
+  onEmptyRef.current = onEmpty
+  useEffect(() => {
+    if (hasNoPrograms && canCreateAnywhere) onEmptyRef.current?.()
+  }, [canCreateAnywhere, hasNoPrograms])
   const visibleSections = [...sections]
     .sort((a, b) => {
       if (a.organization.id === activeOrgId) return -1
@@ -3955,7 +3970,7 @@ function ProgramDirectoryPage({
 
   // One grid across organizations instead of a section (and mostly empty row) per organization.
   const programEntries = visibleSections.flatMap((section) => section.programs.map((program) => ({ program, section })))
-  const emptySections = showArchived ? [] : visibleSections.filter((section) => section.programs.length === 0)
+  const emptySections = showArchived || hasNoPrograms ? [] : visibleSections.filter((section) => section.programs.length === 0)
 
   async function open(orgId: string, programId: string) {
     setError('')
@@ -4087,6 +4102,26 @@ function ProgramDirectoryPage({
                 )
               })}
             </div>
+          ) : null}
+
+          {hasNoPrograms && !searchTerm ? (
+            <section className="card first-program">
+              <HostwellMark size={44} />
+              <div>
+                <h2>{canCreateAnywhere ? 'Create your first program' : 'No programs yet'}</h2>
+                <p>
+                  {canCreateAnywhere
+                    ? 'A program is your fest, conference or event series. Events, people, passes and check-ins all live inside it.'
+                    : "You don't have access to any programs yet. Ask an organization owner to add you to one."}
+                </p>
+              </div>
+              {canCreateAnywhere && onCreateProgram ? (
+                <button className="primary-button" onClick={onCreateProgram} type="button">
+                  <Plus size={16} />
+                  Create program
+                </button>
+              ) : null}
+            </section>
           ) : null}
 
           {emptySections.length ? (
@@ -5040,6 +5075,7 @@ function ProgramComposerPage({
   organizationsLoading,
   onCreated,
   onCancel,
+  firstProgram = false,
 }: {
   user: User
   profile: PeUser
@@ -5049,6 +5085,7 @@ function ProgramComposerPage({
   organizationsLoading: boolean
   onCreated: (result: { orgId: string; programId: string }) => void
   onCancel: () => void
+  firstProgram?: boolean
 }) {
   const writableOrganizations = useMemo(
     () => organizationOptions.filter((organization) => organization.canCreateProgram),
@@ -5085,11 +5122,11 @@ function ProgramComposerPage({
   // Nothing is preselected: the organizer picks an organization or adds one. An
   // organization just created (here or on the Programs page) is selected once it loads.
   useEffect(() => {
-    const createdOrgId = window.sessionStorage.getItem('sang-crm-new-org')
+    const createdOrgId = readSessionValue(newOrganizationSessionKey)
     if (!createdOrgId || organizationsLoading) return
     if (writableOrganizations.some((organization) => organization.id === createdOrgId)) {
       setTargetOrgId(createdOrgId)
-      window.sessionStorage.removeItem('sang-crm-new-org')
+      writeSessionValue(newOrganizationSessionKey, null)
     }
   }, [organizationsLoading, writableOrganizations])
 
@@ -5184,8 +5221,8 @@ function ProgramComposerPage({
     <section className="page-stack">
       <section className="events-command command-premium">
         <div>
-          <span className="eyebrow">New program</span>
-          <h1>Create a program</h1>
+          <span className="eyebrow">{firstProgram ? 'Step 2 of 2 · Program' : 'New program'}</span>
+          <h1>{firstProgram ? 'Create your first program' : 'Create a program'}</h1>
           <p>
             {targetOrganization ? (
               <>This program will be created in <strong>{formatName(targetOrganization.name)}</strong>. Set the dates, venue and artwork — events, people, passes and analytics all live inside it.</>
@@ -8830,7 +8867,7 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
   // A new organization becomes the open workspace; its first program comes next.
   function handleOrganizationCreated(nextProfile: PeUser) {
     window.localStorage.setItem('sang-crm-org-choice-confirmed', nextProfile.activeOrgId || '')
-    window.sessionStorage.setItem('sang-crm-new-org', nextProfile.activeOrgId || '')
+    writeSessionValue(newOrganizationSessionKey, nextProfile.activeOrgId || '')
     window.localStorage.removeItem('sang-crm-selected-program')
     setSelectedProgramId('')
     setProfile(nextProfile)
@@ -8928,7 +8965,8 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
       <Shell onCreateProgram={canCreateProgramSomewhere ? openProgramComposer : undefined} onOpenProgram={openProgramFromDirectory} profile={profile} organization={organization} route={route} selectedProgram={null} setRoute={setRoute} navCounts={navCounts} pendingPublishCount={pendingPublishCount} roleName={currentRole?.name} user={firebaseUser} visibleNavItems={programFreeNavItems}>
         <ProgramComposerPage
           activeOrgId={orgId}
-          onCancel={() => setRoute(sortedPrograms.length > 0 ? 'programs' : 'dashboard')}
+          onCancel={() => setRoute(sortedPrograms.length > 0 ? 'programs' : 'home')}
+          firstProgram={sortedPrograms.length === 0}
           onCreated={finishProgramCreation}
           organizationOptions={organizationOptions.options}
           onOrganizationCreated={handleOrganizationCreated}
@@ -8961,6 +8999,12 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
           embedded
           onCreateProgram={canCreateProgramSomewhere ? openProgramComposer : undefined}
           onOpen={(targetOrgId, programId) => openProgramFromDirectory(targetOrgId, programId, 'dashboard')}
+          onEmpty={() => {
+            // Once per sign-in, so cancelling Create program doesn't bounce straight back.
+            if (readSessionValue(emptyPromptSessionKey) === firebaseUser.uid) return
+            writeSessionValue(emptyPromptSessionKey, firebaseUser.uid)
+            setRoute('programCreate')
+          }}
           onProgramDeleted={(_, programId) => {
             if (programId !== selectedProgramId) return
             setSelectedProgramId('')
@@ -9001,7 +9045,9 @@ function App() {
 
   // The next sign-in lands on All programs again.
   useEffect(() => {
-    if (!loading && !firebaseUser) writeSessionValue(landingSessionKey, null)
+    if (loading || firebaseUser) return
+    writeSessionValue(landingSessionKey, null)
+    writeSessionValue(emptyPromptSessionKey, null)
   }, [firebaseUser, loading])
 
   // Reset the just-verified flag whenever the signed-in account changes.
