@@ -1,13 +1,13 @@
 import { Reveal } from './primitives'
 import { motion, useReducedMotion } from './motion'
 import { HostwellMark } from '../brand'
-import { sangAppStoreUrl, sangPlayStoreUrl, StoreLinks } from './StoreLinks'
+import { sangAppStoreUrl, sangPlayStoreUrl, sangWebsiteUrl, StoreLinks } from './StoreLinks'
 
 type FooterLink = string | { label: string; href: string; external?: boolean }
 
 const columns: { title: string; links: FooterLink[] }[] = [
   { title: 'Platform', links: [{ label: 'SANG', href: '#sang-story' }, { label: 'Scanner', href: '#platform' }, { label: 'Organizer CRM', href: '#crowd' }, 'Analytics', 'Networking'] },
-  { title: 'Get SANG', links: [{ label: 'App Store (iPhone)', href: sangAppStoreUrl, external: true }, { label: 'Google Play (Android)', href: sangPlayStoreUrl, external: true }] },
+  { title: 'Get SANG', links: [{ label: 'sangapp.in', href: sangWebsiteUrl, external: true }, { label: 'App Store (iPhone)', href: sangAppStoreUrl, external: true }, { label: 'Google Play (Android)', href: sangPlayStoreUrl, external: true }] },
   { title: 'Solutions', links: ['College Events', 'Corporate Events', 'Conferences', 'Exhibitions', 'Concerts', 'Sports Events'] },
   { title: 'Company', links: ['About', 'Careers', 'Contact', 'Enterprise'] },
   { title: 'Resources', links: ['Documentation', 'Help Center', 'Privacy', 'Terms'] },
@@ -48,7 +48,7 @@ export function Footer() {
 
         <div className="eos-footer-bottom">
           <span>© 2026 Hostwell. All rights reserved.</span>
-          <span>One identity. One platform. One event ecosystem.</span>
+          <span>Hostwell is built by the team behind <a href={sangWebsiteUrl} rel="noopener noreferrer" target="_blank">SANG</a>.</span>
         </div>
       </div>
     </footer>

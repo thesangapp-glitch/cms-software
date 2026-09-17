@@ -8213,3 +8213,46 @@ a:focus-visible,
     align-items: flex-start;
   }
 }
+
+/* ---- SANG app links ---- */
+
+.rail-sang-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 4px 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  text-decoration: none;
+  transition:
+    border-color 140ms ease,
+    color 140ms ease;
+}
+
+.rail-sang-link span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rail-sang-link:hover {
+  border-color: #c7d2fe;
+  color: var(--accent-strong);
+}
+
+.auth-sang-note {
+  font-size: 13.5px;
+}
+
+.auth-sang-note a {
+  color: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}

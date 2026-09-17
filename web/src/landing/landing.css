@@ -1854,3 +1854,22 @@ body.eos-body {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
+
+.eos-store-site {
+  width: fit-content;
+  color: var(--eos-muted);
+  font-size: 13.5px;
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.eos-store-site:hover,
+.eos-footer-bottom a:hover {
+  color: var(--eos-text);
+}
+
+.eos-footer-bottom a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}

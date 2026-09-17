@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { AnimatePresence } from 'framer-motion'
 import { Menu, X } from 'lucide-react'
 import { HostwellMark } from '../brand'
+import { sangWebsiteUrl } from './StoreLinks'
 import { motion } from './motion'
 
 const links = [
@@ -11,6 +12,7 @@ const links = [
   { label: 'Organizer CRM', href: '#crowd' },
   { label: 'Solutions', href: '#use-cases' },
   { label: 'Pricing', href: '#pricing' },
+  { label: 'SANG app ↗', href: sangWebsiteUrl, external: true },
 ]
 
 export function Navbar({ onSignIn, onGetStarted }: { onSignIn: () => void; onGetStarted: () => void }) {
@@ -45,7 +47,7 @@ export function Navbar({ onSignIn, onGetStarted }: { onSignIn: () => void; onGet
 
         <nav className="eos-nav-links" aria-label="Primary">
           {links.map((link) => (
-            <a href={link.href} key={link.label}>{link.label}</a>
+            <a href={link.href} key={link.label} {...(link.external ? { target: '_blank', rel: 'noopener noreferrer' } : {})}>{link.label}</a>
           ))}
         </nav>
 
@@ -69,7 +71,7 @@ export function Navbar({ onSignIn, onGetStarted }: { onSignIn: () => void; onGet
           >
             <div className="eos-mobile-menu-inner">
               {links.map((link) => (
-                <a href={link.href} key={link.label} onClick={() => setOpen(false)}>{link.label}</a>
+                <a href={link.href} key={link.label} onClick={() => setOpen(false)} {...(link.external ? { target: '_blank', rel: 'noopener noreferrer' } : {})}>{link.label}</a>
               ))}
               <div className="eos-mobile-actions">
                 <button className="eos-btn ghost" onClick={() => { setOpen(false); onSignIn() }} type="button">Sign In</button>

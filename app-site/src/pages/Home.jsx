@@ -5,6 +5,7 @@ import Features from '../components/Features.jsx'
 import HowItWorks from '../components/HowItWorks.jsx'
 import UseCases from '../components/UseCases.jsx'
 import WhySang from '../components/WhySang.jsx'
+import HostwellPromo from '../components/HostwellPromo.jsx'
 import FAQ from '../components/FAQ.jsx'
 import CTA from '../components/CTA.jsx'
 
@@ -21,6 +22,7 @@ export default function Home() {
       <Features />
       <HowItWorks />
       <UseCases />
+      <HostwellPromo />
       <WhySang />
       <FAQ />
       <CTA />

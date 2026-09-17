@@ -1,5 +1,6 @@
 export const sangAppStoreUrl = 'https://apps.apple.com/in/app/sang-digital-business-card/id6795174216'
 export const sangPlayStoreUrl = 'https://play.google.com/store/apps/details?id=com.sang.business.app'
+export const sangWebsiteUrl = 'https://www.sangapp.in'
 
 function AppleGlyph() {
   return (
@@ -32,6 +33,9 @@ export function StoreLinks({ label = 'Get the SANG app' }: { label?: string }) {
           <span><small>Get it on</small>Google Play</span>
         </a>
       </div>
+      <a className="eos-store-site" href={sangWebsiteUrl} rel="noopener noreferrer" target="_blank">
+        Learn more about SANG at sangapp.in ↗
+      </a>
     </div>
   )
 }

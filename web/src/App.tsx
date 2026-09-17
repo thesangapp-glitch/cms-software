@@ -41,6 +41,7 @@ import {
   Settings,
   ShieldCheck,
   Smartphone,
+  ExternalLink,
   Sparkles,
   Ticket,
   Trash2,
@@ -1688,6 +1689,11 @@ function Shell({
         </nav>
 
         <div className="rail-spacer" />
+        <a className="rail-sang-link" href="https://www.sangapp.in" rel="noopener noreferrer" target="_blank" title="Your guests' passes and schedule live in the SANG app">
+          <Smartphone size={15} strokeWidth={1.8} />
+          <span>Guests use SANG · sangapp.in</span>
+          <ExternalLink size={13} />
+        </a>
         <div className="rail-user">
           <span className="rail-avatar">{user.photoURL ? <img alt="" referrerPolicy="no-referrer" src={user.photoURL} /> : initialsFor(user.displayName || user.email || '', 'U')}</span>
           <span className="rail-user-text">
@@ -1916,6 +1922,10 @@ function AuthPage({ onBack }: { onBack?: () => void }) {
           <div className="auth-aside-copy">
             <h1>Run every event from one control room.</h1>
             <p>Programs, guests, passes and gate check-in — for fests, conferences and corporate events.</p>
+            <p className="auth-sang-note">
+              Guests get their passes in the SANG app.{' '}
+              <a href="https://www.sangapp.in" rel="noopener noreferrer" target="_blank">sangapp.in ↗</a>
+            </p>
           </div>
 
           <ul className="auth-points">
