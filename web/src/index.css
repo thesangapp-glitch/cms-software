@@ -8028,3 +8028,13 @@ a:focus-visible,
   border-color: #c7d2fe;
   color: var(--accent-strong);
 }
+
+/* ---- All programs (embedded directory) ---- */
+
+.workspace-content .chooser-title h1 {
+  font-size: 24px;
+}
+
+.rail-navs > .rail-group:first-child {
+  margin-top: 14px;
+}

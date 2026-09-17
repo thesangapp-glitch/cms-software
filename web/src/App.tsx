@@ -20,6 +20,7 @@ import {
   Italic,
   Layers,
   LayoutDashboard,
+  LayoutGrid,
   Link2,
   List,
   LocateFixed,
@@ -87,7 +88,7 @@ import { LandingPage } from './landing/LandingPage'
 
 // Check-in and analytics routes are intentionally out of scope for this release.
 // Backend scanPassToken/createScannerSession remain live; only the CRM surface is hidden.
-type RouteKey = 'dashboard' | 'events' | 'venues' | 'patrons' | 'programs' | 'programCreate' | 'settings' | 'organization' | 'roles' | 'team' | 'people'
+type RouteKey = 'home' | 'dashboard' | 'events' | 'venues' | 'patrons' | 'programs' | 'programCreate' | 'settings' | 'organization' | 'roles' | 'team' | 'people'
 type PersonKind = string
 type ProgramMode = 'standalone' | 'multiEvent'
 type TeamScope = 'organization' | 'program' | 'event'
@@ -726,6 +727,7 @@ const permissions = [
 ]
 
 const routeLabels: Record<RouteKey, string> = {
+  home: 'All programs',
   dashboard: 'Dashboard',
   events: 'Events',
   venues: 'Venues',
@@ -739,9 +741,11 @@ const routeLabels: Record<RouteKey, string> = {
   people: 'People & passes',
 }
 
-type NavGroup = 'program' | 'organization'
+type NavGroup = 'workspace' | 'program' | 'organization'
 
+// Key order is display order; the workspace group has no heading.
 const navGroupLabels: Record<NavGroup, string> = {
+  workspace: '',
   program: 'Program',
   organization: 'Organization',
 }
@@ -749,6 +753,7 @@ const navGroupLabels: Record<NavGroup, string> = {
 // Order matters: the first visible item is the fallback route when the current
 // route is not allowed for this member.
 const navItems: Array<{ key: RouteKey; icon: typeof LayoutDashboard; group: NavGroup }> = [
+  { key: 'home', icon: LayoutGrid, group: 'workspace' },
   { key: 'dashboard', icon: LayoutDashboard, group: 'program' },
   { key: 'events', icon: CalendarDays, group: 'program' },
   { key: 'people', icon: Users, group: 'program' },
@@ -769,6 +774,8 @@ function hasPermission(role: Role | undefined, permission: string) {
 function canOpenRoute(route: RouteKey, role: Role | undefined, member: TeamMember | null) {
   if (!member || member.status !== 'active') return false
   switch (route) {
+    case 'home':
+      return true
     case 'dashboard':
       return hasPermission(role, 'program.read')
     case 'events':
@@ -1631,7 +1638,7 @@ function Shell({
         <nav aria-label="Primary navigation" className="rail-navs">
           {groups.map(({ group, items }) => (
             <div className="rail-group" key={group}>
-              <div className="rail-group-label">{navGroupLabels[group]}</div>
+              {navGroupLabels[group] ? <div className="rail-group-label">{navGroupLabels[group]}</div> : null}
               <div className="rail-nav">
                 {items.map((item) => {
                   const Icon = item.icon
@@ -1674,7 +1681,7 @@ function Shell({
           <nav aria-label="Breadcrumb" className="crumbs">
             <span className="crumb-org" title={organization?.name || undefined}>{formatName(organization?.name) || 'Organization'}</span>
             <ChevronRight aria-hidden="true" className="crumb-sep" size={14} />
-            {selectedProgram ? (
+            {selectedProgram && route !== 'home' ? (
               <>
                 <button aria-expanded={Boolean(switcher)} className="crumb-program" data-switcher-trigger data-tour="program-switcher" onClick={toggleSwitcher} title="Switch program" type="button">
                   <span title={selectedProgram.name}>{formatName(selectedProgram.name)}</span>
@@ -3868,12 +3875,14 @@ function ProgramDirectoryPage({
   activeOrgId,
   onOpen,
   onCreateProgram,
+  embedded = false,
 }: {
   profile: PeUser
   user: User
   activeOrgId?: string
   onOpen: (orgId: string, programId: string) => void | Promise<void>
   onCreateProgram?: () => void
+  embedded?: boolean
 }) {
   const { sections, loading } = useProgramDirectory(profile.organizationIds || [], user.uid)
   const [search, setSearch] = useState('')
@@ -3911,11 +3920,11 @@ function ProgramDirectoryPage({
     }
   }
 
-  return (
-    <ChooserFrame>
+  const content = (
+    <>
       <div className="page-header">
         <div className="chooser-title">
-          <h1>Choose a program</h1>
+          <h1>{embedded ? 'All programs' : 'Choose a program'}</h1>
           <p>
             {loading
               ? 'Loading your programs…'
@@ -4008,8 +4017,10 @@ function ProgramDirectoryPage({
       )}
 
       {!loading && searchTerm && visibleSections.length === 0 ? <p className="muted-note">No programs or organizations match “{search.trim()}”.</p> : null}
-    </ChooserFrame>
+    </>
   )
+
+  return embedded ? content : <ChooserFrame>{content}</ChooserFrame>
 }
 
 function ProgramWorkspaceDashboard({
@@ -8655,7 +8666,7 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
 
   const sortedPrograms = [...programs.rows].sort((a, b) => a.startDate.localeCompare(b.startDate))
   const selectedProgram = sortedPrograms.find((program) => program.id === selectedProgramId) || null
-  const shouldChooseProgram = !programs.loading && !selectedProgram && sortedPrograms.length > 1 && route !== 'programs' && route !== 'programCreate'
+  const shouldChooseProgram = !programs.loading && !selectedProgram && sortedPrograms.length > 1 && route !== 'programs' && route !== 'programCreate' && route !== 'home'
   const activeProgram = selectedProgram || (sortedPrograms.length === 1 ? sortedPrograms[0] : null)
   const activeEvents = activeProgram ? events.rows.filter((event) => event.programId === activeProgram.id) : []
   const activeScheduleItems = activeProgram ? scheduleItems.rows.filter((item) => item.programId === activeProgram.id) : []
@@ -8837,6 +8848,16 @@ function CrmApp({ firebaseUser, profile, setProfile }: { firebaseUser: User; pro
       <CreateOrganizationDrawer onClose={() => setOrganizationDrawerOpen(false)} onCreated={handleOrganizationCreated} open={organizationDrawerOpen} profile={profile} user={firebaseUser} />
       <WorkspaceTour onClose={() => setTourOpen(false)} open={tourOpen && Boolean(activeProgram)} />
       {programs.error || roles.error || ownMemberships.error || people.error || scheduleItems.error || venueCatalogs.error || partners.error || passes.error || members.error ? <p className="form-error">{programs.error || roles.error || ownMemberships.error || people.error || scheduleItems.error || venueCatalogs.error || partners.error || passes.error || members.error}</p> : null}
+      {route === 'home' && (
+        <ProgramDirectoryPage
+          activeOrgId={orgId}
+          embedded
+          onCreateProgram={canCreateProgramSomewhere ? openProgramComposer : undefined}
+          onOpen={(targetOrgId, programId) => openProgramFromDirectory(targetOrgId, programId, 'dashboard')}
+          profile={profile}
+          user={firebaseUser}
+        />
+      )}
       {route === 'dashboard' && activeProgram && <ProgramWorkspaceDashboard events={activeEvents} orgId={orgId} people={activePeople} program={activeProgram} scheduleItems={activeScheduleItems} setRoute={setRoute} venueCatalog={activeVenueCatalog} />}
       {route === 'dashboard' && !activeProgram && <DashboardPage onCreateProgram={canCreateProgram ? openProgramComposer : undefined} people={people.rows} programs={sortedPrograms} setRoute={setRoute} />}
       {route === 'events' && activeProgram && <EventsPage events={activeEvents} orgId={orgId} people={activePeople} program={activeProgram} roles={roles.rows} scheduleItems={activeScheduleItems} teamMembers={members.rows} uid={firebaseUser.uid} venueCatalog={activeVenueCatalog} />}
