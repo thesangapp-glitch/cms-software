@@ -8,7 +8,7 @@ const tiers = [
     unit: '/ event',
     desc: 'For smaller events getting started with connected operations.',
     features: [
-      'Up to 500 attendees',
+      'Up to 100 attendees',
       'Event dashboard',
       'CSV upload',
       'SANG event passes',
@@ -22,11 +22,11 @@ const tiers = [
   },
   {
     name: 'Professional',
-    cost: '₹14,999',
+    cost: '₹19,999',
     unit: '/ event',
     desc: 'For serious events that need live operations and analytics.',
     features: [
-      'Up to 5,000 attendees',
+      'Up to 500 attendees',
       'Everything in Starter',
       'Unlimited gates',
       'Live occupancy',
@@ -41,29 +41,24 @@ const tiers = [
     featured: true,
   },
   {
-    name: 'Enterprise',
-    cost: 'Custom',
-    unit: '',
-    desc: 'For organizations running events at scale across teams.',
+    name: 'Business',
+    cost: '₹49,999',
+    unit: '/ event',
+    desc: 'For large events with high attendance and many teams on the ground.',
     features: [
-      'Unlimited attendees',
-      'Multiple organizations',
-      'Multi-event management',
+      'Up to 2,500 attendees',
+      'Everything in Professional',
+      'Unlimited scanner devices',
       'Advanced permissions',
-      'SSO',
-      'API access',
       'Custom branding',
-      'Custom integrations',
-      'Advanced analytics',
-      'Dedicated support · SLA',
-      'Custom onboarding',
+      'Dedicated support',
     ],
-    cta: 'Talk to Sales',
+    cta: 'Choose Business',
     featured: false,
   },
 ]
 
-function PricingSection({ onGetStarted, onTalkToSales }: { onGetStarted: () => void; onTalkToSales: () => void }) {
+function PricingSection({ onGetStarted }: { onGetStarted: () => void }) {
   return (
     <section className="eos-section" id="pricing">
       <div className="eos-shell">
@@ -86,7 +81,7 @@ function PricingSection({ onGetStarted, onTalkToSales }: { onGetStarted: () => v
                 </ul>
                 <button
                   className={t.featured ? 'eos-btn primary' : 'eos-btn ghost'}
-                  onClick={t.name === 'Enterprise' ? onTalkToSales : onGetStarted}
+                  onClick={onGetStarted}
                   type="button"
                 >
                   {t.cta}
@@ -95,6 +90,12 @@ function PricingSection({ onGetStarted, onTalkToSales }: { onGetStarted: () => v
             </Reveal>
           ))}
         </div>
+        <Reveal delay={0.1}>
+          <p className="eos-lead center" style={{ marginTop: 32 }}>
+            Need more than 2,500 attendees or something tailored? For custom pricing, contact us at{' '}
+            <a href="mailto:thesangapp@gmail.com">thesangapp@gmail.com</a>.
+          </p>
+        </Reveal>
       </div>
     </section>
   )
@@ -171,7 +172,7 @@ function FinalCTA({ onGetStarted, onTalkToSales }: { onGetStarted: () => void; o
 export function Pricing({ onGetStarted, onTalkToSales }: { onGetStarted: () => void; onTalkToSales: () => void }) {
   return (
     <>
-      <PricingSection onGetStarted={onGetStarted} onTalkToSales={onTalkToSales} />
+      <PricingSection onGetStarted={onGetStarted} />
       <EnterpriseSection onTalkToSales={onTalkToSales} />
       <FinalCTA onGetStarted={onGetStarted} onTalkToSales={onTalkToSales} />
     </>
