@@ -38,7 +38,7 @@ function Architecture() {
     <Reveal className="eos-arch" delay={0.2} immediate>
       <ArchNode icon={<LayoutDashboard size={19} />} sub="Command" label="Organizer CRM" tint="linear-gradient(135deg,#a855f7,#6366f1)" />
       <div className="eos-arch-conn" />
-      <ArchNode icon={<Server size={19} />} sub="Core" label="EventOS Core" tint="linear-gradient(135deg,#6366f1,#22d3ee)" />
+      <ArchNode icon={<Server size={19} />} sub="Core" label="Hostwell Core" tint="linear-gradient(135deg,#6366f1,#22d3ee)" />
       <svg className="eos-arch-branch" viewBox="0 0 380 40" preserveAspectRatio="none" aria-hidden>
         <defs>
           <linearGradient id="eos-line-grad" x1="0" y1="0" x2="0" y2="1">

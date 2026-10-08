@@ -1,10 +1,11 @@
 import { ArrowLeftRight } from 'lucide-react'
 import { AnimatedNumber, Parallax, Reveal, Stagger } from './primitives'
 import { QrMock, StatusBar } from './mockups'
+import { StoreLinks } from './StoreLinks'
 
 const steps = [
   { n: '01', t: 'Upload', d: 'Organizer uploads a CSV of attendees — name, phone, email and category — straight into the CRM.' },
-  { n: '02', t: 'Match', d: 'EventOS matches each phone and email against existing SANG identities in real time.' },
+  { n: '02', t: 'Match', d: 'Hostwell matches each phone and email against existing SANG identities in real time.' },
   { n: '03', t: 'Event Pass', d: 'If the person already has SANG, the event appears automatically in their app. If not, they get an invite.' },
   { n: '04', t: 'Verify', d: 'At the gate, the attendee shows their SANG QR. The Scanner verifies identity, event, category, gate and status.' },
   { n: '05', t: 'Check In', d: 'Entry is recorded instantly, with duplicate and permission checks applied before the gate opens.' },
@@ -39,7 +40,7 @@ function CoreWorkflow() {
 
 const chain = [
   { k: '1', t: 'Organizer uploads CSV' },
-  { k: '2', t: 'EventOS matches phone / email' },
+  { k: '2', t: 'Hostwell matches phone / email' },
   { k: '3', t: 'Existing SANG account?' },
   { k: '✓', t: 'Yes → event appears automatically in SANG' },
   { k: '+', t: 'No → attendee is invited to SANG' },
@@ -56,7 +57,7 @@ function SangStory() {
             <Reveal delay={0.06}><h2 className="eos-h2">One identity. Every event.</h2></Reveal>
             <Reveal delay={0.12}>
               <p className="eos-lead">
-                SANG is already a digital business card and identity app. EventOS simply adds an
+                SANG is already a digital business card and identity app. Hostwell simply adds an
                 events layer on top — so the moment an organizer uploads their list, the event
                 shows up inside the attendee's existing SANG profile.
               </p>
@@ -68,6 +69,9 @@ function SangStory() {
                 </Stagger.Item>
               ))}
             </Stagger>
+            <Reveal delay={0.16}>
+              <StoreLinks />
+            </Reveal>
           </div>
 
           <Parallax distance={40}>
