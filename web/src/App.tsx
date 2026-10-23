@@ -2486,6 +2486,40 @@ type LocationSuggestion = {
   }
 }
 
+// Venue search: OpenStreetMap Nominatim first, Photon (also OSM-based, no key) when
+// Nominatim errors, is rate-limited, or finds nothing.
+async function searchLocations(queryText: string, signal: AbortSignal): Promise<LocationSuggestion[]> {
+  try {
+    const params = new URLSearchParams({ q: queryText, format: 'jsonv2', addressdetails: '1', limit: '6' })
+    const response = await fetch(`https://nominatim.openstreetmap.org/search?${params.toString()}`, { signal })
+    if (response.ok) {
+      const data = (await response.json()) as LocationSuggestion[]
+      if (data.length > 0) return data
+    }
+  } catch (nominatimError) {
+    if ((nominatimError as { name?: string }).name === 'AbortError') throw nominatimError
+  }
+
+  const response = await fetch(`https://photon.komoot.io/api/?${new URLSearchParams({ q: queryText, limit: '6' }).toString()}`, { signal })
+  if (!response.ok) throw new Error('Location search failed.')
+  const data = (await response.json()) as {
+    features?: Array<{
+      geometry?: { coordinates?: [number, number] }
+      properties?: { osm_id?: number; name?: string; housenumber?: string; street?: string; district?: string; city?: string; county?: string; state?: string; postcode?: string; country?: string }
+    }>
+  }
+  return (data.features || []).flatMap((feature, index) => {
+    const coordinates = feature.geometry?.coordinates
+    const props = feature.properties
+    if (!coordinates || !props) return []
+    const label = [props.name, [props.housenumber, props.street].filter(Boolean).join(' '), props.district, props.city || props.county, props.state, props.postcode, props.country]
+      .filter(Boolean)
+      .join(', ')
+    if (!label) return []
+    return [{ place_id: props.osm_id ?? index, display_name: label, lat: String(coordinates[1]), lon: String(coordinates[0]) }]
+  })
+}
+
 function MapPicker({
   label,
   venue,
@@ -2534,10 +2568,9 @@ function MapPicker({
     const start: L.LatLngExpression = initialPoint || [22.5937, 78.9629]
     const map = L.map(containerRef.current, { zoomControl: false }).setView(start, initialPoint ? 15 : 4)
     L.control.zoom({ position: 'bottomright' }).addTo(map)
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-      attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
-      subdomains: 'abcd',
-      maxZoom: 20,
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+      maxZoom: 19,
     }).addTo(map)
     const pinIcon = L.divIcon({
       className: 'map-pin-marker',
@@ -2585,18 +2618,7 @@ function MapPicker({
     const timer = window.setTimeout(async () => {
       setSearching(true)
       try {
-        const params = new URLSearchParams({
-          q: queryText,
-          format: 'jsonv2',
-          addressdetails: '1',
-          limit: '6',
-        })
-        const response = await fetch(`https://nominatim.openstreetmap.org/search?${params.toString()}`, {
-          signal: controller.signal,
-        })
-        if (!response.ok) throw new Error('Location search failed.')
-        const data = (await response.json()) as LocationSuggestion[]
-        setSuggestions(data)
+        setSuggestions(await searchLocations(queryText, controller.signal))
       } catch (locationError) {
         if ((locationError as { name?: string }).name !== 'AbortError') {
           setSearchError('Location search is unavailable right now. You can still click the map to drop a pin.')
@@ -5405,7 +5427,7 @@ function ProgramComposerPage({
           <button className="secondary-button" disabled={busy} onClick={onCancel} type="button">
             Cancel
           </button>
-          <button className="primary-button" disabled={busy || !targetOrgId} title={targetOrgId ? undefined : 'Choose an organization first'} type="submit">
+          <button className="primary-button" disabled={busy || (!targetOrgId && !inlineOrganization)} title={targetOrgId || inlineOrganization ? undefined : 'Choose an organization first'} type="submit">
             {busy ? <Loader2 className="spin" size={15} /> : <Plus size={15} />}
             {busy ? step || 'Working' : 'Create program'}
           </button>
