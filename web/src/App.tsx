@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent 
 import {
   ArrowLeft,
   BadgeCheck,
+  Bell,
   Bold,
   Building2,
   CalendarDays,
@@ -75,6 +76,7 @@ import {
   doc,
   documentId,
   getDoc,
+  getDocFromServer,
   getDocs,
   onSnapshot,
   query,
@@ -86,11 +88,13 @@ import {
 import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage'
 import { HostwellMark } from './brand'
 import { auth, db, functions, storage } from './lib/firebase'
+import { mergeEventAccess, runBulkUpdates, type EventAccess, type EventAccessGrant } from './lib/bulkEventAccess'
 import { LandingPage } from './landing/LandingPage'
+import NotificationsPage from './NotificationsPage'
 
 // Check-in and analytics routes are intentionally out of scope for this release.
 // Backend scanPassToken/createScannerSession remain live; only the CRM surface is hidden.
-type RouteKey = 'home' | 'dashboard' | 'events' | 'venues' | 'patrons' | 'programs' | 'programCreate' | 'settings' | 'organization' | 'roles' | 'team' | 'people'
+type RouteKey = 'home' | 'dashboard' | 'events' | 'venues' | 'patrons' | 'programs' | 'programCreate' | 'settings' | 'organization' | 'roles' | 'team' | 'people' | 'notifications'
 type PersonKind = string
 type ProgramMode = 'standalone' | 'multiEvent'
 type TeamScope = 'organization' | 'program' | 'event'
@@ -103,14 +107,6 @@ type RoleCategory = 'team' | 'audience'
 type AudienceRoleOption = {
   id: string
   name: string
-}
-
-type EventAccess = {
-  eventId?: string
-  eventNameSnapshot?: string
-  roleId: string
-  roleName: string
-  status: 'allowed' | 'registered' | 'blocked' | 'cancelled' | 'rejected' | 'revoked'
 }
 
 type VenueRoom = {
@@ -741,6 +737,7 @@ const routeLabels: Record<RouteKey, string> = {
   roles: 'Roles',
   team: 'Team',
   people: 'People & passes',
+  notifications: 'Notifications',
 }
 
 type NavGroup = 'workspace' | 'program' | 'organization'
@@ -759,6 +756,7 @@ const navItems: Array<{ key: RouteKey; icon: typeof LayoutDashboard; group: NavG
   { key: 'dashboard', icon: LayoutDashboard, group: 'program' },
   { key: 'events', icon: CalendarDays, group: 'program' },
   { key: 'people', icon: Users, group: 'program' },
+  { key: 'notifications', icon: Bell, group: 'program' },
   { key: 'team', icon: ShieldCheck, group: 'program' },
   { key: 'venues', icon: MapPin, group: 'program' },
   { key: 'patrons', icon: BadgeCheck, group: 'program' },
@@ -800,6 +798,8 @@ function canOpenRoute(route: RouteKey, role: Role | undefined, member: TeamMembe
       return hasPermission(role, 'team.write') && member.scope === 'organization'
     case 'people':
       return hasPermission(role, 'people.import') || hasPermission(role, 'passes.issue')
+    case 'notifications':
+      return hasPermission(role, 'people.import')
     default:
       return false
   }
@@ -1232,6 +1232,7 @@ function Drawer({
   onClose,
   children,
   wide = false,
+  dismissDisabled = false,
 }: {
   title: string
   description?: string
@@ -1239,6 +1240,7 @@ function Drawer({
   onClose: () => void
   children: ReactNode
   wide?: boolean
+  dismissDisabled?: boolean
 }) {
   useEffect(() => {
     if (!open) return
@@ -1264,7 +1266,7 @@ function Drawer({
             <h2>{title}</h2>
             {description ? <p>{description}</p> : null}
           </div>
-          <button aria-label="Close" className="icon-button ghost" onClick={onClose} title="Close" type="button">
+          <button aria-label="Close" className="icon-button ghost" disabled={dismissDisabled} onClick={onClose} title="Close" type="button">
             <X size={18} />
           </button>
         </div>
@@ -7887,7 +7889,7 @@ function TeamPage({ orgId, program, roles, programs, events, members, people }: 
   )
 }
 
-function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId: string; programs: Program[]; events: ProgramEvent[]; people: ProgramPerson[]; passes: PassRecord[]; roles: Role[] }) {
+function PeoplePage({ orgId, programs, events, people, passes, roles, canEditPeople }: { orgId: string; programs: Program[]; events: ProgramEvent[]; people: ProgramPerson[]; passes: PassRecord[]; roles: Role[]; canEditPeople: boolean }) {
   const [programId, setProgramId] = useState('')
   const [eventIds, setEventIds] = useState<string[]>([])
   const audienceRoles = useMemo(() => getAudienceRoles(roles), [roles])
@@ -7909,11 +7911,33 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
   const [peopleSearch, setPeopleSearch] = useState('')
   const [peopleRoleFilter, setPeopleRoleFilter] = useState('all')
   const [peoplePassFilter, setPeoplePassFilter] = useState<'all' | 'issued' | 'checkedIn' | 'notIssued' | 'blocked'>('all')
+  const [checkedPeopleIds, setCheckedPeopleIds] = useState<Set<string>>(new Set())
+  const [bulkDrawerOpen, setBulkDrawerOpen] = useState(false)
+  const [bulkDeleteTargets, setBulkDeleteTargets] = useState<ProgramPerson[] | null>(null)
+  const [bulkEventRoles, setBulkEventRoles] = useState<Record<string, string>>({})
+  const [bulkBusy, setBulkBusy] = useState(false)
+  const bulkSavingRef = useRef(false)
+  const [bulkProgress, setBulkProgress] = useState({ completed: 0, total: 0 })
+  const [bulkError, setBulkError] = useState('')
+  const [bulkFailures, setBulkFailures] = useState<Array<{ id: string; name: string; message: string }>>([])
+  const selectAllPeopleRef = useRef<HTMLInputElement>(null)
   const selectedPeople = people.filter((person) => (!programId || person.programId === programId) && personAccessState(person) !== 'removed')
   const availableEvents = events.filter((programEvent) => programEvent.programId === programId)
   const selectedProgram = programs.find((program) => program.id === programId)
   const selectedPeoplePublishedAt = timestampMs(selectedProgram?.peopleLastPublishedAt)
   const peoplePublishPending = Boolean(selectedPeople.length && (!selectedPeoplePublishedAt || newestTimestamp(selectedPeople) > selectedPeoplePublishedAt))
+
+  function changePeopleProgram(nextProgramId: string) {
+    setProgramId(nextProgramId)
+    setEventIds([])
+    setEventRoleById({})
+    setCheckedPeopleIds(new Set())
+    setBulkDrawerOpen(false)
+    setBulkDeleteTargets(null)
+    setBulkEventRoles({})
+    setBulkFailures([])
+    setBulkError('')
+  }
 
   useEffect(() => {
     if (!programId && programs[0]) {
@@ -8310,6 +8334,180 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
     if (peoplePassFilter === 'blocked') return accessState === 'blocked'
     return accessState !== 'blocked' && (person.passStatus || 'notIssued') === peoplePassFilter
   })
+  const selectablePeople = filteredPeople
+  const checkedPeople = selectedPeople.filter((person) => checkedPeopleIds.has(person.id))
+  const hasBlockedSelection = checkedPeople.some((person) => personAccessState(person) !== 'active')
+  const allVisiblePeopleChecked = selectablePeople.length > 0 && selectablePeople.every((person) => checkedPeopleIds.has(person.id))
+  const someVisiblePeopleChecked = selectablePeople.some((person) => checkedPeopleIds.has(person.id))
+  const visiblePeopleIds = new Set(filteredPeople.map((person) => person.id))
+  const hiddenCheckedCount = checkedPeople.filter((person) => !visiblePeopleIds.has(person.id)).length
+
+  useEffect(() => {
+    if (selectAllPeopleRef.current) {
+      selectAllPeopleRef.current.indeterminate = someVisiblePeopleChecked && !allVisiblePeopleChecked
+    }
+  }, [allVisiblePeopleChecked, someVisiblePeopleChecked])
+
+  function toggleAllPeople(checked: boolean) {
+    setCheckedPeopleIds((current) => {
+      const next = new Set(current)
+      for (const person of selectablePeople) {
+        if (checked) next.add(person.id)
+        else next.delete(person.id)
+      }
+      return next
+    })
+  }
+
+  function openBulkEventAccess() {
+    setBulkEventRoles({})
+    setBulkError('')
+    setBulkFailures([])
+    setPeopleNotice('')
+    setBulkDrawerOpen(true)
+  }
+
+  function closeBulkEventAccess() {
+    if (!bulkSavingRef.current) setBulkDrawerOpen(false)
+  }
+
+  function openBulkDelete() {
+    if (!canEditPeople || bulkSavingRef.current || checkedPeople.length === 0) return
+    setBulkError('')
+    setBulkFailures([])
+    setPeopleNotice('')
+    setBulkDeleteTargets([...checkedPeople])
+  }
+
+  function closeBulkDelete() {
+    if (!bulkSavingRef.current) setBulkDeleteTargets(null)
+  }
+
+  async function deleteSelectedPeople(event: FormEvent) {
+    event.preventDefault()
+    if (bulkSavingRef.current || !canEditPeople || !programId || !bulkDeleteTargets?.length) return
+    // Save exactly the roster shown in the confirmation, even if live data
+    // changes while removals are in progress.
+    const targets = [...bulkDeleteTargets]
+    bulkSavingRef.current = true
+    setBulkBusy(true)
+    setBulkError('')
+    setBulkFailures([])
+    setPeopleError('')
+    setPeopleNotice('')
+    setBulkProgress({ completed: 0, total: targets.length })
+    try {
+      const result = await runBulkUpdates(targets, async (target) => {
+        const snapshot = await getDocFromServer(doc(db, 'peProgramPeople', target.id))
+        if (!snapshot.exists()) return
+        const person = { ...snapshot.data(), id: snapshot.id } as ProgramPerson
+        if (person.orgId !== orgId || person.programId !== programId) {
+          throw new Error('This person no longer belongs to the selected program.')
+        }
+        if (personAccessState(person) === 'removed') return
+        await removeProgramPersonAccessCallable({ orgId, programPersonId: person.id, reason: 'bulk-removed-from-crm' })
+      }, (completed) => setBulkProgress({ completed, total: targets.length }))
+
+      setCheckedPeopleIds(new Set(result.failed.map(({ item }) => item.id)))
+      setBulkFailures(result.failed.map(({ item, error }) => ({
+        id: item.id,
+        name: item.fullName,
+        message: errorMessage(error, 'Unable to delete this person from the program.'),
+      })))
+      if (result.succeeded.length > 0) {
+        setPeopleNotice(`${result.succeeded.length} ${result.succeeded.length === 1 ? 'person has' : 'people have'} been removed from the program roster.`)
+      }
+      if (result.failed.length === 0) {
+        setBulkDeleteTargets(null)
+      } else {
+        setBulkDeleteTargets(result.failed.map(({ item }) => item))
+        setBulkError(`${result.succeeded.length} removed; ${result.failed.length} could not be removed. Retry only the unsuccessful deletions below.`)
+      }
+    } finally {
+      bulkSavingRef.current = false
+      setBulkBusy(false)
+    }
+  }
+
+  async function saveBulkEventAccess(event: FormEvent) {
+    event.preventDefault()
+    if (bulkSavingRef.current || !canEditPeople) return
+    setBulkError('')
+    const targets = [...checkedPeople]
+    if (!programId || targets.length === 0 || hasBlockedSelection) {
+      setBulkError('Select only active people in this program to edit event access.')
+      return
+    }
+    const grants: EventAccessGrant[] = []
+    for (const [eventId, roleId] of Object.entries(bulkEventRoles)) {
+      const programEvent = availableEvents.find((item) => item.id === eventId)
+      const role = programEvent && rolesForEvent(programEvent).find((item) => item.id === roleId)
+      if (!programEvent || !role) {
+        setBulkError('An event or role has changed. Choose an available role for each selected event.')
+        return
+      }
+      grants.push({ eventId, roleId: role.id, roleName: role.name, status: 'allowed' })
+    }
+    if (grants.length === 0) {
+      setBulkError('Choose at least one event and its access role.')
+      return
+    }
+
+    bulkSavingRef.current = true
+    setBulkBusy(true)
+    setBulkFailures([])
+    setPeopleError('')
+    setPeopleNotice('')
+    setBulkProgress({ completed: 0, total: targets.length })
+    try {
+      const result = await runBulkUpdates(targets, async (target) => {
+        // Read immediately before saving so edits made while selecting people
+        // are included in the existing callable's full update payload.
+        const snapshot = await getDocFromServer(doc(db, 'peProgramPeople', target.id))
+        if (!snapshot.exists()) throw new Error('This person no longer exists.')
+        const person = { ...snapshot.data(), id: snapshot.id } as ProgramPerson
+        if (person.orgId !== orgId || person.programId !== programId) {
+          throw new Error('This person no longer belongs to the selected program.')
+        }
+        if (personAccessState(person) !== 'active') {
+          throw new Error('This person is blocked or removed. Restore their access before editing it.')
+        }
+        await updateProgramPersonAccessCallable({
+          orgId,
+          programPersonId: person.id,
+          fullName: person.fullName,
+          email: person.email || '',
+          phone: person.phone || '',
+          kind: person.kind || person.programRoleId || 'visitor',
+          programRoleId: person.programRoleId || person.kind || 'visitor',
+          programRoleName: person.programRoleName || roleName(person.programRoleId || person.kind || 'visitor'),
+          company: person.company || '',
+          organization: person.organization || '',
+          designation: person.designation || '',
+          eventAccess: mergeEventAccess(person, grants),
+        })
+      }, (completed) => setBulkProgress({ completed, total: targets.length }))
+
+      setCheckedPeopleIds(new Set(result.failed.map(({ item }) => item.id)))
+      setBulkFailures(result.failed.map(({ item, error }) => ({
+        id: item.id,
+        name: item.fullName,
+        message: errorMessage(error, 'Unable to save event access.'),
+      })))
+      if (result.succeeded.length > 0) {
+        setPeopleNotice(`Event access saved for ${result.succeeded.length} ${result.succeeded.length === 1 ? 'person' : 'people'}.`)
+      }
+      if (result.failed.length === 0) {
+        setBulkDrawerOpen(false)
+      } else {
+        setBulkError(`${result.succeeded.length} saved; ${result.failed.length} could not be saved. Only unsuccessful people remain selected for retry.`)
+      }
+    } finally {
+      bulkSavingRef.current = false
+      setBulkBusy(false)
+    }
+  }
+
   const peopleStats = {
     issued: selectedPeople.filter((person) => person.passStatus === 'issued' || person.passStatus === 'checkedIn').length,
     checkedIn: selectedPeople.filter((person) => person.passStatus === 'checkedIn').length,
@@ -8323,7 +8521,7 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
     blocked: 'Blocked',
     revoked: 'Revoked',
   }
-  const csvDisabled = !programId || Boolean(editingPerson)
+  const csvDisabled = !programId || Boolean(editingPerson) || bulkBusy
 
   function openAddPerson() {
     resetPersonForm()
@@ -8380,14 +8578,14 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
             </label>
             <button
               className={`secondary-button ${peoplePublishPending ? 'publish-button-pending' : ''}`}
-              disabled={!programId || selectedPeople.length === 0 || publishBusy}
+              disabled={!programId || selectedPeople.length === 0 || publishBusy || bulkBusy}
               onClick={publishPeopleAccess}
               type="button"
             >
               {publishBusy ? <Loader2 className="spin" size={15} /> : <UploadCloud size={15} />}
               Publish to Sang
             </button>
-            <button className="primary-button" disabled={!programId} onClick={openAddPerson} type="button">
+            <button className="primary-button" disabled={!programId || bulkBusy} onClick={openAddPerson} type="button">
               <Plus size={15} />
               Add person
             </button>
@@ -8429,7 +8627,7 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
             <input aria-label="Search people" onChange={(changeEvent) => setPeopleSearch(changeEvent.target.value)} placeholder="Search name, email, organization" type="search" value={peopleSearch} />
           </label>
           {programs.length > 1 ? (
-            <select aria-label="Program" className="filter-select" disabled={Boolean(editingPerson)} onChange={(changeEvent) => { setProgramId(changeEvent.target.value); setEventIds([]); setEventRoleById({}) }} value={programId}>
+            <select aria-label="Program" className="filter-select" disabled={Boolean(editingPerson) || bulkBusy} onChange={(changeEvent) => changePeopleProgram(changeEvent.target.value)} value={programId}>
               {programs.map((program) => <option key={program.id} value={program.id}>{program.name}</option>)}
             </select>
           ) : null}
@@ -8451,10 +8649,38 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
       </div>
 
       <section className="card data-table-card">
+        {canEditPeople ? (
+          <div className="people-bulk-toolbar">
+            <div className="people-selection-summary" aria-live="polite">
+              <strong>{formatCount(checkedPeople.length)} selected</strong>
+              <span>{hiddenCheckedCount > 0 ? `${hiddenCheckedCount} selected outside current filters` : 'Select people to edit event access or delete from the program.'}</span>
+              {hasBlockedSelection ? <span>Blocked people can be deleted. Select only active people to edit event access.</span> : null}
+            </div>
+            <div className="people-bulk-actions">
+              <button className="secondary-button" disabled={selectablePeople.length === 0 || bulkBusy} onClick={() => toggleAllPeople(!allVisiblePeopleChecked)} type="button">
+                {allVisiblePeopleChecked ? 'Deselect all matching' : 'Select all matching'}
+              </button>
+              {checkedPeople.length > 0 ? <button className="secondary-button" disabled={bulkBusy} onClick={() => setCheckedPeopleIds(new Set())} type="button">Clear selection</button> : null}
+              <button className="primary-button" disabled={checkedPeople.length === 0 || hasBlockedSelection || availableEvents.length === 0 || bulkBusy || formBusy || publishBusy || Boolean(personActionBusyId) || Boolean(passBusyPersonId)} onClick={openBulkEventAccess} title={hasBlockedSelection ? 'Select only active people to edit event access' : availableEvents.length === 0 ? 'Create an event in this program first' : 'Give selected people access to events'} type="button">
+                <Users size={15} />
+                Edit event access
+              </button>
+              <button className="danger-button" disabled={checkedPeople.length === 0 || bulkBusy || formBusy || publishBusy || Boolean(personActionBusyId) || Boolean(passBusyPersonId)} onClick={openBulkDelete} type="button">
+                <Trash2 size={15} />
+                Delete selected
+              </button>
+            </div>
+          </div>
+        ) : null}
         <div className="table-wrap">
           <table className="data-table">
             <thead>
               <tr>
+                {canEditPeople ? (
+                  <th className="people-select-cell" scope="col">
+                    <input aria-label="Select all matching people" checked={allVisiblePeopleChecked} disabled={selectablePeople.length === 0 || bulkBusy} onChange={(event) => toggleAllPeople(event.target.checked)} ref={selectAllPeopleRef} type="checkbox" />
+                  </th>
+                ) : null}
                 <th>Person</th>
                 <th>Organization</th>
                 <th>Role</th>
@@ -8471,7 +8697,27 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
                 const accessState = personAccessState(person)
                 const actionBusy = personActionBusyId === person.id
                 return (
-                  <tr key={person.id}>
+                  <tr className={checkedPeopleIds.has(person.id) ? 'person-row-selected' : undefined} key={person.id}>
+                    {canEditPeople ? (
+                      <td className="people-select-cell">
+                        <input
+                          aria-label={`Select ${person.fullName}`}
+                          checked={checkedPeopleIds.has(person.id)}
+                          disabled={bulkBusy}
+                          onChange={(event) => {
+                            const checked = event.target.checked
+                            setCheckedPeopleIds((current) => {
+                              const next = new Set(current)
+                              if (checked) next.add(person.id)
+                              else next.delete(person.id)
+                              return next
+                            })
+                          }}
+                          title={`Select ${person.fullName}`}
+                          type="checkbox"
+                        />
+                      </td>
+                    ) : null}
                     <td>
                       <div className="person-cell">
                         <span className={avatarClass(person.id)}>{initialsFor(person.fullName || person.email, 'P')}</span>
@@ -8518,24 +8764,24 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
                       <div className="table-actions">
                         <button
                           className="icon-button ghost"
-                          disabled={passBusyPersonId === person.id || accessState !== 'active'}
+                          disabled={bulkBusy || passBusyPersonId === person.id || accessState !== 'active'}
                           onClick={() => rotatePass(person)}
                           title={accessState === 'active' ? pass ? 'Rotate QR' : 'Issue pass' : 'Access is not active'}
                           type="button"
                         >
                           {passBusyPersonId === person.id ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
                         </button>
-                        <button className="icon-button ghost" disabled={formBusy} onClick={() => openEditPerson(person)} title="Edit details and event access" type="button">
+                        <button className="icon-button ghost" disabled={bulkBusy || formBusy} onClick={() => openEditPerson(person)} title="Edit details and event access" type="button">
                           <Pencil size={16} />
                         </button>
                         {accessState === 'blocked' ? (
-                          <button className="icon-button ghost" disabled={actionBusy} onClick={() => unblockPerson(person)} title="Unblock Sang access and issue a fresh QR" type="button">
+                          <button className="icon-button ghost" disabled={bulkBusy || actionBusy} onClick={() => unblockPerson(person)} title="Unblock Sang access and issue a fresh QR" type="button">
                             {actionBusy ? <Loader2 className="spin" size={16} /> : <Unlock size={16} />}
                           </button>
                         ) : (
                           <button
                             className="icon-button ghost"
-                            disabled={actionBusy || accessState !== 'active'}
+                            disabled={bulkBusy || actionBusy || accessState !== 'active'}
                             onClick={() => blockPerson(person)}
                             title={accessState === 'active' ? 'Block Sang access' : 'Access is not active'}
                             type="button"
@@ -8543,7 +8789,7 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
                             {actionBusy ? <Loader2 className="spin" size={16} /> : <Lock size={16} />}
                           </button>
                         )}
-                        <button className="icon-button ghost danger-icon" disabled={actionBusy} onClick={() => removePerson(person)} title="Remove from active roster" type="button">
+                        <button className="icon-button ghost danger-icon" disabled={bulkBusy || actionBusy} onClick={() => removePerson(person)} title="Remove from active roster" type="button">
                           {actionBusy ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />}
                         </button>
                       </div>
@@ -8553,7 +8799,7 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
               })}
               {filteredPeople.length === 0 ? (
                 <tr>
-                  <td className="cell-muted" colSpan={7}>
+                  <td className="cell-muted" colSpan={canEditPeople ? 8 : 7}>
                     {selectedPeople.length ? 'No people match these filters.' : 'No people yet. Add a person or import a CSV to issue passes.'}
                   </td>
                 </tr>
@@ -8562,6 +8808,136 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
           </table>
         </div>
       </section>
+
+      <Drawer
+        description="Review the people to remove from this program."
+        dismissDisabled={bulkBusy}
+        onClose={closeBulkDelete}
+        open={bulkDeleteTargets !== null}
+        title="Delete selected people"
+      >
+        <form className="drawer-form" onSubmit={deleteSelectedPeople}>
+          <div className="drawer-sections">
+            <div className="bulk-access-summary">
+              <strong>{bulkDeleteTargets?.length || 0} {bulkDeleteTargets?.length === 1 ? 'person' : 'people'} selected</strong>
+              <span>{selectedProgram?.name}</span>
+              {bulkDeleteTargets?.some((person) => !visiblePeopleIds.has(person.id)) ? <span>{bulkDeleteTargets.filter((person) => !visiblePeopleIds.has(person.id)).length} selected outside current filters</span> : null}
+              <details open>
+                <summary>People to delete from this program</summary>
+                <ul>{bulkDeleteTargets?.map((person) => <li key={person.id}>{person.fullName}</li>)}</ul>
+              </details>
+            </div>
+            <p className="drawer-note">These people will be removed from the program roster. Their Sang app access will be removed and their QR passes will stop working. Their records are retained for history.</p>
+            {bulkBusy ? (
+              <div className="bulk-access-progress" role="status">
+                <span>Deleting people: {bulkProgress.completed} of {bulkProgress.total} processed</span>
+                <progress aria-label="People processed" max={bulkProgress.total} value={bulkProgress.completed} />
+                <small>Keep this page open until deletion finishes.</small>
+              </div>
+            ) : null}
+            {bulkError ? <p className="form-error" role="alert">{bulkError}</p> : null}
+            {bulkFailures.length > 0 ? (
+              <ul className="bulk-access-failures">
+                {bulkFailures.map((failure) => <li key={failure.id}><strong>{failure.name}</strong><span>{failure.message}</span></li>)}
+              </ul>
+            ) : null}
+          </div>
+          <div className="drawer-foot">
+            <button className="secondary-button" disabled={bulkBusy} onClick={closeBulkDelete} type="button">{bulkFailures.length > 0 ? 'Close' : 'Cancel'}</button>
+            <button className="danger-button" disabled={bulkBusy || !bulkDeleteTargets?.length} type="submit">
+              {bulkBusy ? <Loader2 className="spin" size={15} /> : <Trash2 size={15} />}
+              {bulkBusy ? 'Deleting…' : bulkFailures.length > 0 ? `Retry ${bulkDeleteTargets?.length} deletions` : `Delete ${bulkDeleteTargets?.length || 0} ${bulkDeleteTargets?.length === 1 ? 'person' : 'people'}`}
+            </button>
+          </div>
+        </form>
+      </Drawer>
+
+      <Drawer
+        description="Choose the events and roles to apply to everyone selected."
+        dismissDisabled={bulkBusy}
+        onClose={closeBulkEventAccess}
+        open={bulkDrawerOpen}
+        title="Edit event access"
+      >
+        <form className="drawer-form" onSubmit={saveBulkEventAccess}>
+          <div className="drawer-sections">
+            <div className="bulk-access-summary">
+              <strong>{checkedPeople.length} {checkedPeople.length === 1 ? 'person' : 'people'} selected</strong>
+              <span>{selectedProgram?.name}</span>
+              {hiddenCheckedCount > 0 ? <span>{hiddenCheckedCount} selected outside current filters</span> : null}
+              <details>
+                <summary>View selected people</summary>
+                <ul>{checkedPeople.map((person) => <li key={person.id}>{person.fullName}</li>)}</ul>
+              </details>
+            </div>
+            <div className="drawer-section">
+              <span className="drawer-section-label">Events and access roles</span>
+              <p className="field-help">Choose a role for each event you select. Other event access and each person's program role stay the same.</p>
+              <div className="access-list">
+                {availableEvents.map((programEvent) => {
+                  const eventRoles = rolesForEvent(programEvent)
+                  const checked = Object.hasOwn(bulkEventRoles, programEvent.id)
+                  const defaultRoleId = eventRoles.find((role) => role.id === 'participants')?.id || eventRoles[0]?.id || ''
+                  const currentRoleId = checked ? bulkEventRoles[programEvent.id] : defaultRoleId
+                  const roleAvailable = eventRoles.some((role) => role.id === currentRoleId)
+                  return (
+                    <div className="event-access-row" key={programEvent.id}>
+                      <label className="check-row">
+                        <input
+                          checked={checked}
+                          disabled={bulkBusy || eventRoles.length === 0}
+                          onChange={(event) => {
+                            const isChecked = event.target.checked
+                            setBulkEventRoles((current) => {
+                              const next = { ...current }
+                              if (isChecked) next[programEvent.id] = defaultRoleId
+                              else delete next[programEvent.id]
+                              return next
+                            })
+                          }}
+                          type="checkbox"
+                        />
+                        <span>{programEvent.name}{eventRoles.length === 0 ? <small className="field-help bulk-event-role-help">No available audience roles</small> : null}</span>
+                      </label>
+                      <select
+                        aria-label={`Access role for ${programEvent.name}`}
+                        disabled={bulkBusy || !checked}
+                        onChange={(event) => setBulkEventRoles((current) => ({ ...current, [programEvent.id]: event.target.value }))}
+                        required={checked}
+                        value={roleAvailable ? currentRoleId : ''}
+                      >
+                        {!roleAvailable ? <option value="">Choose an available role</option> : null}
+                        {eventRoles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
+                      </select>
+                    </div>
+                  )
+                })}
+              </div>
+              {availableEvents.length === 0 ? <p className="muted-note">Create an event in this program to assign access.</p> : null}
+            </div>
+            {bulkBusy ? (
+              <div className="bulk-access-progress" role="status">
+                <span>Saving event access: {bulkProgress.completed} of {bulkProgress.total} processed</span>
+                <progress aria-label="People processed" max={bulkProgress.total} value={bulkProgress.completed} />
+                <small>Keep this page open until saving finishes.</small>
+              </div>
+            ) : null}
+            {bulkError ? <p className="form-error" role="alert">{bulkError}</p> : null}
+            {bulkFailures.length > 0 ? (
+              <ul className="bulk-access-failures">
+                {bulkFailures.map((failure) => <li key={failure.id}><strong>{failure.name}</strong><span>{failure.message}</span></li>)}
+              </ul>
+            ) : null}
+          </div>
+          <div className="drawer-foot">
+            <button className="secondary-button" disabled={bulkBusy} onClick={closeBulkEventAccess} type="button">{bulkFailures.length > 0 ? 'Close' : 'Cancel'}</button>
+            <button className="primary-button" disabled={bulkBusy || checkedPeople.length === 0 || Object.keys(bulkEventRoles).length === 0} type="submit">
+              {bulkBusy ? <Loader2 className="spin" size={15} /> : <Save size={15} />}
+              {bulkBusy ? 'Saving…' : bulkFailures.length > 0 ? `Retry ${checkedPeople.length} selected` : `Apply and save (${checkedPeople.length})`}
+            </button>
+          </div>
+        </form>
+      </Drawer>
 
       <Drawer
         description={editingPerson ? 'Access changes sync to Sang after you save.' : 'A QR pass is issued as soon as you save.'}
@@ -8608,7 +8984,7 @@ function PeoplePage({ orgId, programs, events, people, passes, roles }: { orgId:
               {programs.length > 1 ? (
                 <label>
                   Program
-                  <select disabled={Boolean(editingPerson)} value={programId} onChange={(event) => { setProgramId(event.target.value); setEventIds([]); setEventRoleById({}) }} required>
+                  <select disabled={Boolean(editingPerson)} value={programId} onChange={(event) => changePeopleProgram(event.target.value)} required>
                     <option value="">Select program</option>
                     {programs.map((program) => <option key={program.id} value={program.id}>{program.name}</option>)}
                   </select>
@@ -8863,7 +9239,7 @@ function CrmApp({ firebaseUser, profile, setProfile, onNeedsFirstProgram }: { fi
   }
 
   // Events, venues and patrons live inside a program; hide them until one is open.
-  const shellNavItems = activeProgram ? visibleNavItems : visibleNavItems.filter((item) => item.key !== 'events' && item.key !== 'venues' && item.key !== 'patrons' && item.key !== 'settings')
+  const shellNavItems = activeProgram ? visibleNavItems : visibleNavItems.filter((item) => item.key !== 'events' && item.key !== 'venues' && item.key !== 'patrons' && item.key !== 'settings' && item.key !== 'notifications')
   // Create program isn't inside a program, so the Program section would point at the previously open one.
   const programFreeNavItems = visibleNavItems.filter((item) => item.group !== 'program' || item.key === 'dashboard')
 
@@ -8873,7 +9249,7 @@ function CrmApp({ firebaseUser, profile, setProfile, onNeedsFirstProgram }: { fi
   // Program pages need an open program; without one, send people to All programs to pick it.
   useEffect(() => {
     if (programs.loading || activeProgram) return
-    if (shouldChooseProgram || route === 'events' || route === 'venues' || route === 'patrons' || route === 'settings') setRoute('home')
+    if (shouldChooseProgram || route === 'events' || route === 'venues' || route === 'patrons' || route === 'settings' || route === 'notifications') setRoute('home')
   }, [activeProgram, programs.loading, route, shouldChooseProgram])
 
   const emptyOrgPromptedRef = useRef('')
@@ -9059,7 +9435,8 @@ function CrmApp({ firebaseUser, profile, setProfile, onNeedsFirstProgram }: { fi
       {route === 'organization' && <SettingsPage section="organization" canManageOrganization={canManageOrganization} canManageProgram={canManageProgram} orgId={orgId} organization={organization} program={activeProgram} uid={firebaseUser.uid} venueCatalog={activeVenueCatalog} />}
       {route === 'roles' && <RolesPage orgId={orgId} roles={roles.rows} />}
       {route === 'team' && <TeamPage events={events.rows} program={activeProgram} members={members.rows} orgId={orgId} people={people.rows} programs={sortedPrograms} roles={roles.rows} />}
-      {route === 'people' && <PeoplePage events={activeProgram ? activeEvents : events.rows} orgId={orgId} passes={activeProgram ? activePasses : passes.rows} people={activeProgram ? activePeople : people.rows} programs={activeProgram ? [activeProgram] : sortedPrograms} roles={roles.rows} />}
+      {route === 'people' && <PeoplePage key={`${orgId}:${activeProgram?.id || ''}`} canEditPeople={hasPermission(currentRole, 'people.import')} events={activeProgram ? activeEvents : events.rows} orgId={orgId} passes={activeProgram ? activePasses : passes.rows} people={activeProgram ? activePeople : people.rows} programs={activeProgram ? [activeProgram] : sortedPrograms} roles={roles.rows} />}
+      {route === 'notifications' && activeProgram && <NotificationsPage key={`${orgId}:${activeProgram.id}`} orgId={orgId} program={activeProgram} events={activeEvents} people={activePeople} roles={getAudienceRoles(roles.rows)} scopedEventId={scopedEventId} />}
     </Shell>
   )
 }

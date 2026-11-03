@@ -7202,6 +7202,105 @@ a:focus-visible,
   }
 }
 
+/* ---- Bulk event access ---- */
+
+.people-bulk-toolbar,
+.people-bulk-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.people-bulk-toolbar {
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+  background: #f8fafc;
+}
+
+.people-selection-summary,
+.bulk-access-summary,
+.bulk-access-progress {
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.people-selection-summary span,
+.bulk-access-summary > span,
+.bulk-access-progress small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.data-table .people-select-cell {
+  width: 44px;
+  padding: 12px 14px;
+  text-align: center;
+}
+
+.people-select-cell input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  margin: 0;
+  vertical-align: middle;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.data-table tbody .person-row-selected {
+  background: #eef2ff;
+}
+
+.bulk-access-summary {
+  padding: 14px;
+  border: 1px solid #c7d2fe;
+  border-radius: 8px;
+  background: #eef2ff;
+}
+
+.bulk-access-summary details {
+  margin-top: 6px;
+}
+
+.bulk-access-summary summary {
+  cursor: pointer;
+  color: var(--accent);
+}
+
+.bulk-access-summary ul,
+.bulk-access-failures {
+  max-height: 180px;
+  overflow-y: auto;
+  padding-left: 20px;
+  margin: 8px 0 0;
+}
+
+.bulk-access-failures li {
+  margin-bottom: 10px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.bulk-access-failures li span {
+  display: block;
+  color: var(--red);
+}
+
+.bulk-access-progress progress {
+  width: 100%;
+  height: 8px;
+  accent-color: var(--accent);
+}
+
+.bulk-event-role-help {
+  display: block;
+  margin-top: 2px;
+}
+
 /* ---- Drawer ---- */
 
 .drawer-backdrop {

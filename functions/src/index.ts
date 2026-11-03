@@ -7,6 +7,8 @@ import { HttpsError, onCall } from 'firebase-functions/v2/https'
 import { defineSecret } from 'firebase-functions/params'
 import nodemailer from 'nodemailer'
 import { z } from 'zod'
+import { createProgramNotifications } from './programNotifications'
+import { readApplePushConfig, sendProgramPush } from './notificationTransport'
 
 initializeApp()
 
@@ -25,6 +27,8 @@ const publicPeopleCollection = (programId: string) => db.collection('pePrograms'
 // Gmail App Password used to send OTP emails via SMTP. Set with:
 //   firebase functions:secrets:set GMAIL_APP_PASSWORD --project sang-d8b93
 const GMAIL_APP_PASSWORD = defineSecret('GMAIL_APP_PASSWORD')
+// JSON Apple push credentials, or {} to run Android-only with clear preview exclusions.
+const SANG_APNS_CONFIG = defineSecret('SANG_APNS_CONFIG')
 const OTP_SENDER_EMAIL = 'thesangapp@gmail.com'
 const OTP_TTL_MS = 10 * 60 * 1000
 const OTP_RESEND_COOLDOWN_MS = 30 * 1000
@@ -65,6 +69,19 @@ const permissions = {
   checkinScan: 'checkin.scan',
   analyticsRead: 'analytics.read',
 }
+
+const programNotifications = createProgramNotifications({
+  db,
+  authorize: (uid, orgId) => assertPermission(uid, orgId, permissions.peopleImport, {}),
+  assertProgram,
+  assertEvent,
+  appleConfig: () => readApplePushConfig(SANG_APNS_CONFIG.value()),
+  send: sendProgramPush,
+})
+const notificationCallableOptions = { ...callableOptions, timeoutSeconds: 300, secrets: [SANG_APNS_CONFIG] }
+export const previewProgramNotification = onCall(notificationCallableOptions, (request) => programNotifications.preview(requireUid(request), request.data))
+export const sendProgramNotification = onCall(notificationCallableOptions, (request) => programNotifications.send(requireUid(request), request.data))
+export const listProgramNotifications = onCall(callableOptions, (request) => programNotifications.history(requireUid(request), request.data))
 
 const defaultRoles = [
   {
@@ -789,14 +806,14 @@ function publicKeyForStoredCard(cardId: string, card: Record<string, unknown>) {
   return String(webLink.token || card.webPublicToken || card.shortId || card.cardPublicId || cardId)
 }
 
-async function getDefaultCardIdForUser(uid: string) {
+async function getDefaultActiveCardForUser(uid: string): Promise<{ id: string; data: Record<string, unknown> } | null> {
   const userSnapshot = await db.collection('users').doc(uid).get()
   const defaultCardPublicId = String(userSnapshot.data()?.settings?.defaultCardPublicId || '')
   if (defaultCardPublicId) {
     const defaultCardSnapshot = await db.collection('cards').doc(defaultCardPublicId).get()
     const defaultCard = defaultCardSnapshot.data() || {}
     if (defaultCardSnapshot.exists && defaultCard.ownerUid === uid && defaultCard.active === true) {
-      return defaultCardSnapshot.id
+      return { id: defaultCardSnapshot.id, data: defaultCard }
     }
   }
 
@@ -806,9 +823,50 @@ async function getDefaultCardIdForUser(uid: string) {
     .where('active', '==', true)
     .limit(20)
     .get()
-  if (cardsSnapshot.empty) return ''
+  if (cardsSnapshot.empty) return null
   const defaultDoc = cardsSnapshot.docs.find((docSnap) => docSnap.data()?.isDefault === true)
-  return (defaultDoc || cardsSnapshot.docs[0]).id
+  const cardDoc = defaultDoc || cardsSnapshot.docs[0]
+  return { id: cardDoc.id, data: cardDoc.data() || {} }
+}
+
+async function getDefaultCardIdForUser(uid: string) {
+  return (await getDefaultActiveCardForUser(uid))?.id || ''
+}
+
+async function getDefaultEventDirectoryCardForUser(uid: string) {
+  const defaultCard = await getDefaultActiveCardForUser(uid)
+  if (!defaultCard || defaultCard.data.eventDirectoryVisibleByDefault === false) {
+    return { showCard: false, selectedCardId: '' }
+  }
+  return { showCard: true, selectedCardId: defaultCard.id }
+}
+
+function eventCardStateFromPerson(person: Record<string, unknown>) {
+  const selectedCardId = String(person.selectedCardId || person.eventSelectedCardId || '').trim()
+  const showCard = Boolean(person.showCard) && Boolean(selectedCardId)
+  return {
+    showCard,
+    selectedCardId: showCard ? selectedCardId : '',
+  }
+}
+
+async function withEventDirectoryDefaultForNewAccess(input: {
+  uid: string
+  person: Record<string, unknown>
+  isNewAccess: boolean
+}) {
+  if (!input.isNewAccess) return input.person
+  const hasExistingPreference =
+    typeof input.person.showCard === 'boolean'
+    || Boolean(String(input.person.selectedCardId || input.person.eventSelectedCardId || '').trim())
+  if (hasExistingPreference) return input.person
+
+  const defaultState = await getDefaultEventDirectoryCardForUser(input.uid)
+  return {
+    ...input.person,
+    showCard: defaultState.showCard,
+    selectedCardId: defaultState.selectedCardId,
+  }
 }
 
 function personAccessLifecycle(person: Record<string, unknown>) {
@@ -2940,8 +2998,15 @@ export const publishProgramPeopleAccess = onCall(callableOptions, async (request
     })
     batchWrites += passResult.writesAdded
 
+    const isAlreadyLinked = Boolean(existingSangUserId)
+    const personWithCardDefault = await withEventDirectoryDefaultForNewAccess({
+      uid: linkResult.sangUserId,
+      person,
+      isNewAccess: !person.accessPublishedAt,
+    })
+    const eventCardState = eventCardStateFromPerson(personWithCardDefault)
     const nextPerson = {
-      ...person,
+      ...personWithCardDefault,
       sangUserId: linkResult.sangUserId,
       sangUid: linkResult.sangUserId,
       linkStatus: 'linked',
@@ -2952,7 +3017,6 @@ export const publishProgramPeopleAccess = onCall(callableOptions, async (request
       passStatus: 'issued',
       passCode: passResult.passCode,
     }
-    const isAlreadyLinked = Boolean(existingSangUserId)
     batch.set(
       personDoc.ref,
       {
@@ -2969,6 +3033,7 @@ export const publishProgramPeopleAccess = onCall(callableOptions, async (request
         passId: passResult.passId,
         passStatus: 'issued',
         passCode: passResult.passCode,
+        ...eventCardState,
         profileTags: FieldValue.delete(),
         updatedAt: FieldValue.serverTimestamp(),
       },
@@ -3613,11 +3678,29 @@ export const claimMyEventAccess = onCall(callableOptions, async (request) => {
     await collectMatches('phone', verifiedPhone)
   }
 
+  // A record linked to a Sang account that no longer exists (deleted, then the
+  // person signed up again with the same verified email/phone) is released so
+  // the new account can claim it. Accounts in their deletion grace period still
+  // exist in Auth, so their links are kept for a possible restore.
+  const liveUidCache = new Map<string, boolean>()
+  const isLiveSangUid = async (candidateUid: string) => {
+    if (!liveUidCache.has(candidateUid)) {
+      let live = true
+      try {
+        await getAuth().getUser(candidateUid)
+      } catch (error: unknown) {
+        live = (error as { code?: string })?.code !== 'auth/user-not-found'
+      }
+      liveUidCache.set(candidateUid, live)
+    }
+    return liveUidCache.get(candidateUid) === true
+  }
+
   const peopleByProgram = new Map<string, Array<Record<string, unknown> & { id: string }>>()
   for (const person of candidates.values()) {
     if (personAccessLifecycle(person) !== 'active') continue
     const linkedUid = String(person.sangUserId || person.sangUid || '')
-    if (linkedUid && linkedUid !== uid) continue
+    if (linkedUid && linkedUid !== uid && await isLiveSangUid(linkedUid)) continue
     const programId = String(person.programId || '')
     if (!programId) continue
     peopleByProgram.set(programId, [...(peopleByProgram.get(programId) || []), person])
@@ -3681,6 +3764,19 @@ export const claimMyEventAccess = onCall(callableOptions, async (request) => {
       passCode = await makeUniquePassCode()
       batch.set(passSnapshot.ref, { passCode, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
     }
+    const personWithCardDefault = await withEventDirectoryDefaultForNewAccess({
+      uid,
+      person,
+      isNewAccess: !person.accessPublishedAt,
+    })
+    const eventCardState = eventCardStateFromPerson(personWithCardDefault)
+    const linkedPerson = {
+      ...personWithCardDefault,
+      sangUserId: uid,
+      sangUid: uid,
+      linkStatus: 'linked',
+      linkMethod,
+    }
 
     batch.set(
       db.collection('peProgramPeople').doc(person.id),
@@ -3692,7 +3788,9 @@ export const claimMyEventAccess = onCall(callableOptions, async (request) => {
         linkConflictReason: '',
         ...(passCode ? { passCode } : {}),
         ...sangAppFieldsFromLinkResult(linkResult, true),
+        ...eventCardState,
         linkedAt: FieldValue.serverTimestamp(),
+        accessPublishedAt: person.accessPublishedAt || FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
       },
       { merge: true },
@@ -3702,13 +3800,7 @@ export const claimMyEventAccess = onCall(callableOptions, async (request) => {
       buildSangEventAccessMirror({
         uid,
         programPersonId: person.id,
-        person: {
-          ...person,
-          sangUserId: uid,
-          sangUid: uid,
-          linkStatus: 'linked',
-          linkMethod,
-        },
+        person: linkedPerson,
         program,
         passId,
         passQrPayload,
@@ -3720,13 +3812,7 @@ export const claimMyEventAccess = onCall(callableOptions, async (request) => {
     mirrorPublicPerson(batch, {
       programId,
       programPersonId: person.id,
-      person: {
-        ...person,
-        sangUserId: uid,
-        sangUid: uid,
-        linkStatus: 'linked',
-        linkMethod,
-      },
+      person: linkedPerson,
       status: 'active',
     })
     linkedCount += 1

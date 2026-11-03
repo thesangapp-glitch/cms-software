@@ -1,6 +1,15 @@
 # Sang Mobile App Event CRM Integration Guide
 
-Last updated: 2026-08-14
+Last updated: 2026-08-21
+
+## Companion Documents
+
+Read these documents together before testing sync or building the future CRM mobile app:
+
+- `docs/SANG_APP_CRM_SYNC_MASTER_IMPLEMENTATION_PLAN.md`: current implementation, button behavior, data flow, data structure, and reasons behind the CRM/Sang app sync.
+- `docs/SANG_APP_CRM_SYNC_QA_CHECKLIST.md`: step-by-step QA checklist for testing CRM publish, Sang app sync, pass QR, people directory, show-card, and analytics.
+- `docs/SANG_EVENT_CRM_MOBILE_APP_BUILD_PLAN.md`: future organizer/staff CRM mobile app plan using the same backend.
+- `docs/SANG_EVENT_CRM_FIRESTORE_DATA_STRUCTURE.md`: detailed collection and field reference.
 
 This document is the handoff for the Sang mobile app developer. It explains how the Sang Event CRM data appears inside the existing Sang app, which Firestore documents the mobile app should read, which Cloud Functions it should call, and which collections must stay backend-only.
 

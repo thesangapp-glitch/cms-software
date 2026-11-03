@@ -7,6 +7,13 @@ Hosting: `https://sang-event-crm.web.app`
 Functions region: `us-central1`  
 CRM functions codebase: `eventcrm`
 
+Related docs:
+
+- `docs/SANG_APP_CRM_SYNC_MASTER_IMPLEMENTATION_PLAN.md`
+- `docs/SANG_APP_CRM_SYNC_QA_CHECKLIST.md`
+- `docs/SANG_EVENT_CRM_MOBILE_APP_BUILD_PLAN.md`
+- `docs/SANG_MOBILE_EVENT_CRM_INTEGRATION_GUIDE.md`
+
 This document explains how the Sang Event CRM database works today, which collections exist, what each document stores, how data flows through onboarding/program/event/pass/check-in, and what a developer must check before making the next changes.
 
 ## Golden Rules
